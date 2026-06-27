@@ -1,0 +1,14 @@
+[tools]
+python = "3.12.4"
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.install]
+run = "pip install -r requirements.txt"
+
+[tasks.serve]
+run = "mkdocs serve"
+
+[tasks.build]
+run = "mkdocs build --strict"

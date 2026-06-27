@@ -1,0 +1,171 @@
+site_name: tatara
+site_description: >-
+  Kubernetes-native agentic development platform. Durable memory,
+  structured task orchestration, and autonomous issue-to-PR workflows.
+site_author: Szymon Richert
+site_url: https://szymonrychu.github.io/tatara-documentation/
+
+repo_name: szymonrychu/tatara-documentation
+repo_url: https://github.com/szymonrychu/tatara-documentation
+
+copyright: Copyright &copy; 2025 Szymon Richert - GNU AGPLv3
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.prune
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - search.share
+    - search.suggest
+    - content.code.annotate
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search:
+      lang: en
+  - minify:
+      minify_html: true
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - meta
+  - tables
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.critic
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/szymonrychu
+  version:
+    provider: mike
+
+extra_css:
+  - assets/extra.css
+
+nav:
+  - Home: index.md
+  - Concepts:
+    - concepts/index.md
+    - The Agentic Operating Model: concepts/agentic-model.md
+    - Why tatara: concepts/why-tatara.md
+  - Getting Started:
+    - getting-started/index.md
+    - Prerequisites: getting-started/prerequisites.md
+    - Installing the Operator: getting-started/installation.md
+    - Your First Project: getting-started/first-project.md
+    - Enrolling Repositories: getting-started/enrollment.md
+  - Architecture:
+    - architecture/index.md
+    - Data & Control Flow: architecture/data-flow.md
+    - Identity & OIDC: architecture/identity-and-oidc.md
+    - Memory Architecture: architecture/memory-architecture.md
+    - Agent Execution: architecture/agent-execution.md
+    - CI/CD & Deploy Model: architecture/ci-cd.md
+  - Components:
+    - components/index.md
+    - tatara-operator: components/operator.md
+    - tatara-memory: components/memory.md
+    - tatara-cli: components/cli.md
+    - tatara-claude-code-wrapper: components/claude-code-wrapper.md
+    - tatara-memory-repo-ingester: components/repo-ingester.md
+    - tatara-chat: components/chat.md
+    - tatara-argo-workflows: components/argo-workflows.md
+    - tatara-helmfile: components/helmfile.md
+    - tatara-observability: components/observability.md
+  - Custom Resources:
+    - reference/index.md
+    - Project: reference/project.md
+    - Repository: reference/repository.md
+    - Task: reference/task.md
+    - QueuedEvent: reference/queued-event.md
+    - Subtask: reference/subtask.md
+    - WorkItem: reference/work-item.md
+  - Workflows:
+    - workflows/index.md
+    - Brainstorm: workflows/brainstorm.md
+    - Issue Lifecycle: workflows/issue-lifecycle.md
+    - Incident Response: workflows/incident.md
+    - PR / MR Review: workflows/review.md
+  - Operations:
+    - operations/index.md
+    - Deployment & GitOps: operations/deployment.md
+    - Observability: operations/observability.md
+    - Runbooks: operations/runbooks.md
+    - Security:
+      - operations/security/index.md
+      - Bot Identity: operations/security/bot-identity.md
+      - Approval Gates: operations/security/approval-gates.md
+      - Prompt-Injection Defenses: operations/security/prompt-injection.md
+      - Webhook & Egress Security: operations/security/webhooks.md
+  - How It Works:
+    - explainers/index.md
+    - The Big Picture: explainers/big-picture.md
+    - From Issue to PR: explainers/issue-to-pr.md
+    - How Agents Remember Your Code: explainers/memory-graph.md
+    - Inside an Agent Session: explainers/agent-sessions.md
