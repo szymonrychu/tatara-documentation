@@ -629,6 +629,10 @@
          <lastmod>2026-07-05</lastmod>
     </url>
     <url>
+         <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-05-decoupling-gitops-and-agent/</loc>
+         <lastmod>2026-07-05</lastmod>
+    </url>
+    <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/_per-project-memory-shared-contracts/</loc>
          <lastmod>2026-07-05</lastmod>
     </url>
@@ -702,6 +706,10 @@
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/concepts/agentic-model/</loc>
+         <lastmod>2026-07-05</lastmod>
+    </url>
+    <url>
+         <loc>https://szymonrychu.github.io/tatara-documentation/concepts/portability/</loc>
          <lastmod>2026-07-05</lastmod>
     </url>
     <url>
