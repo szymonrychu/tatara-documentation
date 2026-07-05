@@ -143,13 +143,17 @@ agent:
     review: medium
 ```
 
-Keys are limited to the nine `Task.Spec.Kind` values (`implement`, `review`,
+`modelByKind`/`effortByKind` accept nine keys (kubebuilder caps them at
+`MaxProperties=9` with a matching enum validation): the eight distinct
+`Task.Spec.Kind` values you tier per kind - `implement`, `review`,
 `triageIssue`, `brainstorm`, `issueLifecycle`, `incident`, `selfImprove`,
-`refine`) plus the `healthCheck` pseudo-key (healthCheck Tasks carry
-`Kind=brainstorm` but resolve against `healthCheck` first, falling back to the
-`brainstorm` entry). A missing or empty entry falls back to the project-wide
-`model`/`effort`. Both live projects currently tier only `triageIssue` and
-`review` to Sonnet; every other kind stays on Opus at `high` effort.
+`refine` - plus `healthCheck`. `healthCheck` is itself a ninth `Task.Spec.Kind`
+enum value, but healthCheck work is spawned as a `brainstorm`-Kind Task carrying
+`activity=healthCheck`; the map resolves the `healthCheck` key first, then falls
+back to the `brainstorm` entry, then the project-wide `model`/`effort`. A missing
+or empty entry falls back to the project-wide value. Both live projects currently
+tier only `triageIssue` and `review` to Sonnet; every other kind stays on Opus at
+`high` effort.
 
 ### 3. Per-task runaway backstop (`maxTaskTokens`)
 

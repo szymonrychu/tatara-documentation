@@ -104,8 +104,8 @@ Claude Code  <--stdio--> tatara-cli (MCP server)
 At boot, the wrapper writes `/workspace/.mcp.json` pointing to `tatara-cli`,
 and configures `~/.claude/settings.json` to enable it. Claude discovers the
 tools automatically when the session starts. From Claude's perspective, these
-are just tools - the same as any other capability. It calls `query_memory` or
-`comment_on_issue` the same way it calls a file-read tool.
+are just tools - the same as any other capability. It calls `query` (memory
+retrieval) or `comment_on_issue` the same way it calls a file-read tool.
 
 The set of tools available is scoped by task type. A brainstorm pod gets
 broader tool access than a review pod; the operator sets a `TATARA_TOOL_PROFILE`
@@ -115,45 +115,51 @@ environment variable, and `tatara-cli` filters its tool list at startup.
 
 ## When context runs low: handover
 
-Claude Code has a context window - a limit on how much text the conversation
-can contain before it runs out of room. Long-running tasks (multi-file
-refactors, deep research, complex implementations) can push up against this
-limit.
+Long-running tasks (multi-file refactors, deep research, complex
+implementations) approach the context window before the work is done. Rather
+than let the session degrade, tatara hands the task off to a fresh pod that
+continues from a compact summary.
 
-When that happens, the agent writes itself a **handover note**: a compact
-summary of what it has done, what decisions it has made, and what remains. This
-is a built-in skill (the `/handoff` skill in the global CLAUDE.md) that the
-agent invokes when context is running low.
+The mechanism is a **chat-backed handoff**, not a transcript replay. On a pod's
+first turn, if the operator supplied a continuation key (the task's
+`CONVERSATION_OBJECT_KEY`, reused as a `handoff_key`), the wrapper prepends a
+short preamble to the goal: call `get_handoff` with this key before starting,
+and `write_handoff` an updated summary before finishing. The `/handoff` skill
+drives the actual calls. `get_handoff` and `write_handoff` hit the tatara-chat
+`/handoffs` endpoints - a small structured summary keyed by `handoff_key`, not
+the full conversation. The wrapper itself never calls chat; it only injects the
+preamble.
 
-Meanwhile, the wrapper has been **persisting the full conversation transcript
-to S3** after every completed turn. When a new pod is started for the same task
-(either because context ran out, or because the previous pod crashed), the
-wrapper downloads that transcript and launches Claude with `--resume <session-id>`.
-Claude picks up the conversation in its full fidelity - or, if the transcript
-itself would overflow the context window, it works from the handover note
-instead, starting fresh but informed.
+So when a pod is about to exhaust its context, it writes a handoff summary and
+exits. The next pod for the same task reads that summary on its first turn and
+picks up where the previous one left off. The earlier transcript-to-S3 replay
+machinery was removed (issue #114); the wrapper no longer uploads conversations
+anywhere. A compact handoff is cheaper to carry across pods and cannot overflow
+the new pod's context on boot the way a full transcript could.
 
 ```mermaid
 sequenceDiagram
-    participant WR1 as Pod 1 Wrapper
     participant CL1 as Claude (Pod 1)
-    participant S3 as S3 Bucket
+    participant CHAT as tatara-chat /handoffs
     participant WR2 as Pod 2 Wrapper
     participant CL2 as Claude (Pod 2)
 
     Note over CL1: context nearing limit
-    CL1->>CL1: write handover note (via /handoff skill)
-    WR1->>S3: upload transcript after each turn
-    Note over WR1: pod exits (context limit / eviction)
+    CL1->>CHAT: write_handoff(key, summary) via /handoff skill
+    Note over CL1: pod exits (context limit / eviction)
 
-    WR2->>S3: download transcript on boot
-    WR2->>CL2: claude --resume <session-id>
-    Note over CL2: reads handover note,<br/>continues where Pod 1 left off
+    WR2->>CL2: first turn preamble: "get_handoff <key> first"
+    CL2->>CHAT: get_handoff(key)
+    CHAT-->>CL2: prior summary
+    Note over CL2: continues where Pod 1 left off
 ```
 
-This makes agent sessions **resilient to pod restarts** without requiring any
-external coordination. A task survives node evictions, OOM kills, and scheduled
-pod rotations transparently.
+This makes agent sessions **resilient to pod restarts**. A task survives node
+evictions, OOM kills, and scheduled pod rotations: the next pod rehydrates from
+the handoff summary. A distinct, narrower case is an in-pod crash relaunch,
+where the wrapper restarts Claude in the *same* pod with `--continue` to resume
+the most recent on-disk conversation - the only place a transcript is replayed,
+and only locally.
 
 ---
 
@@ -204,14 +210,15 @@ graph TD
     CLI --> MEM[Memory Server]
     CLI --> OPAPI[Operator API]
     CLI --> SCM[GitHub / GitLab]
+    CLI --> CHAT[tatara-chat handoffs]
     CL -->|turn done| HOOK[cc-stop-hook]
     HOOK -->|POST result| WR
-    WR -->|after each turn| S3[S3 Transcript Store]
     WR -->|result callback| OP
-    S3 -->|on pod restart| WR2[New Pod Wrapper]
-    WR2 -->|claude --resume| CL2[Claude Code, continued]
+    CHAT -->|get_handoff on next pod| WR2[New Pod Wrapper]
+    WR2 -->|continues from summary| CL2[Claude Code, continued]
 ```
 
 One pod. One Claude process. One turn at a time. Results delivered via webhook
-or poll. Conversation persisted so restarts are transparent. Decisions surfaced
-to humans via issue comments, not interactive prompts.
+or poll. Context handed off through a compact chat-backed summary so restarts
+survive. Decisions surfaced to humans via issue comments, not interactive
+prompts.

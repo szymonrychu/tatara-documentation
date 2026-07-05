@@ -121,8 +121,12 @@ metadata:
   namespace: tatara
 stringData:
   webhookSecret: "your-webhook-secret-here"
-  # ...other keys: scmToken, etc.
+  token: "<bot-pat>"   # the SCM PAT; key is exactly `token`
 ```
+
+The operator validates and reads exactly two keys from this Secret: `token` (the
+bot PAT) and `webhookSecret`. A Project whose `scmSecretRef` Secret is missing or
+empties either key is held not-ready with a `SecretMissingKeys` condition.
 
 In the recommended tatara-helmfile deployment pattern the Secret is rendered
 from SOPS-encrypted values:
@@ -137,11 +141,13 @@ The `scmWebhookSecret` value in `values.yaml` is the chart scalar that lands
 in the rendered Secret under the `webhookSecret` key. Do not set it in
 plaintext; always supply it through an encrypted values overlay.
 
-!!! warning "Empty `webhookSecret` fails at startup, not at delivery"
-    If the Secret exists but the `webhookSecret` key is missing or empty, the
-    operator returns `500 Internal Server Error` on the first webhook delivery
-    for that project. Provision and verify the secret before registering the
-    webhook URL with your SCM provider.
+!!! warning "Empty `webhookSecret` fails at delivery, not at startup"
+    The secret is read inside the webhook handler, not at operator boot. If the
+    Secret exists but the `webhookSecret` key is missing or empty, the operator
+    returns `500 Internal Server Error` on the first webhook delivery for that
+    project (the operator process itself starts normally; the Project's reconcile
+    additionally flags `SecretMissingKeys`). Provision and verify the secret
+    before registering the webhook URL with your SCM provider.
 
 ---
 
@@ -246,9 +252,15 @@ agentFsGroup: 10001     # optional: volume ownership
 
 !!! warning "Default is `agentRunAsNonRoot: false`"
     The chart ships cluster-agnostic defaults. The deploying helmfile must
-    explicitly opt in to non-root enforcement. If `agentRunAsNonRoot: true` is
-    set without a numeric `agentRunAsUser`, the operator refuses to start with
-    a configuration error (`RunAsNonRoot=true requires RunAsUser to be set`).
+    explicitly opt in to non-root enforcement. Setting `agentRunAsNonRoot: true`
+    without a numeric `agentRunAsUser` is an unsatisfiable contract: the wrapper
+    image runs as a named (non-numeric) user, so the **kubelet** rejects each
+    spawned wrapper pod with `CreateContainerConfigError`. Note there is no
+    operator-side fail-fast for this today - a `ValidatePodSecurityContext` guard
+    with exactly that message exists in the code but is not wired into the boot
+    path, so the operator starts and the misconfiguration only surfaces per-pod
+    at spawn time. Always pair `agentRunAsNonRoot: true` with a numeric
+    `agentRunAsUser` (the wrapper image UID, e.g. `10001`).
 
 ### Network isolation
 

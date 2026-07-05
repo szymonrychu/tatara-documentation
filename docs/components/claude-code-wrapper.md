@@ -56,7 +56,12 @@ All `/v1/*` require an OIDC bearer token (audience `tatara-claude-code-wrapper`)
 
 ## Conversation persistence
 
-When `CONVERSATION_OBJECT_KEY` and `CONVERSATION_SESSION_ID` are set (injected by the operator from `Task.status`), the wrapper resumes the prior session. Under the handover threshold (default 25% of context window), the full transcript is replayed. At or above the threshold, only the compacted `Handover` text is passed as context and the session starts fresh from a summarized state.
+The wrapper is a consumer here, not the decision maker. The operator owns the fork/replay choice: `Project.spec.agent.handoverThresholdPercent` (default 25) as a share of `Project.spec.agent.contextWindowTokens`, measured against the last turn's input tokens. Based on that, the operator injects env into the pod and the wrapper reacts:
+
+- Under threshold: the operator emits both `CONVERSATION_OBJECT_KEY` and `CONVERSATION_SESSION_ID`, and the wrapper does a full transcript replay (`claude --resume`) of the prior session.
+- At or above threshold: the operator emits `CONVERSATION_OBJECT_KEY` but **omits** `CONVERSATION_SESSION_ID`, and instead injects a compacted `## Resume from handover` block into the turn-0 prompt. The wrapper starts a fresh session seeded from that summary rather than replaying.
+
+The threshold, the context-window size, and the handover text are all operator concerns. The wrapper only reads the injected env and either resumes or starts fresh. Conversation persistence is gated on the operator having an S3 bucket configured (`S3_BUCKET`); with no bucket the operator injects no conversation env and every pod starts empty.
 
 ## Lifecycle hooks
 
@@ -80,23 +85,26 @@ All scalars via env (from chart ConfigMap `envFrom`):
 | Var | Default | Description |
 |---|---|---|
 | `HTTP_ADDR` | `:8080` | Public API listen address |
-| `INTERNAL_ADDR` | `:9090` | Loopback for Stop hook callback |
-| `OIDC_ISSUER` | - | Keycloak issuer URL |
+| `INTERNAL_ADDR` | `127.0.0.1:8090` | Loopback for Stop hook callback |
+| `OIDC_ISSUER` | `https://auth.szymonrichert.pl/realms/master` | Keycloak issuer URL |
 | `OIDC_AUDIENCE` | `tatara-claude-code-wrapper` | Expected token audience |
-| `MODEL` | `claude-sonnet-4-6` | Claude model ID |
+| `MODEL` | `""` (empty) | Claude model ID. The wrapper bakes **no** default; the operator sets the model per Task from `Project.spec.agent.model` / `modelByKind`. |
 | `PERMISSION_MODE` | `bypassPermissions` | Claude permission mode |
 | `REPO_URL` / `REPO_BRANCH` | - | Repository to clone (optional) |
 | `TURN_TIMEOUT_SECONDS` | `1800` | Per-turn inactivity timeout |
 | `BOOT_TIMEOUT_SECONDS` | `60` | Max wait for boot quiescence |
-| `ANTHROPIC_API_KEY` | - | Long-lived Claude API key (from Secret) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | - | Claude subscription OAuth token. This is what the operator actually injects (from the `anthropicSecretName` Secret, key `oauth-token`); Claude Code reads it directly. |
+| `ANTHROPIC_API_KEY` | - | Alternative metered Anthropic API key. Supported (used to pre-seed the trust dialog) but **not** what the deployed platform injects. |
 
 File/list config is mounted under `/etc/wrapper` (chart values: `globalClaudeMd`, `projectClaudeMd`, `baseMcp`, `extraMcpServers`, `allowedTools`, custom skills).
 
 ## Metrics
 
-| Metric | Description |
-|---|---|
-| `ccw_turns_total` | Turn completions by result |
-| `ccw_token_usage_total` | Cumulative token usage by type (input/output/cache) |
-| `ccw_session_state` | Current session state gauge |
-| `ccw_boot_duration_seconds` | Boot sequence duration histogram |
+| Metric | Type | Description |
+|---|---|---|
+| `ccw_turns_total` | counter | Turn completions by result |
+| `ccw_turn_tokens_total` | counter | Claude tokens per turn by type/model/kind/repo/project |
+| `ccw_turn_cost_usd_total` | counter | Cumulative turn cost in USD by kind/repo/project |
+| `ccw_turn_in_flight` | gauge | Turns currently in flight (0 or 1) |
+| `ccw_bootstrap_duration_seconds` | histogram | Full bootstrap (`Render()`) duration |
+| `ccw_tool_calls_total` | counter | Agent tool calls observed in the transcript by tool and outcome |

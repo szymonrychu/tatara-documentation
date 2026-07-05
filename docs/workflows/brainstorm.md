@@ -17,19 +17,25 @@ The brainstorm workflow is a periodic, autonomous improvement proposal engine. I
 flowchart TD
     A[Brainstorm cron fires] --> B{Refine barrier due?}
     B -->|yes| RB[Create Task: refine\nhold until terminal]
-    RB --> C[Create Task: brainstorm]
-    B -->|no| C
+    RB --> G
+    B -->|no| G{Operator pre-gate:\nbacklog below maxOpenProposals?}
+    G -->|no, at cap| SKIP[Skip cycle\nmetric skipped_cap\nNO Task, NO pod, NO tokens]
+    G -->|yes| C[Create Task: brainstorm]
     C --> D[Spawn agent Pod]
-    D --> E{Query memory graph\nper repo}
-    E --> F[Score improvement\ncandidates]
-    F --> G{Below maxOpenProposals?}
-    G -->|yes| H[call createProposal MCP tool]
-    G -->|no| I[BrainstormOutcome: none]
+    D --> E[Query memory graph per repo\nscore candidates]
+    E --> F{Found something\nnovel + shippable?}
+    F -->|no| NONE[Agent early-exit:\nskip_research / BrainstormOutcome none]
+    F -->|yes| H[call propose_issue MCP tool]
     H --> J[Operator opens issue\non target repo]
     J --> K[Apply tatara-brainstorming label]
     K --> L[Enqueue issueLifecycle\nTask for the new issue]
     L --> M[Human receives proposal\nin issue tracker]
 ```
+
+The `maxOpenProposals` check and the `BrainstormOutcome{none}` early-exit are two **different**
+gates at two different altitudes: the cap is an operator pre-admission gate (left branch, no pod
+ever spawns), while `none` is an agent decision reached only after a pod is already running (right
+branch). See [Proposal limits](#proposal-limits).
 
 ## One task per project per cycle
 
@@ -52,9 +58,22 @@ The agent targets proposals at specific repositories based on graph analysis - i
 
 ## Proposal limits
 
-`spec.scm.cron.brainstorm.maxOpenProposals` (CRD default: **5** per project) limits how many open proposal issues can exist simultaneously, counted **across all repos in the project, summed**. The check short-circuits: once the cap is reached the agent stops evaluating remaining repos. If the cap is met, the brainstorm agent exits with `BrainstormOutcome{action: none, reason: "..."}` rather than filing anything.
+`spec.scm.cron.brainstorm.maxOpenProposals` (CRD default: **5** per project) limits how many open
+proposal issues can exist simultaneously, counted **across all repos in the project, summed** (a
+systemic group counts as **one** regardless of how many sibling issues it spans).
 
-A systemic group (see below) counts as **one** entry against the cap regardless of how many sibling issues it spans.
+This is an **operator-side pre-admission gate**, not an agent decision. On a due brainstorm tick
+the operator (`brainstorm()` in `projectscan.go`) sums the open-proposal backlog across repos and,
+if it is at or over the cap, records the `skipped_cap` scan metric and returns **before creating
+any brainstorm Task or spawning a pod**. No agent runs, so no tokens are spent. This gate is where
+project-wide proposal-flood / token backpressure lives.
+
+Do **not** confuse the cap with `BrainstormOutcome{action: none, reason: "..."}`. That is the
+distinct **agent-driven** no-yield path: when a pod *did* spawn (backlog was under the cap) but the
+agent surveyed the codebase and found nothing novel or shippable, it exits cheaply via
+[`skip_research`](research.md#skip_research) or an equivalent `none` outcome without filing
+anything. One is the operator refusing to spawn (at cap); the other is a spawned agent choosing to
+yield nothing.
 
 ## Systemic improvements
 

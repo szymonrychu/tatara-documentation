@@ -6,35 +6,67 @@ title: Deployment
 
 ## Resource sizing
 
+!!! note "Basis for these numbers"
+    The figures below are **conservative starting points**, not measured p95 from a
+    production fleet at scale. Tatara's reference deployment runs two Projects on a
+    single homelab cluster, so treat these as floors to boot from and then right-size
+    against the observability signals called out per workload. Each row names the
+    dashboard/alert metric that tells you when to raise it - see
+    [Observability](observability.md).
+
 ### tatara-operator
 
-The operator is lightweight; its compute footprint scales with the number of concurrent tasks (each active task triggers reconciliation loops).
+The operator is lightweight. Its memory footprint tracks the number of concurrent
+tasks it is supervising - watch the `operator_tasks_inflight` gauge (and the
+`TataraTasksInflightPinned` deadman): each in-flight Task holds reconcile state, a
+watch on its wrapper pod, and turn-submit bookkeeping. If `operator_tasks_inflight`
+routinely runs near a Project's `maxConcurrentTasks` cap, raise the memory request
+before raising concurrency.
 
 | Environment | Replicas | CPU request | Memory request |
 |---|---|---|---|
 | Development | 1 | 100m | 128Mi |
 | Production | 2-3 | 250m | 256Mi |
 
-The operator uses leader election for scheduling. Non-leader replicas handle webhook delivery and REST API requests.
+The operator uses leader election for scheduling. Non-leader replicas handle webhook delivery and REST API requests; only the leader runs crons, reconciliation, and business-metric emission.
 
 ### tatara-memory (per project)
 
-| Component | CPU | Memory | Storage |
-|---|---|---|---|
-| tatara-memory service | 250m / 500m | 256Mi / 512Mi | - |
-| LightRAG (Python) | 500m / 2000m | 1Gi / 4Gi | - |
-| Neo4j | 500m / 2000m | 2Gi / 8Gi | `neo4jStorage` PVC |
-| CNPG Postgres (per instance) | 250m / 1000m | 512Mi / 2Gi | `pgStorage` PVC |
+One full stack per Project (`mem-<project>-*`, see the [Runbooks](runbooks.md)
+topology note). The two heavy consumers are LightRAG and Neo4j, and both scale with
+corpus size: track `operator_lightrag_documents{project=...}` (the per-project
+LightRAG corpus gauge). LightRAG peak memory correlates with document count and
+concurrent ingest fan-out; Neo4j heap tracks the graph node/edge count derived from
+the same corpus. Size these against the corpus of your largest Project, not the
+smallest.
 
-Scale `pgInstances` to 3 for production HA.
+| Component | CPU (req/lim) | Memory (req/lim) | Storage |
+|---|---|---|---|
+| Memory API (`mem-<project>`) | 250m / 500m | 256Mi / 512Mi | - |
+| LightRAG (`mem-<project>-lightrag`) | 500m / 2000m | 1Gi / 4Gi | `mem-<project>-lightrag-data` PVC (fixed 10Gi, not spec-configurable) |
+| Neo4j (`mem-<project>-neo4j`) | 500m / 2000m | 2Gi / 8Gi | `neo4jStorage` PVC |
+| CNPG Postgres (`mem-<project>-pg`, per instance) | 250m / 1000m | 512Mi / 2Gi | `pgStorage` PVC |
+
+Scale `pgInstances` to 3 for production HA. Aggregate footprint is roughly linear
+in the number of Projects, since there is no shared memory stack - budget node
+capacity accordingly.
 
 ### Agent pods (per active task)
 
-| Model | Typical peak memory |
-|---|---|
-| claude-sonnet-4-6 | 256-512Mi per active turn |
+The wrapper binary itself is minimal; the `claude` process is the memory consumer,
+and peak memory is driven by the working-tree size and turn transcript, not the
+model. The reference fleet default model is `claude-opus-4-8`, with `triageIssue`
+and `review` tiered down to `claude-sonnet-5` via `modelByKind` (see
+[Tuning](tuning.md#cap-spend)); `claude-sonnet-4-6` is no longer the running model.
 
-Set Pod memory limits conservatively; the wrapper binary itself is minimal - the `claude` process is the memory consumer.
+| Workload | Typical peak memory |
+|---|---|
+| Wrapper pod (any model) | 256-512Mi per active turn |
+
+Set Pod memory limits conservatively. For per-kind cost/latency capacity planning,
+read `operator_task_tokens_total` (now `model`-labelled) and
+`operator_turn_submit_duration_seconds` rather than assuming a single model across
+all kinds.
 
 ## Storage
 

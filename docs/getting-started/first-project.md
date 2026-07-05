@@ -40,7 +40,7 @@ spec:
     botLogin: my-org-bot      # bot account username on the SCM provider
 
   agent:
-    model: claude-sonnet-4-6  # Claude model the agents use
+    model: claude-opus-4-8    # Claude model; no built-in default, set it explicitly
     image: harbor.example.com/tatara-claude-code-wrapper:v1.2.3
     effort: xhigh             # reasoning effort: low | medium | high | xhigh | max
 ```
@@ -63,7 +63,8 @@ metadata:
   namespace: tatara
 type: Opaque
 stringData:
-  token: "ghp_..."   # GitHub/GitLab PAT with repo, issues, and webhooks scopes
+  token: "ghp_..."   # bot PAT: contents, issues, pull requests, metadata, org members read
+                     # (GitHub fine-grained) or api + read/write_repository (GitLab). No webhook scope.
 ```
 
 ### Required and key top-level fields
@@ -138,7 +139,7 @@ spec:
 |---|---|---|
 | `model` | *(none)* | Claude model string, e.g. `claude-opus-4-8` or `claude-sonnet-4-6`. A single model serves all task types in the Project |
 | `image` | *(none)* | Full `tatara-claude-code-wrapper` image reference (registry + tag). Pin to an explicit tag; never `latest` |
-| `effort` | `xhigh` | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`. Passed to the wrapper as the `--effort` flag |
+| `effort` | `xhigh` | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`. Passed to the wrapper as the `EFFORT` env var, which drives Claude's reasoning budget |
 | `maxTurnsPerTask` | `50` | Maximum agent turns before the task is forced to a handover and a fresh pod continues from where the previous left off. Raise for complex implementation tasks (`100` is a proven production value) |
 | `turnTimeoutSeconds` | `1800` | Per-turn inactivity window in seconds. A turn is killed only after this many seconds with **no agent output** - an actively streaming turn is never interrupted |
 | `contextWindowTokens` | `200000` | Context window size reported to the agent. Match this to the model's actual context limit |
@@ -246,11 +247,21 @@ box; override only to match organizational naming conventions.
 
 ### PR reaction scope
 
-`spec.scm.prReactionScope` controls which PRs the operator processes:
+`spec.scm.prReactionScope` gates which human PRs/MRs the cron `mrScan` re-review path reacts to.
+It has **no default**, and unset is the widest setting, not the narrowest:
 
-- `labeledOrMentioned` (default): only PRs labeled with `triggerLabel` or that `@mention` the
-  bot account.
-- `all`: every PR in every enrolled repository.
+- unset / `all` (the effective default): the `mrScan` path reviews **every open human PR/MR** in
+  every enrolled repository. This is the historical open behavior.
+- `labeledOrMentioned`: restricts `mrScan` re-review to PRs labeled with `triggerLabel` or that
+  `@mention` the bot account, so unlabeled, un-mentioned PRs are not re-reviewed every scan cycle.
+
+!!! warning "Set this explicitly to narrow cron re-review"
+    The field is deliberately not defaulted to `labeledOrMentioned`: a defaulted value is
+    indistinguishable from an explicit one, so auto-defaulting would silently gate every project.
+    If you want the bot to only re-review labeled/mentioned PRs on a schedule, set
+    `prReactionScope: labeledOrMentioned` yourself. (The inbound-webhook PR path is separately
+    hardcoded to labeled-or-mentioned regardless of this field; this setting governs the cron
+    re-review loop.)
 
 ---
 
@@ -330,9 +341,11 @@ disables that activity.
 
 ### Grafana incident-response integration
 
-When enabled, the operator provisions a per-project `grafana-mcp` sidecar (read-only Grafana
-Viewer service account) and exposes an alert-webhook receiver at `<webhookURL>/grafana`. Grafana
-alert rules that POST to this endpoint trigger automatic incident-response tasks.
+When enabled, the operator provisions a per-project `grafana-mcp` **Deployment** (read-only
+Grafana Viewer service account) and exposes an alert-webhook receiver at `<webhookURL>/grafana`.
+Agent pods reach it over the network via the `TATARA_GRAFANA_MCP_URL` env var the operator injects;
+it is a standalone in-cluster service, not a sidecar container co-located in each agent pod.
+Grafana alert rules that POST to the webhook receiver trigger automatic incident-response tasks.
 
 ```yaml
 spec:
@@ -565,13 +578,14 @@ spec:
     count across all enrolled repositories.
 16. SCM provider: `github` or `gitlab`.
 17. GitHub organization name or GitLab group path (as it appears in repository URLs).
-18. Username of the dedicated bot account. Must hold repo read/write, issues, labels, and webhook
-    permissions on all target repositories.
+18. Username of the dedicated bot account. Its PAT must grant repo contents read/write, issues,
+    pull requests, and org-membership read on all target repositories. No webhook-admin scope:
+    the operator never registers webhooks (you configure them manually, section 6).
 19. GitHub noreply commit-author email for the bot. Links agent commits to the bot account in
     the GitHub web UI. Find this in the bot account's GitHub email settings.
 20. Human maintainer logins. When set, only thread comments from these accounts count as the
-    approval go-ahead. They also form the trusted-insider set for auto-approve decisions (issue
-    #102). Overridable per-repository.
+    approval go-ahead, and they form the trusted-insider set the operator treats as authoritative
+    for approve/decline decisions on a proposal thread. Overridable per-repository.
 21. Reporter allow-list. When set, issues and comments from accounts not in this list, not in
     `maintainerLogins`, and not the bot are silently dropped at intake. Closes the primary
     prompt-injection vector. Overridable per-repository.
@@ -579,8 +593,10 @@ spec:
     Override only to match organizational label naming conventions.
 23. `afterApproval` (default): the PR is merged after a maintainer approves it in the SCM review
     UI. `autoMergeOnGreenCI`: merged automatically once CI passes, no human approval required.
-24. `labeledOrMentioned` (default): the operator processes PRs labeled with `triggerLabel` or
-    that `@mention` the bot. `all`: every PR in every enrolled repository is processed.
+24. Cron `mrScan` re-review scope. This example opts in to the narrow setting. Left unset (or
+    `all`), the `mrScan` path re-reviews every open human PR/MR each cycle. `labeledOrMentioned`
+    restricts scheduled re-review to PRs labeled with `triggerLabel` or that `@mention` the bot.
+    The field has no default; set it explicitly to narrow the loop.
 25. Minutes after a task is submitted before the operator considers it stalled and re-queues it
     if no turn has been recorded. Default 60.
 26. Minutes of agent conversation inactivity before the operator considers the session idle and
@@ -593,8 +609,9 @@ spec:
     reaches this number, the brainstorm cycle is skipped entirely for that tick.
 30. How far back in days closed issues are loaded during the refine pre-step for
     already-implemented detection. Defaults to 30 days when not set.
-31. Enables the per-project Grafana integration: a read-only `grafana-mcp` sidecar provisioned
-    with a Viewer service account token, and an alert-webhook receiver at `<webhookURL>/grafana`.
+31. Enables the per-project Grafana integration: a read-only `grafana-mcp` Deployment provisioned
+    with a Viewer service account token (agents reach it via the injected `TATARA_GRAFANA_MCP_URL`,
+    not as a pod sidecar), and an alert-webhook receiver at `<webhookURL>/grafana`.
 32. Kubernetes Secret containing two keys: `serviceAccountToken` (Grafana Viewer SA token,
     mounted into the grafana-mcp container) and `webhookSecret` (bearer token the configured
     Grafana contact point must present to the webhook).

@@ -64,10 +64,12 @@ Research still rides the existing `spec.scm.cron.brainstorm.sources` egress hook
 stamps `tatara.io/egress: internet` on the brainstorm Pod. No dedicated web-search, academic
 paper, or crawl MCP server is wired to consume that egress yet - that is Phase 2 scope.
 
-## Why this matters for docs accuracy
+## Current capability (Phase 1)
 
-Do not describe deep architectural research as a live, internet-connected multi-source research
-agent. As deployed, it is: the existing brainstorm loop, plus a skill that asks the agent to
-frame findings as an ADR against in-cluster knowledge-graph and on-disk sources, plus a cheap
-early-exit tool and an as-yet-unenforced import-fitness check. The internet-facing, multi-agent
-"survey the field" capability described in the original design remains unimplemented.
+As deployed, deep architectural research is: the existing brainstorm loop, plus a skill that asks
+the agent to frame findings as an ADR against the in-cluster knowledge graph and on-disk sources,
+plus a cheap early-exit tool (`skip_research`) and an as-yet-unenforced import-fitness check
+(`archfitness`). It is **not** a live, internet-connected, multi-source research agent: the
+internet-facing, multi-agent "survey the field" capability from the original design (Phases 2-4)
+is unimplemented. Enrolling `internet` in `brainstorm.sources` only stamps an egress label; no
+web-search, academic-paper, or crawl MCP server is wired to consume it yet.

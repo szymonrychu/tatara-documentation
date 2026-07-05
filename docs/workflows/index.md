@@ -76,7 +76,7 @@ Tatara orchestrates several distinct agent workflows triggered by different even
 | Implement | Manual Task creation | `implement` | Repo | PR |
 | Incident | Grafana alert webhook | `incident` | Project | Incident issue, or a tier-revert `tatara-helmfile` MR |
 | PR Review | PR webhook / `mrScan` cron | `review` | Repo | Review verdict + suggestions |
-| Health Check | Cron | `healthCheck` | Project | Health report issue |
+| Health Check | Cron | `brainstorm` (activity=`healthCheck`) | Project | Health report issue |
 | Refine | Cadence-derived barrier ahead of brainstorm | `refine` | Project | Groomed backlog, escalation comments |
 | Semver Push-CD | PR merge with declared `change_significance` | n/a (operator + CI, no dedicated Task kind) | Cross-repo | Tagged release, cluster deploy, closed issue |
 
@@ -84,3 +84,9 @@ Tatara orchestrates several distinct agent workflows triggered by different even
     `triageIssue` still appears in the `Task.Spec.Kind` enum but is no longer created by any
     production code path - `issueLifecycle` now starts its own state machine at a `Triage` phase.
     See [Issue Lifecycle](issue-lifecycle.md) for detail.
+
+!!! note "`healthCheck` is a `brainstorm` Task, not its own kind"
+    Health-check Tasks are enqueued with `Kind: "brainstorm"` and distinguished by an
+    `activity=healthCheck` label - exactly the way Deep Architectural Research reuses the
+    `brainstorm` kind. `healthCheck` is a valid-but-unused `Task.Spec.Kind` enum value and a
+    `modelByKind`/`effortByKind` pseudo-key for tuning, not the kind actually stamped on the Task.

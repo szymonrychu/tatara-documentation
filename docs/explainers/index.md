@@ -4,7 +4,7 @@ title: How It Works
 
 # How It Works
 
-These pages explain tatara in plain terms, with less jargon than the technical reference. Good starting point for mid-level developers or anyone new to the platform.
+These pages are the fast narrative path to a working mental model of tatara: the shape of the system and why it is built that way, for architects and operators sizing up whether to adopt or run it. Start here for the big picture and the load-bearing design choices, then drop into the reference section when you need field-level detail.
 
 <div class="grid cards" markdown>
 

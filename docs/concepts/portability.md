@@ -73,12 +73,15 @@ of them is a hard no for your environment, tatara as shipped is not for you yet.
 
 ### 1. Kubernetes
 
-Not negotiable. The platform **is** a `controller-runtime` operator. Six CRDs
-(`Project`, `Repository`, `Task`, `Subtask`, `WorkItem`, `QueuedEvent`) are the
-state store; every agent turn runs as a `Pod`; the manager calls
-`ctrl.GetConfigOrDie()` at boot and cannot start without a cluster. There is no
-alternative scheduler and no non-Kubernetes state backend. "Run tatara without
-Kubernetes" is not a configuration - it would be a different product.
+Not negotiable. The platform **is** a `controller-runtime` operator. Five root
+CRDs (`Project`, `Repository`, `Task`, `Subtask`, `QueuedEvent`) are the state
+store; every agent turn runs as a `Pod`; the manager calls
+`ctrl.GetConfigOrDie()` at boot and cannot start without a cluster. (`WorkItem`
+is **not** a CRD - it is an embedded `WorkItemRef` struct carried in
+`Task.Status.WorkItems` as the per-Project work-item ledger; `kubectl get
+workitems` returns nothing.) There is no alternative scheduler and no
+non-Kubernetes state backend. "Run tatara without Kubernetes" is not a
+configuration - it would be a different product.
 
 ### 2. A coding agent
 

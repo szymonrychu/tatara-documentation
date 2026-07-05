@@ -14,7 +14,7 @@ Tatara addresses both by running a continuous, autonomous loop: it reads your is
 
 ## What you get
 
-**Autonomous implementation loop.** Issues labeled `tatara` are picked up automatically. The agent triages the issue, posts a plan for human review, waits for approval, implements, opens a PR, and parks the task until the PR is merged or the human provides further feedback. You review code, not prompts.
+**Autonomous implementation loop.** Issues labeled `tatara` are picked up automatically. The agent triages the issue (posting questions or a plan when it needs a human decision, and parking until you respond), implements once cleared, opens a PR, and babysits CI. Under the default merge policy the operator then squash-merges the PR on green CI on its own; add a review-gated branch-protection rule if you want to review each PR before it lands. You review code and the triage decision, not prompts.
 
 **Periodic brainstorm.** A cron-driven brainstorm agent queries the codebase knowledge graph and proposes improvements as GitHub/GitLab issues. Proposals are filed, not implemented - a human decides which ones to approve. The agent caps proposal volume (`maxOpenProposals`) so the tracker does not flood.
 
@@ -34,19 +34,19 @@ Tatara addresses both by running a continuous, autonomous loop: it reads your is
 
 ## What tatara is not
 
-**Not a general-purpose CI system.** Tatara orchestrates agent turns, not arbitrary pipelines. Use Argo Workflows or GitHub Actions for build/test/deploy.
+**Not a general-purpose CI system.** Tatara orchestrates agent turns, not arbitrary pipelines. Keep your own CI (GitHub Actions, GitLab CI, or whatever you run) for build/test/deploy; tatara consumes its commit-status signal, it does not replace it.
 
-**Not a hosted service.** You deploy tatara to your own Kubernetes cluster, connect it to your own GitHub or GitLab organization, and supply your own Keycloak instance for OIDC and your own Anthropic API key.
+**Not a hosted service.** You deploy tatara to your own Kubernetes cluster, connect it to your own GitHub or GitLab organization, supply your own OIDC issuer (the reference deployment uses Keycloak; any compliant issuer works), and supply your own Claude Code credential. As shipped the operator injects that credential to the agent pod as `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription OAuth token); see [Prerequisites](../getting-started/prerequisites.md) for exact provisioning.
 
-**Not a monolith.** Eight independent component repos, each with its own Helm chart, CI pipeline, and release lifecycle. You can adopt components incrementally.
+**Not a monolith.** Eight independent component repos, each with its own packaging, CI pipeline, and release lifecycle. Packaging is per-component, not uniformly a Helm chart: the Go services (operator, memory, chat) ship Helm charts, but `tatara-cli` ships via a Homebrew tap and is baked into the wrapper image, `tatara-helmfile` is Helmfile plus YAML, and `tatara-observability` is Terraform plus YAML. You can adopt components incrementally.
 
-**Not autonomous with unchecked write access.** Every implementation requires human approval in the issue thread. Every PR requires human review and merge (under the default `afterApproval` policy). The agent cannot merge its own code.
+**Not autonomous with unchecked write access - but the write access is real.** A human decides whether an issue gets worked (the triage gate). After that, the default is autonomous: under the `afterApproval` merge policy the operator squash-merges the bot's PR **itself** once CI is green, with no human review or merge step. The agent pod never runs `git merge` - the operator does - but "the agent cannot merge its own code" should not be read as "a human merges every PR." To require a human review before merge, configure `autoMergeOnGreenCI` plus an SCM branch-protection rule mandating an approving review; that gate is enforced by the forge, not by tatara's default. See [The Agentic Operating Model](agentic-model.md#gate-3-pr-merge-policy-autonomous-by-default).
 
 ## Trade-offs to consider
 
 | Consideration | Detail |
 |---|---|
-| Anthropic API cost | Every agent session consumes Claude tokens. A busy brainstorm or complex implementation run can be expensive. Monitor via `ccw_token_usage_total` and set `maxTurnsPerTask` conservatively. |
+| Anthropic API cost | Every agent session consumes Claude tokens; a busy brainstorm or complex implementation run can be expensive. Monitor with the wrapper's real per-turn series `ccw_turn_tokens_total{type,model}` and `ccw_turn_cost_usd_total`, plus the operator's `operator_task_tokens_total`. The actual cost/runaway levers are: **`spec.agent.maxTaskTokens`** (per-Task cumulative *output*-token ceiling - a runaway backstop for the turn-uncapped `implement`/`issueLifecycle` kinds, disabled at 0 by default), **`spec.tokenBudget`** (a proactive/emergency-percent admission gate that pauses the normal or alert pool at a share of a usage window; off by default), and **per-kind tiering** via `spec.agent.modelByKind` / `effortByKind` (run cheap kinds on a smaller model/effort). `maxTurnsPerTask` only bounds the turn-capped kinds; it is not the primary cost control for implementation work. |
 | Keycloak dependency | tatara requires an OIDC provider. The reference deployment uses Keycloak. Replacing this with a different IdP is possible but requires configuration changes across multiple components. |
 | Ceph / PVC dependency | tatara-memory uses Neo4j (PVC) and CNPG Postgres (PVC). On bare-metal Kubernetes this typically means Ceph or another block/file storage provider. |
 | S3 dependency | Conversation persistence requires an S3-compatible object store. Without it, pod restarts begin fresh sessions. |
@@ -63,4 +63,4 @@ The smallest useful tatara deployment:
 5. The `tatara-helmfile` repository forked and configured for your cluster
 6. One `Project` CR and one or more `Repository` CRs
 
-You do not need Grafana alerting, Argo Workflows, or the brainstorm cron to start. The minimal loop is: label an issue -> agent triages and implements -> you review the PR.
+You do not need Grafana alerting or the brainstorm cron to start. The minimal loop is: label an issue -> agent triages and implements -> the PR merges on green CI (add a review-gated branch-protection rule if you want a human merge step first).

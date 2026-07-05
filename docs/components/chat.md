@@ -53,7 +53,7 @@ All `/rooms/*` require an OIDC bearer token (audience `tatara-chat`). The operat
 
 ## Storage
 
-CNPG Postgres (the same cluster used by tatara-memory for a given project, or a dedicated cluster). Uses `database/sql` + pgx stdlib with embedded SQL migrations (`internal/db/migrations/`).
+CNPG Postgres (the same cluster used by tatara-memory for a given project, or a dedicated cluster). Uses `database/sql` + pgx stdlib with embedded SQL migrations under `internal/chat/migrations/` (`0001_chat.sql` .. `0005_handoffs.sql`), embedded via `internal/chat/migrate.go`. There is no `internal/db` package.
 
 ## Usage in the platform
 

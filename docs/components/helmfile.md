@@ -44,15 +44,30 @@ values/
 
 ## Deploy flow
 
-1. Open a PR bumping a release (image tag in `values/tatara-operator/common.yaml` and/or chart `version:` in `helmfile.yaml.gotmpl`).
-2. `diff.yaml` posts the rendered `helmfile diff` as a sticky PR comment for review.
-3. Merge to `main`. `apply.yaml` runs `helmfile -e default apply` on the in-cluster runner. Failures roll back via `helmDefaults.rollbackOnFailure`.
+### Push-CD automation (the real path today)
 
-## Chart version pinning
+Since the semver push-CD migration (2026-07-05), deploys are normally cut and bumped by the release pipeline, not hand-edited:
 
-Chart versions follow the `0.0.0-g<sha>` pattern (operator CI packages charts on every push to main). **Pins must be kept recent** - Harbor GCs old chart tags, so a stale pin eventually fails `apply` with chart-not-found.
+1. A component PR merges to its `main` with a `semver:{patch|minor|major}` label. Component CI cuts the corresponding `vX.Y.Z` image tag and `X.Y.Z` chart, pushes both to Harbor, and opens a `tatara-helmfile` PR that bumps the version pins (both `image.tag` and the chart `version:`).
+2. The bot PR is auto-merged on green CI. `diff.yaml` still posts the rendered `helmfile diff` as a sticky comment so the change is reviewable in the record.
+3. A deploy train coalesces sibling components merging close together into one cascade so the cluster is not churned per-component.
+4. On merge, `apply.yaml` runs `helmfile -e default apply` on the in-cluster runner; the operator observes the applied pins and closes the originating issue. Failures roll back via `helmDefaults.rollbackOnFailure`.
 
-When bumping a release, always update BOTH:
+### Manual PR bump (fallback / override)
+
+The same repo can always be driven by hand for a pinned rollback or an override:
+
+1. Open a PR editing the image tag in `values/tatara-operator/common.yaml` and/or the chart `version:` in `helmfile.yaml.gotmpl`.
+2. Review the sticky `helmfile diff`.
+3. Merge to `main` to apply.
+
+## Chart and image version pinning
+
+Deployed pins are bare-semver releases: image tags `vX.Y.Z` (e.g. `v0.4.11`) and chart versions `X.Y.Z` (e.g. operator `0.4.11`, `tatara-project` `0.1.2`). The legacy `0.0.0-g<sha>` per-commit scheme is still packaged by CI on every push to main but is not what the deployed releases pin.
+
+**Pins must be kept recent** - Harbor GCs old chart tags, so a stale pin eventually fails `apply` with chart-not-found.
+
+When bumping a release by hand, always update BOTH:
 - `values/tatara-operator/common.yaml` (`image.tag`)
 - `helmfile.yaml.gotmpl` (`version:` for the chart)
 
@@ -72,7 +87,7 @@ helmfile -e default diff                       # dry-run against current kube-co
 
 ## Auth
 
-- **Cluster:** in-cluster ServiceAccount `tatara-helmfile-deployer` (no KUBECONFIG needed)
+- **Cluster:** `apply.yaml` runs on the in-cluster ARC runner `arc-runner-tatara-helmfile` and uses that runner pod's in-cluster ServiceAccount (no KUBECONFIG needed). The runner and its RBAC are provisioned outside this repo.
 - **Harbor:** `HARBOR_USERNAME` / `HARBOR_PASSWORD` GitHub Actions secrets
 - **SOPS:** `GPG_PRIVATE_RSA_B64` GitHub Actions secret (base64-encoded PGP private key)
 

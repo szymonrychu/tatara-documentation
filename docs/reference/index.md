@@ -66,7 +66,7 @@ Key derivation rules:
 
 - A `Project` must exist before any `Repository`, `QueuedEvent`, or `Task` can reference it.
 - A webhook event or cron scan produces a `QueuedEvent`. The dispatcher promotes it to a `Task` when a concurrency slot is available.
-- `issueLifecycle` tasks are given a deterministic name (`<project>-<repo>-<issue-number>`) making repeated admission idempotent.
+- `issueLifecycle` tasks are given a deterministic name - `lc-` plus the first 16 hex chars of `sha256(projectName \0 issueRef \0 isPR-flag)`, e.g. `lc-3f2a9c1d4b6e0f78` - so repeated webhook deliveries for the same work item collide on `Create` (AlreadyExists) and stay idempotent. The `isPR` flag disambiguates a GitHub issue #N from a PR #N in the same repo. Grep `kubectl get tasks` for the `lc-` prefix, not for the issue number.
 - `Subtask` resources are created by the agent via the MCP REST API; the Task reconciler feeds them to the running agent session one turn at a time.
 - The `WorkItems` ledger is seeded from `Task.Spec.Source` on first reconcile and maintained by the operator as the agent drives MCP actions (open PR, merge, close issue).
 
@@ -145,7 +145,9 @@ kubectl -n tatara get repositories
 | `lastIssueScan` | `*Time` | Timestamp of most recent issue scan cycle |
 | `lastBrainstorm` | `*Time` | Timestamp of most recent brainstorm cycle |
 | `lastHealthCheck` | `*Time` | Timestamp of most recent health-check cycle |
+| `lastCDScan` | `*Time` | Timestamp of the most recent push-CD deploy-supervision backstop sweep (the `cdScan` cron) |
 | `lastRefine` | `*Time` | Timestamp of most recent refine pre-step |
+| `tokenBudget` | object | Token-budget accumulator/snapshot: the custom-window running total and the latest Claude-subscription usage snapshot reported by the wrapper. See [Project reference](project.md). |
 
 ## Task.Status fields at a glance
 
@@ -155,7 +157,7 @@ kubectl -n tatara get repositories
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `phase` | enum | `Planning`, `Running`, `Succeeded`, `Failed` (empty for `issueLifecycle`) |
+| `phase` | enum | `Planning`, `Running`, `Succeeded`, `Failed`, `Deploying` (empty for `issueLifecycle` except during the post-merge `Deploying` window) |
 | `podName` | string | Name of the current or most recent agent pod |
 | `turnsCompleted` | int | Total agent turns executed |
 | `prURL` | string | URL of the PR/MR opened (if any) |
@@ -166,19 +168,21 @@ kubectl -n tatara get repositories
 | `issueOutcome` | object | Agent's triage decision (`implement`, `close`, `discuss`) |
 | `implementOutcome` | object | Agent's declared non-implementation reason (`declined`, `already_done`) |
 | `brainstormOutcome` | object | Agent's declared no-proposal reason |
-| `changeSummary` | object | Scope report: PR title/body, delivered scope, remaining scope |
+| `changeSummary` | object | Scope report: PR title/body, delivered scope, remaining scope, and the required `significance` (`major`/`minor`/`patch`) that drives the push-CD semver tag |
 | `followupIssueURL` | string | URL of the follow-up issue opened for remaining scope |
 | `workItems` | `[]WorkItemRef` | Work-item ledger (issues, PRs, MRs this task spans) |
 | `pendingComments` | `[]string` | Agent-queued comments; posted on next reconcile then cleared |
 | `pendingInterjections` | `[]string` | Mid-turn webhook comments delivered to the live session |
+| `resolvedModel` | string | Model resolved at pod spawn (`modelForKind`); the model the token/cost metrics price against |
 | `cumulativeTokens` | int64 | Total input+output tokens across all turns |
 | `lastTurnInputTokens` | int64 | Input token count of the most recent turn (context-window pressure signal) |
+| `cumulativeInput` / `cumulativeOutput` / `cumulativeCacheRead` / `cumulativeCacheCreation` | int64 | Per-category token totals across all turns (uncached input, output, cache-read, cache-creation) |
 
 ### issueLifecycle only
 
 | Field | Type | Enum values | Description |
 |-------|------|-------------|-------------|
-| `lifecycleState` | string | `Triage`, `Conversation`, `Implement`, `MRCI`, `Merge`, `MainCI`, `Done`, `Stopped`, `Parked` | Current lifecycle phase |
+| `lifecycleState` | string | `Triage`, `Conversation`, `Implement`, `MRCI`, `Merge`, `MainCI`, `Deploying`, `Done`, `Stopped`, `Parked` | Current lifecycle phase |
 | `lastActivityAt` | `*Time` | - | Last state transition or agent activity |
 | `deadlineAt` | `*Time` | - | Babysit deadline; task is parked if exceeded |
 | `headBranch` | string | - | Name of the task's feature branch |
@@ -191,11 +195,16 @@ kubectl -n tatara get repositories
 | `sessionID` | string | - | Claude session ID; passed as `--resume` to the next pod |
 | `implementContext` | string | - | Re-entry prompt injected at next Implement turn start; cleared after delivery |
 | `implementEmptyRetries` | int | - | Consecutive empty-commit Implement runs; task is parked after cap |
+| `implementGiveUps` | int | - | Give-up count for this durable lifecycle Task; bounds the auto-reroll backstop |
 | `writebackSkip4xxAttempts` | int | - | Consecutive writeback cycles with all-4xx OpenChange; loop-breaker |
 | `parkReason` | string | - | Reason string from the last Parked transition |
+| `cascadeStage` | string | `tagged`, `parent-pr-open`, `parent-merged`, `helmfile-applied` | Push-CD cascade progress during the `Deploying` phase |
+| `deployedVersion` | string | - | Semver (`vX.Y.Z`) this Task's artifact is driving toward the cluster |
+| `deployArtifact` | string | - | Deploy-ledger artifact identity (`repo@vX.Y.Z`) |
+| `deployDeadline` | `*Time` | - | Deploy-cascade deadline; the Task parks recoverable (`deploy-timeout`) if exceeded |
 
 !!! warning "Terminal state detection"
-    A `Task` is terminal when `phase` is `Succeeded` or `Failed`, **or** when `lifecycleState` is `Done`, `Stopped`, or `Parked`. Testing `phase` alone misses finished `issueLifecycle` tasks because their `phase` is always empty. Use the `TaskTerminal()` helper in the Go client or check both fields in your automation.
+    A `Task` is terminal when `phase` is `Succeeded` or `Failed`, **or** when `lifecycleState` is `Done`, `Stopped`, or `Parked`. `Deploying` (on either field) is not terminal. Testing `phase` alone misses finished `issueLifecycle` tasks, whose `phase` is empty for the whole lifecycle except the non-terminal `Deploying` window. Use the `TaskTerminal()` helper in the Go client or check both fields in your automation.
 
 ## QueuedEvent lifecycle
 
@@ -249,7 +258,7 @@ The dispatcher evaluates the queue on every reconcile cycle. `normal`-class even
         owner: szymonrychu             # required: org or user slug
         botLogin: szymonrychu-bot      # required: bot account login
       agent:
-        model: claude-opus-4-5          # optional: defaults to operator env
+        model: claude-opus-4-8          # optional: defaults to operator env
       memory:                           # optional block; all fields have defaults
         pgInstances: 3                  # default 1
     ```

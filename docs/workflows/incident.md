@@ -111,7 +111,10 @@ external input.
 
 When `spec.grafana.enabled` is true, the operator provisions a read-only grafana-mcp for the
 Project. The grafana-mcp is exposed as an in-cluster service (reported in
-`status.grafana.endpoint`) and mounted as an MCP server in every `incident` Task pod.
+`status.grafana.endpoint`), and its URL is injected as `TATARA_GRAFANA_MCP_URL` into **every**
+agent pod in a grafana-enabled project, regardless of kind (the injection gates only on
+`project.Spec.Grafana.Enabled`, not on the Task kind). In practice only `incident` agents are
+prompted to use it; other kinds simply do not act on the mounted server.
 
 The agent uses it to:
 
@@ -134,11 +137,23 @@ not get misrouted as an application incident.
 
 ## 5. Agent output
 
-The agent's only permitted output action is **`propose_issue(repo, body, incident=true)`**,
-called exactly once after investigation. The `repo` argument is chosen from the Project's
-enrolled repositories based on which one the evidence implicates.
+The agent's intended terminal action is **`propose_issue(repo, body)`**, called once after
+investigation. The `repo` argument is chosen from the Project's enrolled repositories based on
+which one the evidence implicates.
 
-The operator's writeback layer handles `propose_issue` with `incident=true` as follows:
+!!! note "There is no `incident` argument on `propose_issue`"
+    `propose_issue` takes `project`, `repo`, `title`, `body`, `kind`, `systemicId` - no
+    `incident` flag. The incident-origin is **operator-inferred**, not agent-supplied: when the
+    writeback layer handles the proposal it checks for an in-flight `incident` Task on the project
+    (`incidentTask != nil`) and, if one exists, sets `ProposedIssue.Incident` and carries the
+    in-flight Task's alert-group identity onto the proposal (for recurring-alert dedup). The
+    incident goal prompt itself instructs the agent to call `propose_issue(repo, body)` with no
+    flag. "Called exactly once" is a prompt instruction, not a tool-level constraint - the
+    `incident` tool profile also grants `comment_on_issue`, `change_summary`,
+    `decline_implementation`, `task_update` and the `subtask_*` tools; `propose_issue` is simply
+    the one the goal steers the agent to as its output.
+
+Given an in-flight incident Task, the operator's writeback layer:
 
 1. Creates the issue in the specified repository via the SCM API.
 2. Stamps it with the phase label (`tatara-brainstorming` by default) to start the triage
@@ -147,8 +162,9 @@ The operator's writeback layer handles `propose_issue` with `incident=true` as f
    permanent marker.
 
 ```
-propose_issue(incident=true)
-    ↓
+propose_issue(repo, body)   (operator infers incident-origin from the in-flight incident Task)
+    |
+    v
 SCM issue created with:
   - tatara-brainstorming  (phase label, managed/swept by the reconciler)
   - tatara-incident       (additive label, NEVER swept)
@@ -238,7 +254,8 @@ sequenceDiagram
     Task->>Agent: Spawn pod with grafana-mcp
     Agent->>Agent: Query Grafana (PromQL/LogQL/<br/>dashboards/alert rule)
     Agent->>Agent: Form diagnosis
-    Agent->>SCM: propose_issue(repo, body, incident=true)
+    Agent->>SCM: propose_issue(repo, body)
+    Note over SCM: operator infers incident-origin from<br/>the in-flight incident Task
     SCM-->>Agent: Issue URL
     Agent->>Task: Task Succeeded
     SCM->>Operator: Webhook: issue labeled tatara-brainstorming

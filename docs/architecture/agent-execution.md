@@ -52,11 +52,12 @@ dialogs - it adds an extra one.
 
 ### OIDC HTTP API
 
-All `/v1/*` endpoints require a valid OIDC JWT (Keycloak master realm, audience
-`tatara-claude-code-wrapper`). The operator holds a client-credentials token and
-uses it for every call. The internal loopback port (`127.0.0.1:8090`) is
-unreachable from outside the pod and carries no authentication - it is the
-Stop hook's private channel.
+All `/v1/*` endpoints require a valid OIDC JWT with audience
+`tatara-claude-code-wrapper` (the issuer/realm is operator-injected via `OIDC_ISSUER`;
+the homelab runs it in the `master` realm, but nothing hard-codes that). The operator
+holds a `tatara-claude-code-wrapper`-audience client-credentials token and uses it for
+every call. The internal loopback port (`127.0.0.1:8090`) is unreachable from outside
+the pod and carries no authentication - it is the Stop hook's private channel.
 
 | Port | Interface | Purpose |
 |------|-----------|---------|
@@ -85,7 +86,7 @@ sequenceDiagram
     Bootstrap->>Bootstrap: write ~/.claude/CLAUDE.md (globalClaudeMd)
     Bootstrap->>Bootstrap: merge baseMcp + /etc/wrapper/mcp.d/*.json -> /workspace/.mcp.json (0600)
     Bootstrap->>Bootstrap: write ~/.claude/settings.json (Stop hook path, bypassPermissions, MCP auto-enable)
-    Bootstrap->>Bootstrap: seed ~/.claude.json (onboarding, folder-trust, API-key accepted)
+    Bootstrap->>Bootstrap: seed ~/.claude.json (onboarding, folder-trust, auth accepted)
     Bootstrap->>Bootstrap: install baked + custom skills -> /workspace/.claude/skills/
     Wrapper->>PTY: allocate PTY, spawn interactive claude
     PTY-->>Wrapper: ring buffer fills with TUI output
@@ -118,10 +119,13 @@ fragments, skill archives) is read from `/etc/wrapper` mounts.
   (`/usr/local/bin/cc-stop-hook`), sets `permissions.defaultMode:
   bypassPermissions`, and sets `enableAllProjectMcpServers: true`.
 - `~/.claude.json` (mode 0600): the no-dialog seed. Pre-populates
-  `hasCompletedOnboarding`, marks the API key as accepted (using the last 20
-  characters of `ANTHROPIC_API_KEY` as the fingerprint), and sets
-  `projects["/workspace"].hasTrustDialogAccepted: true`. This suppresses all
-  seedable interactive dialogs.
+  `hasCompletedOnboarding` and sets `projects["/workspace"].hasTrustDialogAccepted:
+  true`, suppressing the seedable interactive dialogs. In the tatara deployment the
+  operator injects a **Claude subscription OAuth token** as `CLAUDE_CODE_OAUTH_TOKEN`
+  (from the `oauth-token` Secret key), so claude authenticates via subscription and
+  there is no "use this API key?" dialog to seed. The `customApiKeyResponses` fingerprint
+  (last 20 chars of `ANTHROPIC_API_KEY`) is only written when an `ANTHROPIC_API_KEY` is
+  set instead - the alternate, metered-API-key auth path.
 - Skills: copies baked skills from `/templates/skills` and custom skills from
   `/etc/wrapper/skills` into `/workspace/.claude/skills/`.
 
@@ -354,6 +358,6 @@ metrics on `/metrics`:
 | `ccw_claude_restarts_total` | Counter | Unexpected claude process exits |
 | `ccw_webhook_delivery_total{result}` | Counter | Callback delivery: `ok` or `dropped` |
 | `ccw_hook_received_total` | Counter | Stop hook calls received |
-| `ccw_turn_tokens_total{type,model}` | Counter | Token spend per type (`input`, `output`, `cache_read`, `cache_creation`) summed across all assistant messages in the turn |
-| `ccw_turn_cost_usd_total` | Counter | Cumulative turn cost in USD (emitted only when `/workspace/result.json` carries `total_cost_usd`) |
+| `ccw_turn_tokens_total{type,model,kind,repo,project}` | Counter | Token spend per type (`input`, `output`, `cache_read`, `cache_creation`) summed across all assistant messages in the turn, attributed to the Task kind, repo, and project |
+| `ccw_turn_cost_usd_total{kind,repo,project}` | Counter | Cumulative turn cost in USD (emitted only when `/workspace/result.json` carries `total_cost_usd`), attributed by kind, repo, and project |
 | `ccw_lifecycle_hook_total{result,hook}` | Counter | Lifecycle hook executions |

@@ -6,7 +6,7 @@ title: The Big Picture
 
 ## What tatara is trying to solve
 
-Software engineering teams accumulate backlog faster than they can ship. Issues pile up, minor improvements are perpetually deferred, and on-call engineers spend time on repetitive triage. Meanwhile, AI coding tools (GitHub Copilot, Claude, GPT-4) are good at writing code given a clear spec - but they are stateless. Each session starts from scratch, forgets what was decided before, and has no awareness of the broader system.
+Software engineering teams accumulate backlog faster than they can ship. Issues pile up, minor improvements are perpetually deferred, and on-call engineers spend time on repetitive triage. Meanwhile, AI coding assistants (GitHub Copilot, Claude Code, Cursor, and the like) are good at writing code given a clear spec - but on their own they are stateless. Each session starts from scratch, forgets what was decided before, and has no awareness of the broader system.
 
 Tatara connects the dots: it gives AI agents **durable memory** of your codebase, **structured task tracking** in Kubernetes, and a **continuous feedback loop** with your GitHub/GitLab workflow.
 
@@ -23,7 +23,7 @@ The name comes from the Japanese *tatara* iron-smelting forge: a collective, ite
 ```
 Your GitHub/GitLab org
         |
-        | You open an issue, add "tatara" label
+        | You open an issue (no label required)
         |
         v
 tatara-operator (Kubernetes)
@@ -59,15 +59,27 @@ Inside each pod, Claude Code runs as it would on your laptop - in its full inter
 
 The agent can read files, write code, run tests, call APIs (via MCP tools), and push commits. It cannot log into arbitrary services or access secrets it was not explicitly given.
 
+## The loop runs itself, mostly
+
+Reacting to human-filed issues is only one of the agent kinds tatara runs. The platform also generates and maintains its own backlog, responds to alerts, and can deploy itself:
+
+- **brainstorm** proposes net-new work as fresh issues (capped per project). A bot-filed proposal will not auto-approve into implementation until a human engages with it.
+- **refine** grooms the existing backlog - tightening, de-duplicating, and closing stale proposals - without opening or implementing anything itself.
+- **incident** fires from Grafana alert webhooks: an alert at 3am spawns an investigation agent that gathers context and reports back for a human in the morning.
+- **push-CD** lets tatara ship its own components: a merged change with a declared significance rides a semver release cascade all the way to a `tatara-helmfile` apply (walked through in [From Issue to PR](issue-to-pr.md)).
+
+So not every unit of work starts from a human-labeled issue. What stays with humans is the scope (which repos are enrolled), approval of proposed net-new work, and the merge gate. Within those bounds the loop is largely self-driving.
+
 ## What humans control
 
-Tatara is not fully autonomous. Humans decide:
+Tatara runs much of its own loop, but the load-bearing decisions stay with humans:
 
-1. **Which issues to act on** (by adding the `tatara` label)
-2. **Whether to approve the agent's plan** (by commenting in the issue thread)
-3. **Whether to merge the PR** (by reviewing and approving in GitHub)
+1. **Which repositories are enrolled.** Tatara triages *every* open issue in an enrolled repo via the periodic issue scan - no label is required. The optional trigger label only makes it skip triage and start implementing immediately; it is not an act/no-act switch.
+2. **Whether to approve net-new work the agent proposes.** Brainstorm-generated proposals wait for a human before they are implemented.
+3. **Whether to approve the agent's triage plan**, by commenting in the issue thread.
+4. **Whether to merge the PR**, by reviewing and approving in your SCM. (Under the default `afterApproval` policy the operator merges on the agent's own read of the thread rather than verifying SCM review state directly; see the approval-gates reference for how to make that a hard gate with branch protection.)
 
-The agent proposes and implements; humans decide and merge. This is the design intent, not a limitation.
+The agent proposes, grooms, implements, and can even ship its own components; humans set scope and hold the merge gate. This is the design intent, not a limitation.
 
 ## What makes tatara different from a CI/CD script
 
@@ -81,7 +93,7 @@ The tradeoff is that agent behavior is probabilistic, not deterministic. The hum
 |---|---|
 | Agent writes bad code | Human reviews the PR before merge |
 | Agent misunderstands the issue | Triage plan is posted for approval before any code is written |
-| Pod crashes mid-task | Conversation is persisted to S3; next pod resumes where it left off |
+| Pod crashes mid-task | The agent writes a compact chat-backed handoff summary; the next pod reads it via `get_handoff` and continues. In-pod crash relaunch resumes locally via `--continue` |
 | Queue overloaded | QueuedEvent admission queue bounds concurrency |
 | CI breaks | Agent investigates and retries in the MRCI phase |
 | Incident fires at 3am | Alert webhook spawns investigation agent; human reviews in the morning |

@@ -14,6 +14,15 @@ apiVersion: tatara.dev/v1alpha1
 kind: Subtask
 ```
 
+!!! important "Subtasks drive the generic turn loop, not `issueLifecycle`"
+    Subtasks are the execution model for the **single-shot** task kinds (`implement`, `review`,
+    `triageIssue`, `brainstorm`, `selfImprove`, `refine`, `healthCheck`, `incident`): the Task
+    reconciler's generic turn loop plans, then drains Pending subtasks one turn at a time. The
+    `issueLifecycle` kind is different - it runs its own multi-phase state machine
+    (`Triage` -> `Conversation` -> `Implement` -> `MRCI` -> ...) and does **not** decompose into
+    ordered Subtasks. See the [issueLifecycle state machine](task.md#state-machine) for that
+    driver.
+
 Subtasks are **namespaced** resources. The operator `kubectl` print columns expose `Order`
 and `Phase` so you can monitor progress at a glance:
 
@@ -75,22 +84,28 @@ Agents create and update subtasks via the tatara-cli MCP REST API exposed inside
 agent pod. The typical pattern for a multi-step implementation task:
 
 1. The operator starts the Task session with the high-level goal as the first turn.
-2. The agent calls `create_subtask` (or `POST /v1/subtasks`) for each planned step,
-   setting `title`, `detail`, and `order`.
+2. The agent calls the `subtask_create` MCP tool (REST: `POST /tasks/{task}/subtasks`) for
+   each planned step, setting `title`, `detail`, and `order`. It updates status via
+   `subtask_update` (REST: `PATCH /subtasks/{id}`). The task defaults to the `TATARA_TASK`
+   env when omitted.
 3. The operator picks up `Pending` subtasks in order, submitting each as a turn.
 4. Each completed turn writes `phase=Done` and `result` back to the Subtask status.
-5. When all subtasks are `Done` (or one `Failed`), the Task proceeds to its next
-   reconcile phase (e.g. opening a PR, or marking the Task failed).
+5. Each reconcile, the turn loop picks the lowest-`order` subtask still in `Pending` (or with
+   an empty phase) and submits it. `Failed` subtasks are not eligible and are skipped. When no
+   `Pending` subtasks remain, the Task terminates `Succeeded` with reason `NoPendingSubtasks`.
 
-!!! tip "Subtasks vs a long initial prompt"
-    A single massive goal prompt forces the agent to plan and execute in one context
-    window. Subtasks let the agent declare its plan as structured CRs, then focus on
-    one step at a time - improving reliability on long implementation tasks.
+!!! note "Selection and drain semantics"
+    At most one subtask per Task is `Running` at a time. The reconciler selects the
+    lowest-`order` `Pending` (or empty-phase) subtask each cycle; ties break by creation time.
+    The Task terminates `Succeeded` once no `Pending` subtasks remain.
 
-!!! warning "Subtasks are not retried automatically"
-    A `Failed` subtask is terminal. The parent Task transitions to `Failed` unless the
-    Task kind's reconciler has explicit retry logic. Do not delete and recreate a subtask
-    to force a retry without verifying the parent Task is still in an active phase.
+!!! warning "A `Failed` subtask does not fail the parent Task"
+    In the generic turn loop a `Failed` subtask is simply skipped by the next-subtask selector;
+    it is not retried and it does **not** flip the parent Task to `Failed`. If it is the last
+    non-`Done` step, the Task still drains to `Succeeded` (`NoPendingSubtasks`). The parent Task
+    goes `Failed` only through the turn-submit error path (turn timeout, max-turns, or an agent
+    error), not because a subtask reached `Failed`. Deleting and recreating a subtask to force a
+    retry only works while the parent Task is still in an active phase.
 
 ---
 

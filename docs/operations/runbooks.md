@@ -6,6 +6,25 @@ title: Runbooks
 
 Operational runbooks for common tatara failure scenarios. Each entry lists symptoms, diagnosis steps, and the fix.
 
+!!! note "Memory-stack naming and selectors"
+    The memory stack is **per-Project**, not a single flat `tatara-memory` workload.
+    Every object is owned by its `Project` CR and named `mem-<project>-*`:
+
+    | Workload | Kind | Name | Port | Component label |
+    |---|---|---|---|---|
+    | Memory API | Deployment + Service | `mem-<project>` | 8080 | (none) |
+    | Neo4j | StatefulSet | `mem-<project>-neo4j` | 7687 bolt / 7474 http | `neo4j` |
+    | LightRAG | Deployment | `mem-<project>-lightrag` | 9621 | `lightrag` |
+    | Postgres | CNPG `Cluster` | `mem-<project>-pg` (rw svc `mem-<project>-pg-rw`) | 5432 | - |
+
+    Every object carries `app.kubernetes.io/name=tatara-memory`,
+    `app.kubernetes.io/instance=mem-<project>`, and `tatara.dev/project=<project>`;
+    Neo4j and LightRAG additionally carry `app.kubernetes.io/component`. There is no
+    `app=tatara-memory` label and no `-c lightrag` container - LightRAG is its own
+    Deployment. Select one project's whole stack with
+    `-l app.kubernetes.io/instance=mem-<project>`, or every project's memory API with
+    `-l app.kubernetes.io/name=tatara-memory`.
+
 ---
 
 ## Agent pod stuck / no turns completing
@@ -21,7 +40,7 @@ kubectl -n tatara logs <pod-name> -c wrapper --previous   # if restarted
 
 **Common causes:**
 1. **Boot quiescence timeout** - claude process hung during boot dialog detection. Check logs for `bootWait` timeout. Fix: delete the pod; the operator respawns.
-2. **Anthropic API key invalid** - `ANTHROPIC_API_KEY` expired or revoked. Update the Secret and restart.
+2. **Anthropic credential invalid** - the wrapper authenticates with `CLAUDE_CODE_OAUTH_TOKEN`, injected from the `oauth-token` key of the Anthropic Secret (`anthropicSecretName`). An expired or revoked token fails boot. Update the Secret key and let the operator respawn the pod.
 3. **OIDC token fetch failure** - Keycloak unreachable. Check `OIDC_ISSUER` and Keycloak health.
 4. **MCP server not starting** - `tatara mcp` fails at init. Check `TATARA_MEMORY_URL` and `TATARA_OPERATOR_URL` are reachable from the pod.
 
@@ -38,7 +57,7 @@ kubectl -n tatara get queuedevents
 ```
 
 **Common causes:**
-1. **HMAC signature mismatch** - webhook secret in GitHub/GitLab settings doesn't match `WEBHOOK_SECRET` env. Resync the secret.
+1. **HMAC signature mismatch** - the secret configured in the GitHub/GitLab webhook does not match the `webhookSecret` key in the Project's `scmSecretRef` Secret (there is no global `WEBHOOK_SECRET` env; the secret is per-Project). Resync the SOPS-encrypted value and the SCM-side webhook config.
 2. **Reporter allowlist drop** - `spec.scm.reporterLogins` is set and the issue author is not in the list. Intentional if you set this; add the account or clear the list.
 3. **WebhookURL not registered** - check `Project.status.webhookURL` and confirm it matches the GitHub/GitLab webhook URL. The URL is set automatically on Project reconcile.
 4. **Bot-authored issue** - the operator ignores issues authored by `botLogin` to prevent self-loops. Expected behavior.
@@ -47,20 +66,21 @@ kubectl -n tatara get queuedevents
 
 ## Memory stack unavailable
 
-**Symptoms:** Agent logs show `connection refused` to tatara-memory, or `ECONNREFUSED` to the memory URL.
+**Symptoms:** Agent logs show `connection refused` to the memory endpoint
+(`http://mem-<project>.<ns>.svc:8080`), or `ECONNREFUSED` to the memory URL.
 
-**Diagnosis:**
+**Diagnosis:** (substitute the affected `<project>`)
 ```bash
-kubectl -n tatara get pods -l app=tatara-memory
-kubectl -n tatara logs svc/tatara-memory
-kubectl -n tatara describe project <project-name> | grep -A5 Memory
+kubectl -n tatara get pods -l app.kubernetes.io/instance=mem-<project>
+kubectl -n tatara logs deploy/mem-<project>
+kubectl -n tatara describe project <project> | grep -A5 -i memory
 ```
 
 **Common causes:**
-1. **CNPG cluster not ready** - check `kubectl -n tatara get clusters` (cnpg). On first create, allow 2-3 minutes.
-2. **LightRAG container crash** - OOM or startup error. Check `kubectl -n tatara logs deploy/tatara-memory -c lightrag`.
-3. **Neo4j PVC not bound** - `kubectl -n tatara get pvc | grep neo4j`. If `Pending`, storage class may not have capacity.
-4. **Cold-start transient** - a freshly created Project's memory stack takes ~60s to become ready. Ingest jobs and agent turns will retry automatically.
+1. **CNPG cluster not ready** - check `kubectl -n tatara get cluster mem-<project>-pg`. On first create, allow 2-3 minutes.
+2. **LightRAG crash** - OOM or startup error. LightRAG is its own Deployment: `kubectl -n tatara logs deploy/mem-<project>-lightrag`.
+3. **Neo4j PVC not bound** - `kubectl -n tatara get pvc -l app.kubernetes.io/instance=mem-<project>,app.kubernetes.io/component=neo4j`. If `Pending`, the storage class may lack capacity.
+4. **Cold-start transient** - a freshly created Project's memory stack takes ~60s to become ready. Ingest jobs and agent turns retry automatically.
 
 ---
 
@@ -124,14 +144,14 @@ kubectl -n tatara delete autoscalinglistener <stale-name>
 
 ## Neo4j EIO errors (not data loss)
 
-**Symptoms:** Agent `code_graph_*` MCP calls fail; tatara-memory logs show `EIO` on Neo4j queries.
+**Symptoms:** Agent `code_graph_*` MCP calls fail; `mem-<project>` logs show `EIO` on Neo4j queries.
 
-**Fix:**
+**Fix:** (restart the affected project's Neo4j pod)
 ```bash
-kubectl -n tatara delete pod -l app=neo4j
+kubectl -n tatara delete pod -l app.kubernetes.io/instance=mem-<project>,app.kubernetes.io/component=neo4j
 ```
 
-**Root cause:** Poisoned page-cache after Ceph OSD crash/recovery. The EIO is a cache-read error, not data loss. Restarting Neo4j clears the page cache; data is intact in the underlying CephFS.
+**Root cause:** Poisoned page-cache after Ceph OSD crash/recovery. The EIO is a cache-read error, not data loss. Restarting Neo4j clears the page cache; data is intact in the underlying storage. Neo4j is a read-projection rebuildable from CNPG via a full re-ingest, so even a lost PVC is recoverable.
 
 ---
 

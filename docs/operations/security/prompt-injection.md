@@ -58,7 +58,7 @@ All code changes are visible as a PR. A human reviewer can detect injected behav
 
 | Threat | Defense |
 |---|---|
-| Malicious issue body tricks agent into exfiltrating secrets | `reporterLogins` allowlist drops non-allowlisted issues before processing; agent pods have no egress outside in-cluster by default; Anthropic API key is in-pod Secret only |
+| Malicious issue body tricks agent into exfiltrating secrets | `reporterLogins` allowlist drops non-allowlisted issues before processing; agent pod egress is constrained by the managed NetworkPolicy (DNS + allowlisted in-cluster services + `443` for SCM/Anthropic/Keycloak); the Anthropic credential (`CLAUDE_CODE_OAUTH_TOKEN`) is mounted from an in-pod Secret only |
 | Issue body instructs agent to push to unrelated branch | Bot PAT only has `repo` scope on enrolled repos; no cross-org access |
 | Issue body instructs agent to open PR to a different repo | Agent clones only repos in `reposInScope`; push is gated to the task branch on enrolled repos |
 | Issue body sets up a loop (agent reopens closed issue) | Dedup by issue ref; a closed issue's lifecycle task is terminal and not re-queued |
@@ -71,5 +71,5 @@ All code changes are visible as a PR. A human reviewer can detect injected behav
 2. **Always set `maintainerLogins`** - enforce the gated approval chain
 3. **Use `mergePolicy: afterApproval`** - require human merge
 4. **Enable branch protection** - require PR review before merge on enrolled repos
-5. **Monitor intake rejections** - `operator_webhook_events_total{result="dropped"}` counts dropped events at intake
+5. **Monitor intake rejections** - a reporter-allowlist drop is counted as `operator_webhook_events_total{result="ignored"}` (there is no `dropped` result value; querying `result="dropped"` returns nothing and any alert on it would silently never fire). Note `ignored` also covers other benign no-op events (bot-authored, non-actionable actions), so scope the query by `kind`/`action` when alerting.
 6. **Audit commits** - `git log --author=<botEmail>` to review all autonomous commits

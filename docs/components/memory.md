@@ -275,7 +275,7 @@ The service pod runs fully hardened:
 
 ## Chart dependencies and NetworkPolicy
 
-The `tatara-memory` chart (v0.3.1) declares three subchart dependencies:
+The `tatara-memory` chart (v0.4.0) declares three subchart dependencies:
 
 | Subchart | Version | Source | Condition key |
 |----------|---------|--------|---------------|
