@@ -114,6 +114,7 @@ nav:
     - concepts/index.md
     - The Agentic Operating Model: concepts/agentic-model.md
     - Why tatara: concepts/why-tatara.md
+    - Portability & Requirements: concepts/portability.md
   - Getting Started:
     - getting-started/index.md
     - Prerequisites: getting-started/prerequisites.md
