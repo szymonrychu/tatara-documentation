@@ -4,7 +4,7 @@ title: Architecture
 
 # Architecture
 
-How the nine tatara components fit together, how data flows through the system, and the key design decisions that shape the platform.
+How the eight tatara components fit together, how data flows through the system, and the key design decisions that shape the platform.
 
 <div class="grid cards" markdown>
 
@@ -44,7 +44,7 @@ How the nine tatara components fit together, how data flows through the system, 
 
     ---
 
-    tatara-helmfile, Argo Workflows, ARC runners, and why `kubectl set-image` is forbidden.
+    tatara-helmfile, component CI, ARC runners, and why `kubectl set-image` is forbidden.
 
     [:octicons-arrow-right-24: CI/CD & Deploy](ci-cd.md)
 
@@ -65,7 +65,7 @@ graph LR
     I -->|REST| E
     J[Grafana alerts] -->|alert webhook| B
     K[tatara-observability] -->|terraform apply| J
-    L[tatara-argo-workflows] -->|CI: builds images+charts| M[Harbor OCI]
+    L[Component repo CI] -->|builds images+charts| M[Harbor OCI]
     M -->|helmfile pulls| N[tatara-helmfile]
     N -->|GitOps deploy| B
     C -->|chat rooms| O[tatara-chat]

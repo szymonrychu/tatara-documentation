@@ -10,7 +10,7 @@ Tatara enforces a strict GitOps-only deploy model. No component is ever deployed
 
 ```mermaid
 flowchart TD
-    A[Developer merges to component repo main] --> B[Argo Workflows CI\nbuild + test + lint]
+    A[Developer merges to component repo main] --> B[Component repo CI\nbuild + test + lint]
     B --> C[Image pushed to Harbor]
     B --> D[Chart packaged + pushed to Harbor OCI]
     C --> E[Open PR to tatara-helmfile\nbump image.tag + chart version]
@@ -33,9 +33,9 @@ Both must point to the same `main` commit SHA. A chart-only bump leaves the old 
 !!! warning "Keep chart pins recent"
     Harbor retains only a bounded number of chart tags. A pin pointing to a chart published months ago fails `helmfile apply` with "chart not found". Always track main HEAD.
 
-## Argo Workflows CI
+## Component CI
 
-Component repos build via `ClusterWorkflowTemplate` resources in tatara-argo-workflows. The template is triggered by GitHub webhook on push to `main` or PR.
+Component repos build via per-repo CI triggered by GitHub webhook on push to `main` or PR. `tatara-argo-workflows` was decommissioned (2026-07-05); it was homelab GitLab CI, never part of the tatara platform runtime. The in-cluster `argo-workflows` Helm release remains as separate, unrelated homelab infrastructure.
 
 **Image build:** rootless `buildkitd` on a Ceph PVC (durable). TCP probes (not exec probes) on the buildkitd Service. Single-arch builds for the homelab cluster.
 

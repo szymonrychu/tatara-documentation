@@ -38,7 +38,7 @@ Tatara addresses both by running a continuous, autonomous loop: it reads your is
 
 **Not a hosted service.** You deploy tatara to your own Kubernetes cluster, connect it to your own GitHub or GitLab organization, and supply your own Keycloak instance for OIDC and your own Anthropic API key.
 
-**Not a monolith.** Nine independent component repos, each with its own Helm chart, CI pipeline, and release lifecycle. You can adopt components incrementally.
+**Not a monolith.** Eight independent component repos, each with its own Helm chart, CI pipeline, and release lifecycle. You can adopt components incrementally.
 
 **Not autonomous with unchecked write access.** Every implementation requires human approval in the issue thread. Every PR requires human review and merge (under the default `afterApproval` policy). The agent cannot merge its own code.
 

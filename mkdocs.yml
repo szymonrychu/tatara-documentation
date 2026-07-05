@@ -135,7 +135,6 @@ nav:
     - tatara-claude-code-wrapper: components/claude-code-wrapper.md
     - tatara-memory-repo-ingester: components/repo-ingester.md
     - tatara-chat: components/chat.md
-    - tatara-argo-workflows: components/argo-workflows.md
     - tatara-helmfile: components/helmfile.md
     - tatara-observability: components/observability.md
   - Custom Resources:

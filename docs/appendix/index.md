@@ -34,7 +34,6 @@ The component and platform-infra repos are public:
 - [tatara-claude-code-wrapper](https://github.com/szymonrychu/tatara-claude-code-wrapper/tree/main/docs)
 - [tatara-memory-repo-ingester](https://github.com/szymonrychu/tatara-memory-repo-ingester/tree/main/docs)
 - [tatara-chat](https://github.com/szymonrychu/tatara-chat/tree/main/docs)
-- [tatara-argo-workflows](https://github.com/szymonrychu/tatara-argo-workflows/tree/main/docs)
 - [tatara-helmfile](https://github.com/szymonrychu/tatara-helmfile/tree/main/docs)
 - [tatara-observability](https://github.com/szymonrychu/tatara-observability/tree/main/docs)
 

@@ -4,7 +4,7 @@ title: Components
 
 # Components
 
-Tatara is split into nine independent GitHub repositories. Each ships its own
+Tatara is split into eight independent GitHub repositories. Each ships its own
 Helm chart (or deploy mechanism), CI pipeline, and independent release lifecycle.
 There is no umbrella helmfile and no monorepo. Components compose into the
 platform at runtime but version, build, and deploy in isolation.
@@ -21,7 +21,6 @@ platform at runtime but version, build, and deploy in isolation.
 | [`tatara-claude-code-wrapper`](claude-code-wrapper.md) | Single-session Claude Code supervisor over PTY; submits turns, captures results via Stop hook | Go + Claude Code | K8s Pod - ephemeral, one per Task, spawned by operator | 4 |
 | [`tatara-memory-repo-ingester`](repo-ingester.md) | Stateless batch ingester: language-aware static analysis, code graph + semantic chunk push to memory | Go | K8s Job - ephemeral, spawned per ingest cycle by operator | 3 |
 | [`tatara-chat`](chat.md) | Durable OIDC-gated agent-to-agent chat rooms with cursor-based delivery and long-poll | Go | Helm chart (`tatara-chat`) -> K8s Deployment | 7 |
-| [`tatara-argo-workflows`](argo-workflows.md) | CI/CD substrate: ClusterWorkflowTemplates for Go/chart builds and SCM status reporting | Argo Workflows YAML | Helm chart -> ClusterWorkflowTemplates + namespace Secrets | 5 |
 | [`tatara-helmfile`](helmfile.md) | GitOps helmfile: owns all platform Helm releases and enrollment CRs; deploys on merge via in-cluster ARC runner | Helmfile + YAML | GitHub Actions + in-cluster ARC runner | - |
 | [`tatara-observability`](observability.md) | Observability-as-code: Grafana alert rules applied by Terraform on merge to main | Terraform + YAML | GitHub Actions | - |
 
@@ -34,7 +33,7 @@ platform at runtime but version, build, and deploy in isolation.
 
 ## Plane model
 
-The nine components fall into three functional layers.
+The eight components fall into three functional layers.
 
 ### Control plane
 
@@ -65,7 +64,6 @@ They do not participate in the core agent turn loop.
 
 | Component | Responsibility |
 |---|---|
-| `tatara-argo-workflows` | CI/CD substrate. Builds and pushes container images and Helm charts via `ClusterWorkflowTemplates` triggered by push and tag events across all enrolled component repos. Reports commit statuses back to GitHub. |
 | `tatara-chat` | Inter-agent coordination. Durable chat rooms (one per implementation stream) let parallel agent subagents exchange findings mid-session without polling the operator. |
 | `tatara-observability` | Platform alerting. Defines Grafana alert rules as declarative YAML; on firing, alerts labelled `system=tatara` route to the operator's Grafana webhook endpoint, which opens an `incident` Task. |
 
@@ -152,19 +150,6 @@ They do not participate in the core agent turn loop.
 
     [:octicons-arrow-right-24: tatara-chat](chat.md)
 
--   :material-workflow: **tatara-argo-workflows**
-
-    ---
-
-    Ships `ClusterWorkflowTemplates` (`tatara-go-ci`, `tatara-go-release`,
-    `tatara-memory-tag`) and namespace Secrets into the `tatara` namespace via a
-    Helm chart. Push and tag events from enrolled repos flow through the infra
-    Argo Events EventSource, an NATS EventBus, and a generic Sensor into Workflow
-    submissions. Every atomic CWT step reports a `tatara/ci` commit status to
-    GitHub on start and exit.
-
-    [:octicons-arrow-right-24: Argo Workflows](argo-workflows.md)
-
 -   :material-ship-wheel: **tatara-helmfile**
 
     ---
@@ -235,7 +220,10 @@ sequenceDiagram
 ### CI/CD supply chain
 
 Component images and charts move from source repo to the cluster through the
-CI/CD supply chain, never by hand:
+CI/CD supply chain, never by hand. `tatara-argo-workflows` was decommissioned
+(2026-07-05); it was homelab GitLab CI, never part of the tatara platform
+runtime. The in-cluster `argo-workflows` Helm release remains as separate,
+unrelated homelab infrastructure.
 
 ```mermaid
 graph LR
@@ -246,8 +234,8 @@ graph LR
         R4[tatara-claude-code-wrapper]
     end
 
-    subgraph "tatara-argo-workflows"
-        AW[ClusterWorkflowTemplates\nGo CI / release / tag]
+    subgraph "Component repo CI"
+        CI[build + test + lint\nimage + chart publish]
     end
 
     subgraph "Artifact registry"
@@ -260,8 +248,8 @@ graph LR
         K8s[Kubernetes cluster]
     end
 
-    R1 & R2 & R3 & R4 -->|push / tag event| AW
-    AW -->|docker push + helm push| H
+    R1 & R2 & R3 & R4 -->|push / tag event| CI
+    CI -->|docker push + helm push| H
     H -->|version pin bump PR| HF
     HF -->|merge to main| ARC
     ARC -->|helmfile apply| K8s
@@ -288,7 +276,6 @@ graph TB
 
     subgraph Sup["Supporting"]
         Obs[tatara-observability\nGrafana alerts via Terraform]
-        ArgoW[tatara-argo-workflows\nCI ClusterWorkflowTemplates]
         Chat[tatara-chat\nagent chat rooms]
     end
 
@@ -304,7 +291,6 @@ graph TB
     Wrap -->|REST| Chat
     Ing -->|REST| Mem
     Obs -->|Grafana alert webhook| Op
-    ArgoW -->|images + charts to Harbor| HF
 ```
 
 ---
