@@ -8,12 +8,7 @@ title: Bot Identity
 
 Tatara operates under a **dedicated bot GitHub/GitLab account**, separate from any human developer account. For the reference deployment this is `szymonrychu-bot`. For your deployment, create a separate machine account before enrolling any repositories.
 
-**Why a dedicated account:**
-
-- **Audit trail:** all autonomous commits and PR comments are clearly attributed to the bot, not to a human developer's personal account.
-- **Permission scoping:** the bot only needs `repo` + `read:org` on the enrolled repositories, not full org admin.
-- **Revocability:** revoking the bot's PAT immediately stops all tatara activity without affecting any human accounts.
-- **Dedup loop prevention:** the operator gates on `botLogin` to avoid reacting to its own PR events, preventing infinite loops.
+A dedicated account gives autonomous work its own attributable identity, a PAT you can scope and revoke independently of humans, and a stable `botLogin` the operator keys its self-loop and self-approval guards on. The load-bearing enforcement is in the two subsections below (approver-set exclusion, projected token mount), not in the choice of account itself.
 
 ## Required PAT scopes
 
@@ -44,7 +39,12 @@ stringData:
   token: "<bot-pat>"
 ```
 
-This Secret is managed as a SOPS-encrypted raw manifest (not via Helm chart - the chart only templates the reference to the Secret name). The operator reads it via projected volume.
+The key within the Secret is exactly `token` (validated alongside `webhookSecret` at Project reconcile; a missing/empty key holds the Project not-ready with `SecretMissingKeys`). This Secret is managed as a SOPS-encrypted raw manifest, not via the Helm chart - the chart only templates the reference to the Secret name.
+
+Two consumers read the `token` key:
+
+- **Operator (server-side):** reads `token` via the Kubernetes API for its own SCM write-backs (comments, labels, approvals, PR opens) and read scans.
+- **Wrapper pods:** the operator injects it as the `GIT_TOKEN` env var via a `SecretKeyRef` from the same `token` key, so the agent's `git`/SCM operations run as the bot. The token is never baked into the pod spec or image.
 
 ## Bot as commit author
 
@@ -61,9 +61,9 @@ GitHub and GitLab have dedicated noreply commit email formats for bot accounts. 
 
 ## Bot exclusion from approval gates
 
-`spec.scm.maintainerLogins` must NOT include `botLogin`. The operator unconditionally excludes `botLogin` from the approver set at the controller level - a bot-authored comment can never self-approve an implementation, regardless of `maintainerLogins` configuration.
+`spec.scm.maintainerLogins` must NOT include `botLogin`. The self-approve guard does not depend on that convention: the approval-comment scan skips any comment authored by `botLogin` before the approver-membership check runs (`if c.Author == "" || c.Author == botLogin { continue }` in the lifecycle controller), so a bot-authored comment can never release the self-approve hold or count as an approval - even if `botLogin` were mistakenly listed in `maintainerLogins`.
 
-This is enforced in code, not through configuration. Setting `botLogin` in `maintainerLogins` would be silently ignored.
+This is enforced in code, not through configuration. See [Approval Gates](approval-gates.md) for how the self-approve hold and the human-comment release fit into the full merge-gate flow.
 
 ## One OIDC identity for all agent pods
 

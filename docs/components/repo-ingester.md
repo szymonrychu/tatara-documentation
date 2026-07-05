@@ -73,12 +73,14 @@ The Go analyzer uses `go/packages` to perform full type resolution. Call edges c
 
 | Resolution level | Score | Tier |
 |---|---|---|
-| type_resolved | 0.98 | EXTRACTED |
+| type_resolved | 0.98 | INFERRED |
 | scoped_name_match | 0.85 | INFERRED |
 | imported_name_match | 0.70 | INFERRED |
 | global_name_match | 0.45 | INFERRED |
 | ambiguous_multi_def | 0.20 | AMBIGUOUS |
 | unresolved | 0.00 | AMBIGUOUS |
+
+`TierForScore` assigns `EXTRACTED` only for a score `>= 1.0`, `INFERRED` for `(0.3, 1.0)`, and `AMBIGUOUS` for `<= 0.3`. The highest-confidence Go call edge (`type_resolved`, 0.98) still lands in the `INFERRED` band, so in practice **no Go call edge reaches the `EXTRACTED` tier** - that tier is reserved for score-1.0 sources such as a SCIP index. Filter on `?tier=INFERRED` (not `EXTRACTED`) to pick up type-resolved Go calls.
 
 Cross-repo symbol references (packages under a configurable `crossRepoPrefix`, defaulting to `github.com/szymonrychu/`) are emitted as `SymbolRow` records so `tatara-memory` can link entities across repository boundaries.
 

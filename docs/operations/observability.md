@@ -15,7 +15,7 @@ holds the full per-component Grafana alert rule set managed as code and applied 
 ```mermaid
 graph LR
     A["operator :9090\n/metrics"] -->|"ServiceMonitor\n30 s interval"| P[Prometheus]
-    W["wrapper pods\nephemeral"] -->|"push /internal/metrics"| PR["operator\npush receiver"]
+    W["wrapper pods\nephemeral"] -->|"POST /internal/metrics/push"| PR["operator\npush receiver"]
     PR --> P
     P --> D["Grafana\nTatara Loop dashboard"]
     P --> R["PrometheusRule\ntatara-loop group"]
@@ -41,9 +41,9 @@ reachable in-cluster via the Service; the optional Ingress covers only the main 
 
 | Metric | Labels | Description |
 |---|---|---|
-| `operator_reconcile_total` | `controller`, `result` | Reconcile attempts per resource kind. Result is `ok` or `error`. The primary health denominator for the control loop. |
-| `operator_task_terminal_total` | `kind`, `phase`, `reason` | Every Task terminal transition, incremented once at the `terminate()` chokepoint. `phase` is `Succeeded`, `Failed`, `Done`, `Stopped`, or `Parked`; `reason` carries the failure class (e.g. `PodLost`, `TurnTimeout`, `PlanningStalled`, `BootCrashLoop`). This is the uniform loop success / failure denominator - do NOT use `operator_reconcile_total` as a proxy for task outcomes. |
-| `operator_task_tokens_total` | `project`, `repo`, `kind`, `issue`, `type` | Cumulative agent token spend. `type` is `input` or `output`. Provides the global / project / repo / issue cost breakdown visible in the dashboard. |
+| `operator_reconcile_total` | `kind`, `result` | Reconcile attempts per resource kind. `kind` is the CR type (`Project`, `Repository`, `Task`); `result` is `ok` or `error`. The primary health denominator for the control loop. |
+| `operator_task_terminal_total` | `kind`, `phase`, `reason` | Every Task terminal transition, incremented once at the `terminate()` chokepoint. `phase` is only ever `Succeeded` or `Failed` - the two `Task.Status.Phase` terminal values that `terminate()` passes. (`Done`, `Stopped`, and `Parked` are `Status.LifecycleState` values, not `Phase`, and no code path feeds them to this counter.) `reason` carries the failure class (e.g. `PodLost`, `TurnTimeout`, `PlanningStalled`, `BootCrashLoop`). This is the uniform loop success / failure denominator - do NOT use `operator_reconcile_total` as a proxy for task outcomes. |
+| `operator_task_tokens_total` | `project`, `repo`, `kind`, `issue`, `model`, `type` | Cumulative agent token spend. `type` is `input`, `output`, `cache_read`, or `cache_creation`; `model` carries the resolved Claude model ID (this is what the dashboard's per-model breakdown keys on). Provides the global / project / repo / issue / model cost breakdown visible in the dashboard. |
 | `tatara_scan_tasks_created_total` | - | Tasks created by the hourly scan. Zero for 3+ hours is the scan-stall deadman signal. |
 | `tatara_scan_items_total` | - | Items (issues / MRs) evaluated per scan. Used alongside `tatara_scan_tasks_created_total` for the loop-liveness check. |
 | `tatara_lifecycle_giveup_total` | `reason` | Issue-lifecycle Tasks abandoned by the loop. |
@@ -54,7 +54,7 @@ reachable in-cluster via the Service; the optional Ingress covers only the main 
 | `operator_ingest_job_total` | `result`, `mode` | Repo ingest job completions. `mode=full` distinguishes scheduled / self-heal full re-ingests from incremental runs. |
 | `operator_scm_writes_total` | `kind`, `result` | SCM write-backs (comments, labels, approvals, PRs). `kind=write` / `kind=read`; `result=ok` or `result=error`. |
 | `operator_scm_request_errors_by_status_total` | `verb`, `status` | SCM errors broken down by HTTP verb and status code. Use this to distinguish token failures (401/403), rate limits (429), or network errors from a write error alert. |
-| `operator_webhook_events_total` | `result` | Inbound SCM webhook events. `result` includes `ok`, `error`, `bad_signature`, `bad_request`. |
+| `operator_webhook_events_total` | `provider`, `kind`, `action`, `result` | Inbound SCM webhook events, keyed by provider (`github`/`gitlab`), event `kind` (`push`/`issue`/`mr`/`other`), `action`, and `result`. There is no `ok` result: an accepted delivery is `accepted` or (when it spawns work) `task_created`. Other `result` values: `ignored`, `duplicate`, `no_repo`, `unknown_project`, `provider_mismatch`, `too_large`, `bad_signature`, `bad_request`, `reactivated`, `error`. A reporter-allowlist intake drop is counted as `ignored` (not `dropped` - there is no `dropped` value). |
 | `operator_writeback_outcome_total` | `result` | Writeback disposition per Task: `ok`, `skip_4xx`, `skip_4xx_capped` (permanent give-up). |
 | `operator_writeback_skip_4xx_total` | `status`, `reason` | Per-skip detail when a writeback is skipped on a 4xx. |
 | `operator_reap_delete_error_total` | - | Failures in the orphan-pod reaper. |
@@ -72,9 +72,12 @@ reachable in-cluster via the Service; the optional Ingress covers only the main 
 
 | Metric | Labels | Description |
 |---|---|---|
-| `operator_reconcile_duration_seconds` | `controller` | Reconcile wall-clock time per kind. |
-| `operator_turn_submit_duration_seconds` | - | SubmitTurn latency from the operator to the wrapper pod HTTP API. p95 > 30 s fires an alert. |
-| `operator_agent_http_total` | `outcome` | Wrapper HTTP call results. `outcome` includes `ok`, `unreachable`, `timeout`, `transport_error`. |
+| `operator_turn_submit_duration_seconds` | `kind` | SubmitTurn latency from the operator to the wrapper pod HTTP API. Buckets `ExponentialBuckets(0.05, 2, 10)` top out at 25.6 s. p95 above `prometheusRule.turnSubmitP95LatencyThreshold` (default `5` s, not 30) fires `TataraTurnSubmitLatencyHigh`. |
+| `operator_turn_duration_seconds` | - | Wall-clock duration of a completed agent turn. |
+| `operator_agent_http_duration_seconds` | `method` | Wall-clock duration of operator-to-wrapper HTTP calls, per HTTP method. |
+| `operator_ingest_job_duration_seconds` | - | Wall-clock duration of a completed repo-ingest Job. |
+
+There is no `operator_reconcile_duration_seconds` histogram. `operator_agent_http_total` (labels `method`, `outcome`; `outcome` includes `ok`, `unreachable`, `timeout`, `transport_error`) is a **counter**, not a histogram - the wrapper HTTP call latency lives in `operator_agent_http_duration_seconds` above.
 
 ### Push-receiver / wrapper series
 
@@ -83,20 +86,28 @@ Ephemeral agent pods (wrapper, ingest) cannot be scraped directly - they have no
 metrics to the operator's push receiver at the end of each run. The operator re-exposes
 them through its own `/metrics`.
 
-The allowlist is controlled by the `pushMetricsAllowedPrefixes` Helm value (default:
-`wrapper_,agent_,memory_,ingest_`). Series whose name does not match any prefix are
-dropped and counted in `operator_push_series_dropped_total{reason="reserved_name"}`.
+The allowlist is controlled by the `pushMetricsAllowedPrefixes` Helm value. The chart
+default (kept in sync with the code fallback `DefaultAllowedPrefixes`) is:
+
+```
+wrapper_,agent_,ccw_,tatara_wrapper_,ingest_,analyzer_,semantic_,scip_,llm_
+```
+
+`ccw_` and `tatara_wrapper_` (the wrapper families) and `ingest_,analyzer_,semantic_,scip_,llm_`
+(the repo-ingester families) are all admitted out of the box, so the `ccw_*` series below are
+present with no allowlist edit. Series whose name matches no prefix are dropped and counted in
+`operator_push_series_dropped_total{reason="reserved_name"}`.
 
 | Metric | Labels | Description |
 |---|---|---|
-| `operator_push_receive_total` | `result` | Push receive outcomes (`ok`, `rejected`). Rejected pushes mean wrapper metrics are being lost. |
-| `operator_push_series_dropped_total` | `reason` | Metric name families dropped by the allowlist. |
-| `ccw_turns_total` | `result` | Claude turns per wrapper run. Requires `ccw_` in the allowlist. |
-| `ccw_turn_tokens_total` | - | Tokens consumed per wrapper run. Requires `ccw_` in the allowlist. |
-| `ccw_commit_push_total` | `result` | Git commit + push attempts from the wrapper. Requires `ccw_` in the allowlist. |
-| `ccw_http_requests_total` | `status_code` | Operator callback HTTP responses as seen by the wrapper. Requires `ccw_` in the allowlist. |
-| `ccw_http_panics_total` | - | Recovered panics in the wrapper HTTP handler. Requires `ccw_` in the allowlist. |
-| `ccw_lifecycle_hook_total` | `hook`, `result` | Lifecycle hook executions (`preClone`, `postClone`, etc.). Requires `ccw_` in the allowlist. |
+| `operator_push_receive_total` | `result` | Push receive outcomes: `accepted`, `rejected`, `too_large`, `deleted`, `empty`. `rejected` pushes mean wrapper metrics are being lost. |
+| `operator_push_series_dropped_total` | `reason` | Metric name families dropped by the allowlist (`reason=reserved_name`), or on a `type_conflict` / `build_error`. |
+| `ccw_turns_total` | `result` | Claude turns per wrapper run. |
+| `ccw_turn_tokens_total` | - | Tokens consumed per wrapper run. |
+| `ccw_commit_push_total` | `result` | Git commit + push attempts from the wrapper. |
+| `ccw_http_requests_total` | `status_code` | Operator callback HTTP responses as seen by the wrapper. |
+| `ccw_http_panics_total` | - | Recovered panics in the wrapper HTTP handler. |
+| `ccw_lifecycle_hook_total` | `hook`, `result` | Lifecycle hook executions (`preClone`, `postClone`, etc.). |
 
 !!! warning "Push series are unreliable for rate-based alerts"
     Because pushed series TTL-evict and reset their run ID per pod lifecycle, `rate()`,
@@ -134,6 +145,7 @@ select any Prometheus instance in the cluster. Two additional template variables
 | **Failures and scan cadence** | Failure rates (timeseries), Ingest success ratio (timeseries), Scan cadence per hour (timeseries) |
 | **Task outcomes** | Terminal transitions by phase/reason per hour (timeseries), Task success-rate SLO 6h window (stat) |
 | **Token usage** | Total tokens by type (stat), Token rate by project 1h (timeseries), Token rate by repo 1h (timeseries), Top issues by tokens (table), Input vs output tokens (pie chart) |
+| **Token budget (issue #189)** | Token budget used ratio (timeseries), Admission blocked (token budget) (timeseries) |
 | **Memory corpus** | LightRAG documents by project/status (timeseries), Memory stacks by phase (pie chart) |
 
 ---
@@ -185,13 +197,22 @@ the loop has stopped producing work.
 | `TataraTurnTimeouts` | `increase(operator_turn_timeout_total[1h]) > 0` | Agent turns stalled past the inactivity deadline. |
 | `TataraAgentBootCrashLoop` | `increase(operator_agent_boot_crash_total{outcome="failed"}[30m]) > 0` | Wrapper pods exhausted the boot-respawn budget without `/readyz` coming up. |
 | `TataraAgentUnreachable` | `increase(operator_agent_unreachable_termination_total[15m]) > 0` | Tasks killed because wrapper stayed unreachable past the boot deadline. |
-| `TataraIngestJobFailing` | `increase(operator_ingest_job_total{result="failure",mode="full"}[1h]) > 0` | A full re-ingest failed; the recall corpus is going stale. Incremental failures that self-heal via the full-ingest fallback are excluded (`mode="full"` selector). |
+| `TataraIngestJobFailing` | `operator_repository_ingest_failing > 0` for 15 m | A repo is stuck in a failing ingest state (status `Phase=Failed` or unresolved consecutive failures); recall corpus going stale. Keys on the live per-repo gauge, so it clears the moment a re-ingest succeeds and does not linger after a transient incremental burst self-heals via the full-ingest fallback. |
+| `TataraIngestStale` | `(time() - operator_repository_last_ingest_timestamp_seconds) > ingestStaleAfterSeconds` for 30 m | A repo has not been re-ingested within the staleness budget (`prometheusRule.ingestStaleAfterSeconds`, default `93600` s / 26 h) even though no ingest Job is actively failing - e.g. the re-ingest cron is not landing. |
 | `TataraLifecycleGiveups` | `increase(tatara_lifecycle_giveup_total[1h]) > 0` | `issueLifecycle` Tasks gave up; the `reason` label identifies why. |
 | `TataraSCMWriteErrors` | `increase(operator_scm_writes_total{kind="write",result="error"}[15m]) > 0` | SCM write-backs (comments, labels, approvals, PRs) failing. Break down `operator_scm_request_errors_by_status_total` by `(verb, status)` to distinguish token, rate-limit, and network failures. |
 | `TataraSCMWriteFailureRatioHigh` | ratio > 30%, >= 3 writes attempted, for 15 m | Elevated fraction of SCM writes failing. Guards against alert spam during low-volume bursts. |
 | `TataraWritebackGaveUp4xx` | `increase(operator_writeback_outcome_total{result="skip_4xx_capped"}[1h]) > 0` | A Task permanently abandoned writeback on repeated 4xx; no PR was opened. Investigate via `operator_writeback_skip_4xx_total` by `(status, reason)`. |
-| `TataraPushMetricsRejected` | `increase(operator_push_receive_total{result="rejected"}[15m]) > 0` | Ephemeral pod metric pushes rejected at the allowlist; wrapper/ingest metrics are being lost. |
+| `TataraPushMetricsRejected` | `increase(operator_push_receive_total{result="rejected"}[15m]) > 0` | Ephemeral pod metric pushes rejected at the receiver; wrapper/ingest metrics are being lost. |
+| `TataraPushMetricsDropped` | `increase(operator_push_series_dropped_total{reason="reserved_name"}[15m]) > 0` | A short-lived pod pushed a metric family whose name matches no prefix in `pushMetricsAllowedPrefixes` (allowlist drift). Add the dropped prefix (logged at WARN by the receiver) to the value. |
+| `TataraTokenBudgetBlocked` | `increase(operator_admission_blocked_total{reason="token_budget"}[30m]) > 0` for 15 m | The token-budget admission gate is holding work for a project (the `project` and pool `class` are in the series labels). Expected when a window is genuinely exhausted; investigate if unexpected. Only fires where a `tokenBudget` block is configured - see [Tuning](tuning.md#cap-spend). |
 | `TataraReaperDeleteErrors` | `increase(operator_reap_delete_error_total[1h]) > 0` | Orphan-pod reaper cannot delete pods; zombie pod leak. |
+
+#### Class C: latency / saturation
+
+| Alert | Signal | Description |
+|---|---|---|
+| `TataraTurnSubmitLatencyHigh` | `histogram_quantile(0.95, operator_turn_submit_duration_seconds) > turnSubmitP95LatencyThreshold` for 15 m | SubmitTurn p95 latency above the threshold (`prometheusRule.turnSubmitP95LatencyThreshold`, default `5` s). The quantile is gated on `sum(rate(..._count[15m])) > 0` so idle windows yield no series (never a NaN false-fire). The histogram tops out at 25.6 s, so the threshold must be kept under that ceiling. |
 
 ### tatara-observability alert rules
 
@@ -298,20 +319,20 @@ container waiting reasons) are always available regardless of leader election.
 
 ### Push receiver allowlist
 
-The push receiver enforces a prefix allowlist on metric names. The chart default:
+The push receiver enforces a prefix allowlist on metric names. The chart default
+already admits every family the wrapper and repo-ingester pods actually push:
 
 ```yaml
-pushMetricsAllowedPrefixes: "wrapper_,agent_,memory_,ingest_"
+pushMetricsAllowedPrefixes: "wrapper_,agent_,ccw_,tatara_wrapper_,ingest_,analyzer_,semantic_,scip_,llm_"
 ```
 
 Series whose names do not match any prefix are dropped and counted in
-`operator_push_series_dropped_total{reason="reserved_name"}`. To enable the
-`ccw_*` wrapper push-series rules in `tatara-observability`, add `ccw_` to the
-allowlist in your helmfile values:
-
-```yaml
-pushMetricsAllowedPrefixes: "wrapper_,agent_,memory_,ingest_,ccw_"
-```
+`operator_push_series_dropped_total{reason="reserved_name"}`. Because `ccw_` and
+`tatara_wrapper_` are in the default, the `ccw_*` wrapper push-series rules in
+`tatara-observability` are active out of the box - no allowlist edit is required.
+Only edit `pushMetricsAllowedPrefixes` if a component starts pushing a new metric
+family under a prefix not in the list above (`TataraPushMetricsDropped` fires and
+the receiver logs the dropped family name at WARN).
 
 !!! note "Go runtime metrics from wrappers"
     Wrappers currently forward `go_*` and `process_*` runtime metrics to the push

@@ -46,7 +46,7 @@ Controls every agent pod spawned by this project.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `model` | `string` | operator default | Claude model ID (e.g. `claude-sonnet-4-6`). When empty the wrapper's own default applies. |
+| `model` | `string` | operator default | Claude model ID (e.g. `claude-opus-4-8` project-wide, tiered down per kind to `claude-sonnet-5`). When empty the wrapper's own default applies. |
 | `image` | `string` | operator default | Fully-qualified container image for the claude-code-wrapper pod. When empty the operator's compiled-in default is used. |
 | `permissionMode` | `string` | `bypassPermissions` | Claude Code permission mode. `bypassPermissions` disables interactive approval prompts inside the agent. |
 | `maxTurnsPerTask` | `int` | `50` | Hard ceiling on the number of agent turns per task. The task is failed when this limit is reached. |

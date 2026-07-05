@@ -14,14 +14,17 @@ in the merge/deploy path - only the significance declaration and the required CI
 Design: `docs/superpowers/specs/2026-06-28-semver-push-cd-design.md`. Cutover runbook:
 `docs/superpowers/plans/2026-06-28-semver-push-cd-cutover-runbook.md`.
 
-!!! note "Code is merged; full cascade not yet proven end-to-end"
-    The operator-side implementation is merged to `main` (`ab87f39`, PR #214) and the docs/rule
-    updates followed (`76fb3a8`). But as of this writing no automated semver tag has been cut
-    beyond the one-time seed tags, no `cd/deploy-train` branch exists on `tatara-helmfile` yet,
-    and the live `tatara-helmfile` operator pin is still a short-SHA, not `vX.Y.Z`. Treat the
-    mechanism as live code, not yet as a proven production cascade - check the cutover runbook's
-    one-time steps (tag seeding, `TATARA_CD_TOKEN`, branch protection/auto-merge, Harbor
-    retention) before assuming a merge will fully deploy.
+!!! note "Status: cascade proven end-to-end (as of 2026-07-05)"
+    Push-CD is live and the full cascade has run in production. The operator
+    self-deployed `v0.4.11` through its own semver trains (`#108`-`#112`), the
+    coalescing `cd/deploy-train` branch exists on `tatara-helmfile`, and the live
+    `tatara-helmfile` operator pin is a semver tag (`v0.4.11`), not a short-SHA.
+    Automated tags are cut from significance declarations, not just the one-time
+    seed tags. The only genuinely one-time prerequisites remain the cutover
+    runbook's seeding steps - initial `vX.Y.Z` seed tag per repo, the
+    `TATARA_CD_TOKEN` secret, branch-protection/auto-merge settings, and Harbor
+    retention - which you run once per repo when enrolling it into the cascade,
+    not on every deploy.
 
 ## End-to-end flow
 
@@ -43,7 +46,7 @@ sequenceDiagram
     CI->>Parent: cd-release bump: rewrite pin(s),\nopen bot PR labeled semver:patch, auto-merge
     Parent->>Parent: re-enters same auto-merge -> tag -> bump loop
     Parent->>HF: cd-release bump into cd/deploy-train\n(coalesced, create-or-update)
-    HF->>HF: helmfile diff green -> auto-merge -> apply.yaml\n(concurrency: cd-apply, serialized)
+    HF->>HF: helmfile diff green -> auto-merge -> apply.yaml\n(concurrency: tatara-helmfile-apply, serialized)
     HF-->>Cluster: helmfile apply
     Cluster-->>Op: Apply success observed (deploy ledger)
     Op->>Op: Resolve every matching Task in one sweep
@@ -60,11 +63,15 @@ sequenceDiagram
 - `minor` - backward-compatible new functionality.
 - `patch` - fix, or anything else.
 
-Because the field is required, an agent cannot produce a change summary - and therefore cannot
-get a PR opened - without declaring it. A missing or invalid value is rejected (HTTP 400) at the
-operator's REST handler. The value maps `changeSignificance` -> `Task.Status.ChangeSummary.Significance`.
-This is the **only** change to the agent-facing surface; all tag/merge/propagation logic lives in
-CI and the operator, not in any generic superpowers skill.
+Because the field is required, an agent cannot record a change summary without declaring it: a
+missing or invalid value is rejected (HTTP 400) at the operator's REST handler. The value maps
+`changeSignificance` -> `Task.Status.ChangeSummary.Significance`. Declaring significance is what
+makes a merged change **push-CD-eligible** (`pushCDEligible`); it does **not** gate PR opening. An
+implement/issueLifecycle PR whose agent never recorded a significance still opens - the operator
+logs a WARN (`writeback_no_significance`) and routes the merged change down the legacy
+close-and-Done path with no `semver:*` label and no auto-merge. This is the **only** change to the
+agent-facing surface; all tag/merge/propagation logic lives in CI and the operator, not in any
+generic superpowers skill.
 
 ## Component 2 - bot-gated auto-merge
 
@@ -74,11 +81,16 @@ After the PR opens, the operator (`writeback.go`, `applySemverAutoMerge`):
 2. Enables native GitHub auto-merge (GraphQL `enablePullRequestAutoMerge`) **only when both**
    hold: `Task.Status.ChangeSummary.Significance` is set, **and** the PR author is the bot
    (`szymonrychu-bot`).
-3. If significance is absent, the PR is not opened / auto-merge is not enabled; the agent is
-   re-prompted to declare it.
+3. If significance is absent, `applySemverAutoMerge` returns early: the PR **still opens** (a WARN
+   `writeback_no_significance` is logged), but it gets no `semver:*` label and no auto-merge, and
+   the merged change takes the legacy close-and-Done path (`pushCDEligible=false`). There is no
+   writeback-layer re-prompt.
 
-Post-rollout, implement/issueLifecycle agents must not self-merge - `pr_outcome=merge` is
-guarded off for these kinds; auto-merge owns merging. `pr_outcome=close` is retained for declines.
+Post-rollout, implement/issueLifecycle agents never self-merge. `pr_outcome` is now a
+selfImprove-only MCP tool, and even there `pr_outcome=merge` no longer merges directly - it
+defers to native auto-merge (the bot PR had auto-merge enabled at open time, so the forge
+squash-merges once required checks pass). Auto-merge owns merging; `pr_outcome=close` is retained
+for declines.
 
 Tag-cut and propagation are **author-agnostic** - they key on the `semver:*` label, not on who
 merged. A human merging a labeled PR by hand still triggers the full downstream cascade; only the
@@ -146,8 +158,10 @@ are coalesced rather than raced:
   dropping the others. A burst of N component tags collapses into N commits on one PR -> one
   merge -> one apply.
 - **Serialized applies:** `tatara-helmfile`'s `apply.yaml` runs under a GitHub Actions
-  `concurrency: group=cd-apply, cancel-in-progress=false` group, so at most one cluster apply is
-  in flight at a time.
+  `concurrency: group=tatara-helmfile-apply, cancel-in-progress=false` group, so at most one
+  cluster apply is in flight at a time. (The group name diverges from the design spec's
+  `cd-apply`; the existing name is kept - the property that matters is the serialized,
+  non-cancelling queue.)
 - **Per-Project deploy ledger:** a ConfigMap-CAS ledger records every `Deploying` Task as
   `{artifact, version, sourceTaskRef, issueRef, headSHA, state}`. One operator reconcile polls
   the apply outcome and matches it against ledger entries, resolving **every** matching Task in a

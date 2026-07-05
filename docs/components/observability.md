@@ -29,7 +29,14 @@ Current rule groups:
 | `alerts/tatara-memory.yaml` | `tatara-memory` | Prometheus |
 | `alerts/tatara-ingester.yaml` | `tatara-ingester` | Prometheus |
 | `alerts/tatara-chat.yaml` | `tatara-chat` | Prometheus |
+| `alerts/tatara-cd.yaml` | `tatara-cd` | Prometheus |
+| `alerts/tatara-quality.yaml` | `tatara-quality` | Prometheus |
+| `alerts/tatara-usage-gate.yaml` | `tatara-usage-gate` | Prometheus |
 | `alerts/tatara-logs.yaml` | `tatara-logs` | Loki |
+
+`tatara-cd` covers the push-CD cascade (deploy-train stalls, apply failures),
+`tatara-quality` the model-keyed review/CI quality-feedback signals, and
+`tatara-usage-gate` the token/usage-budget gate.
 
 All rules land in the Grafana **Tatara** folder, which is managed exclusively by this repo.
 The `infra/terraform/grafana` state never touches the Tatara folder, so the two states never
@@ -73,7 +80,7 @@ by `grafana.tf` with `yamldecode` and passed to `modules/grafana_alert`.
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `interval_seconds` | integer | `60` | Evaluation interval for all rules in the group |
-| `default_no_data_state` | string | `"OK"` | State when a query returns no data. Convention in tatara is `"OK"` to avoid noise on scrape gaps |
+| `default_no_data_state` | string | `"NoData"` | State when a query returns no data. The **module** default is `"NoData"`; every tatara group file sets it to `"OK"` by convention to avoid noise on scrape gaps |
 | `default_datasource_uid` | string | `"prometheus"` | Fallback datasource for rules that do not specify one |
 
 ### Rule-level fields
@@ -89,7 +96,7 @@ by `grafana.tf` with `yamldecode` and passed to `modules/grafana_alert`.
 | `annotations` | no | map | Grafana alert annotations. Supports Go template expressions (see below) |
 | `labels` | no | map | Alert labels for routing. **Replaces** module defaults; set all four required keys |
 | `no_data_state` | no | string | Per-rule override for the no-data state |
-| `exec_err_state` | no | string | State when query execution errors. Default `"OK"` |
+| `exec_err_state` | no | string | State when query execution errors. Module default is `"Error"`; tatara group files commonly set `"OK"` by convention |
 | `is_paused` | no | bool | Pause the rule without deleting it. Default `false` |
 
 ### Query object fields

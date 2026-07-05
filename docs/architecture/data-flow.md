@@ -68,8 +68,11 @@ Before a webhook event can create a Task the operator applies two security check
 
 - **Provider mismatch guard** - rejects deliveries routed to the wrong SCM provider.
 - **Reporter allowlist** - `issueLifecycle` tasks and issue comments are only
-  processed when the event author appears in `spec.allowedReporters` (Project-level)
-  or the Repository-level override. An empty allowlist is open (default).
+  processed when the event author is the bot, a maintainer (`spec.scm.maintainerLogins`),
+  or an account in `spec.scm.reporterLogins` (Project-level, overridable per-Repository
+  via `RepositorySpec.reporterLogins`). An empty allowlist is open (default). This is
+  the prompt-injection intake gate: with it set, unknown third parties cannot drive the
+  lifecycle by opening or commenting on an issue.
 
 !!! note "Bot comment suppression"
     Comments authored by `spec.scm.botLogin` are silently discarded at the intake
@@ -82,7 +85,8 @@ Grafana delivers a JSON alert payload via bearer token. The handler:
 
 1. Verifies the bearer token against `spec.grafana.secretRef`.
 2. Ignores non-`firing` alerts (e.g. `resolved`).
-3. Computes a **group hash** from the alert labels - this is the dedup key.
+3. Computes the dedup key as the first 16 hex chars of `sha256(groupKey)`, where
+   `groupKey` is Grafana's alert-group field (not the labels/commonLabels).
 4. Creates a `QueuedEvent` with `class=alert` and `kind=incident`.
 
 ---
@@ -128,7 +132,7 @@ status:
 | `issueLifecycle` (issue) | `SHA256(projectName + issueRef + "0")[:16]`, used as deterministic Task name (`lc-<hex16>`) |
 | `issueLifecycle` (bot PR closing #N) | Same hash for issue #N, not the PR, so a bot MR and its linked issue share one slot |
 | `review` | None - multiple review Tasks per PR are intentional |
-| `incident` | Alert group hash (from Grafana `commonLabels`) |
+| `incident` | `sha256(Grafana groupKey)[:16]` |
 | `brainstorm`, cron kinds | Caller-supplied key (e.g. `brainstorm-<project>`) |
 
 ### Queue classes and capacity gating
@@ -136,8 +140,11 @@ status:
 The dispatcher runs as part of the operator reconcile loop and admits events
 in FIFO sequence order within each class:
 
-- **normal** class: up to `spec.queue.capacity` concurrent admitted events
-  (default tracks `maxConcurrentTasks`; minimum 3).
+- **normal** class: up to `spec.queue.capacity` concurrent admitted events.
+  `QueueCapacity()` returns `spec.queue.capacity` if set, else `maxConcurrentTasks`,
+  else a fallback of 3. The 3 is a fallback, not a floor: `maxConcurrentTasks: 1`
+  yields capacity 1, and `maxConcurrentTasks: 0` fully pauses admission (no Task is
+  ever created from a `QueuedEvent`), bypassing capacity entirely.
 - **alert** class: a separate reserved pool (`spec.queue.alertCapacity`, default 1).
   Alert slots are never consumed by normal events, so an incident Task is admitted
   even when the normal queue is saturated.
@@ -153,15 +160,26 @@ transitioned to `Done` - the reconciler deletes it directly).
 
 ### Pod lifecycle
 
-The Task reconciler spawns a `tatara-claude-code-wrapper` Pod when the Task
-transitions to `Phase=Running`. The Pod:
+The Task reconciler spawns a `tatara-claude-code-wrapper` Pod on the first reconcile,
+while `Phase` is still empty (`ensurePodAndService`), and only then stamps
+`Phase=Planning`. `Phase=Running` is set later, after the first turn-complete
+callback - it is never the spawn trigger. The primary kind, `issueLifecycle`, leaves
+`Phase` empty for its entire life and is driven by `Status.LifecycleState` (terminality
+keys on `LifecycleState`, not `Phase`); `Phase` is only populated for the legacy
+single-shot kinds. The Pod:
 
-- Receives the Task context via environment variables (`TASK_KIND`, `TASK_GOAL`,
-  `TASK_BRANCH`, `OPERATOR_PUSH_URL`, etc.).
+- Receives Task identity and context via environment variables: `TATARA_KIND`
+  (the Task kind), `TATARA_TASK`, `TATARA_PROJECT`, `TATARA_REPO`, `TASK_BRANCH`
+  (the branch the wrapper checks out and pushes), and the per-Project service URLs
+  (`TATARA_MEMORY_URL`, `TATARA_OPERATOR_URL`, `TATARA_CHAT_URL`). There is no
+  `TASK_GOAL` env var: the goal is delivered as the text of the first turn's message
+  (`planTurnText`), not an env var. `OPERATOR_PUSH_URL` is the Prometheus
+  remote-write / metrics-push endpoint (`.../internal/metrics/push`) the wrapper pushes
+  turn token/cost series to - it is not a git-push or task-context var.
 - Optionally receives conversation replay pointers (`CONVERSATION_OBJECT_KEY`,
   `CONVERSATION_SESSION_ID`) when S3 conversation persistence is configured.
-- Runs `claude --mcp-server tatara-cli` as the main process; `tatara-cli` acts as
-  the local MCP server.
+- Runs one persistent interactive `claude` process; `tatara-cli` (baked into the
+  wrapper image) acts as the local stdio MCP server.
 
 ```mermaid
 sequenceDiagram
@@ -174,32 +192,57 @@ sequenceDiagram
     OP->>POD: Create pod (Task env injected)
     POD->>CLI: MCP stdio handshake
     POD->>CLI: tools/list (filtered by TATARA_TOOL_PROFILE)
-    CLI->>MEM: Authenticate (OIDC client-credentials)
-    POD->>CLI: read_memory / code_graph_get (MCP calls)
-    CLI->>MEM: GET /v1/memories, /v1/code-graph
+    CLI->>MEM: Authenticate (confidential client_credentials)
+    POD->>CLI: query / code_search / code_entity (MCP calls)
+    CLI->>MEM: GET /query, /code-graph
     MEM-->>CLI: knowledge graph context
     CLI-->>POD: tool results
     POD->>SCM: git push (branch: tatara/task-<name>)
-    POD->>OP: POST /internal/turns/{taskName}/complete (callback)
+    POD->>OP: POST /internal/turn-complete (callback; task in payload)
     OP->>OP: Update Task status (turnsCompleted, conversationObjectKey)
 ```
 
 ### MCP tool surface
 
-`tatara-cli` exposes different tool profiles depending on the Task kind:
+`tatara-cli` gates its `tools/list` by the `TATARA_TOOL_PROFILE` env var the operator
+sets from the Task kind. The gate is the platform's sole authz boundary: all agent
+pods share one OIDC identity (see [Identity & OIDC](identity-and-oidc.md)), so
+authorization cannot key on who the caller is - only on which tools the profile allows.
 
-| Profile (TATARA_TOOL_PROFILE) | Task kinds | Approximate tool count |
-|---|---|---|
-| `brainstorm` | brainstorm, healthCheck | ~45 tools |
-| `lifecycle` | issueLifecycle (non-implement phases) | ~50 tools |
-| `implement` | issueLifecycle (Implement/MRCI), implement | ~60 tools |
-| `incident` | incident | ~55 tools |
-| `review` | review | ~40 tools |
-| `full` | default / unset | ~63 tools |
+What the profile does and does not gate matters more than tool counts:
 
-The profile is set by the operator in the Pod environment; `tatara-cli` filters
-`tools/list` responses accordingly and fails open (returns all tools) when the
-profile is unrecognized.
+- **Always included, in every profile:** the memory and code-graph tools (`query`,
+  `code_search`, `code_entity`, `code_explain`, `code_neighbors`, `code_path`, ...) and
+  a small `alwaysOn` set (`report_internal_issue`, `project_get`, `repo_list`,
+  `task_get`). Read access to memory is never gated.
+- **Per-kind gate:** a short allowlist of operator-mutation tools (e.g. `change_summary`,
+  `pr_outcome`, `review_verdict`, `propose_issue`, `submit_handover`) plus two boolean
+  flags - `chat` and `handoff`.
+
+There are eight named profiles, mapped from `Task.Spec.Kind` by `toolProfileForKind`:
+
+| Profile (TATARA_TOOL_PROFILE) | Task kind |
+|---|---|
+| `brainstorm` | brainstorm (healthCheck shares Kind=brainstorm) |
+| `lifecycle` | issueLifecycle - always, for every lifecycle state |
+| `implement` | legacy `implement` kind only |
+| `review` | review |
+| `triage` | triageIssue |
+| `incident` | incident |
+| `selfImprove` | selfImprove |
+| `refine` | refine (the only profile with `handoffDelete`) |
+
+`issueLifecycle` always resolves to the single `lifecycle` profile - a deliberate union
+of every lifecycle state's tools. One long-lived pod spans Triage through Merge, and
+per-state gating would require restarting the in-pod MCP server mid-task, so the union
+is granted up front. The `implement` profile is for the legacy standalone `implement`
+kind, not the Implement phase of an `issueLifecycle` task.
+
+`resolveProfile` fails open (returns all tools) only when `TATARA_TOOL_PROFILE` is
+empty or unset (local dev). An unrecognized non-empty profile fails **closed** to the
+`alwaysOn` set (4 tools) - a typo must never silently grant the full surface, because
+profile gating is the only thing standing between a mis-labeled pod and every mutation
+tool. Both cases log a WARN.
 
 ### Comment interjections
 
@@ -304,8 +347,12 @@ kick off an ingest:
 - **Push webhook**: the webhook handler stamps the `tatara.dev/reingest-requested`
   annotation on the matching Repository CR; the Repository reconciler picks this up
   within seconds.
-- **Scheduled scan**: the operator's `issueScan` cron rescans each Repository
-  periodically and triggers a full ingest when the last-ingested commit is stale.
+- **Scheduled re-ingest**: the Repository reconciler's `scheduleNextReingest` parses
+  the per-Repository `spec.reingestSchedule` cron and, when a fire is due, stamps the
+  same `tatara.dev/reingest-requested` annotation. For an already-ingested repo that
+  annotation yields an **incremental** ingest (`--since <lastIngestedCommit>`), not a
+  full one - it guards against missed push webhooks, not a periodic full rebuild. (The
+  separate `issueScan` cron scans issue/PR lifecycle state and does not drive ingest.)
 
 ```mermaid
 sequenceDiagram

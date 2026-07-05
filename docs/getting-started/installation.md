@@ -68,7 +68,7 @@ The operator requires several credential groups before it can start reconciling.
 
 ### OIDC clients
 
-Five Keycloak clients are needed for the full platform. See [Identity & OIDC](../architecture/identity-and-oidc.md#clients) for the authoritative client inventory. This section covers the two credential groups the **operator chart** renders directly:
+Five Keycloak clients are needed for the full platform. See [Identity & OIDC](../architecture/identity-and-oidc.md#clients-and-audiences) for the authoritative client inventory. This section covers the two credential groups the **operator chart** renders directly:
 
 | Client | Flow | Purpose |
 |---|---|---|
@@ -179,7 +179,9 @@ callbackUrl: "http://tatara-operator-internal.tatara.svc:8082"
 ### OIDC
 
 ```yaml
-oidcIssuer: "https://auth.example.com/realms/master"
+# Use a dedicated realm for tatara's service clients. Do not use Keycloak's
+# built-in "master" realm for application clients.
+oidcIssuer: "https://auth.example.com/realms/tatara"
 oidcAudience: "tatara-operator"
 operatorOidcClientId: "tatara-operator"
 
@@ -192,19 +194,19 @@ openaiSecretName: "lightrag-openai"
 
 ### Image pins
 
-All workload images are pinned by short SHA. The operator stamps these into the native objects it provisions per Project.
+Tatara-built images are pinned by semver (`vX.Y.Z`); third-party images pin their own upstream tags or digests. The operator stamps these into the native objects it provisions per Project. Under semver push-CD (section 6) these pins are normally moved forward by the release pipeline, not hand-edited.
 
 ```yaml
 # Operator manager image tag (in values/tatara-operator/common.yaml)
 image:
-  tag: "g3526ebf"          # bare short SHA, no g-prefix for the image tag
+  tag: "v0.4.11"          # semver; the pipeline propagates this on release
 
 # Per-Project memory stack images (in values/tatara-operator/default.yaml)
-memoryImage:    "harbor.example.com/containers/tatara-memory:<sha>"
+memoryImage:    "harbor.example.com/containers/tatara-memory:v0.4.2"
 lightragImage:  "harbor.example.com/proxy-ghcr/hkuds/lightrag@sha256:<digest>"
 neo4jImage:     "neo4j:2026.04.0"
 grafanaMcpImage: "grafana/mcp-grafana:0.17.0"
-ingesterImage:  "harbor.example.com/containers/tatara-memory-repo-ingester:<sha>"
+ingesterImage:  "harbor.example.com/containers/tatara-memory-repo-ingester:v0.2.10"
 
 # Pull secret for all operator-spawned workloads (neo4j, lightrag, memory, cnpg).
 imagePullSecret: "regcred"
@@ -328,7 +330,7 @@ sequenceDiagram
     ARC->>K8s: helmfile -e default apply --suppress-secrets
     alt Apply succeeds
         K8s-->>ARC: All releases healthy
-        ARC->>K8s: Reconcile enrollment CRs (kubectl apply raw/*.pre.yaml)
+        ARC->>K8s: Apply pre-sync raw manifests (kubectl apply raw/*.pre.yaml: OBC + SCM/Grafana Secrets)
     else Apply fails
         K8s-->>ARC: --rollback-on-failure triggers helm rollback
     end
@@ -353,38 +355,68 @@ The `apply.yaml` workflow runs on every push to `main`. Key properties:
 - **Timeout:** 900 seconds per release (`helmDefaults.timeout`), generous enough for image pulls and ServiceMonitor/CRD settling.
 - **Rollback:** `--rollback-on-failure` is set in `helmDefaults.syncArgs`. A failed apply triggers an automatic Helm rollback to the previous release revision.
 - **Server-side apply:** Helm 4 uses server-side apply by default (`--server-side=auto`). `--force-conflicts` lets the GitOps deploy reclaim fields previously touched by emergency `kubectl` operations.
-- **Enrollment CR reconciliation:** After `helmfile apply`, the workflow explicitly applies enrollment CRs from `values/tatara-operator/raw/` using `kubectl apply`. This ensures idempotent enrollment on every run, even when Helm determines the operator release is already at the target version and skips the presync hook.
+- **Pre-sync raw manifests:** After `helmfile apply`, the workflow re-applies the plain manifests in `values/tatara-operator/raw/` using `kubectl apply`. These are the conversation-bucket `ObjectBucketClaim` and the SCM/Grafana `Secret`s (sops-decrypted), **not** Project or Repository CRs. Applying them explicitly makes them idempotent on every run, even when Helm decides the operator release is unchanged and skips the presync hook. The Project and Repository CRs themselves are rendered by the `tatara-project` chart via the `project-tatara` and `project-infrastructure` releases (sections 1 and 4), not from `raw/`.
 
 ---
 
-## 6. Chart-pin discipline
+## 6. Release versioning (semver push-CD)
 
-Chart versions in `helmfile.yaml.gotmpl` use the format `0.0.0-g<shortSHA>` (the `g` prefix is required - all-digit SHAs starting with `0` are invalid semver pre-release identifiers). The operator CI packages `charts/tatara-operator` and `charts/tatara-project` as `0.0.0-g<sha>` on every push to the operator's `main` branch.
+Deploys are semver, pipeline-driven, and largely hands-off. You almost never hand-edit a pin.
 
-The image tag in `values/tatara-operator/common.yaml` is the bare short SHA (no `g` prefix):
+### How a release ships
+
+Every merged PR declares its significance: a human sets a `semver:<level>` label (`major` /
+`minor` / `patch`) on the PR; bot-authored PRs carry a `change_significance` on their change
+summary that maps to the same label. On merge to the component's `main`, the release pipeline:
+
+1. **Cuts the tag.** Computes the next `vX.Y.Z` from the merged PR's `semver:*` label.
+2. **Publishes artifacts.** Builds and pushes the image at `:vX.Y.Z` (the required-checks pipeline
+   already pushed a `:<shortSHA>` traceability tag for the same commit; Harbor's containers project
+   has tag immutability). It packages **both** charts (`tatara-operator` and `tatara-project`) at
+   the bare `X.Y.Z`, with `appVersion` carrying `vX.Y.Z`, and pulls them back to prove neither is
+   missing (guards against a partial-publish wedge).
+3. **Propagates the pin.** Opens a bot PR against `tatara-helmfile` that rewrites all four pins
+   atomically in one commit: the three chart-version pins (`tatara-operator` plus both
+   `project-tatara` / `project-infrastructure` releases) take the bare `X.Y.Z`; the operator
+   `image.tag` takes `vX.Y.Z`. Pins are matched by release name, so `tatara-chat`'s pin is never
+   clobbered.
+4. **Applies and closes.** That helmfile PR auto-merges on green checks and the apply workflow
+   rolls it out (section 5). On a successful apply the operator closes the originating issue.
 
 ```yaml
+# What the pipeline writes into tatara-helmfile (do not hand-edit in normal flow):
+
 # values/tatara-operator/common.yaml
 image:
-  tag: "3526ebf"         # bare SHA - image tag is not a semver pre-release
+  tag: "v0.4.11"            # image at :vX.Y.Z
 
 # helmfile.yaml.gotmpl
 - name: tatara-operator
-  version: 0.0.0-g3526ebf   # g-prefixed - semver pre-release label
+  version: 0.4.11           # chart at bare X.Y.Z
+- name: project-tatara
+  version: 0.4.11
+- name: project-infrastructure
+  version: 0.4.11
 ```
 
-Both pins must be bumped together when deploying a new operator build:
+!!! danger "Do not hand-edit deploy pins, and never re-run a green release job"
+    In the normal flow the pipeline owns the pins. Tag mode is not idempotent: re-running a green
+    release job would try to re-cut an existing tag. Roll forward with a new PR instead.
 
-!!! danger "Always bump both pins atomically"
-    Bumping only the chart version leaves the old image running. Bumping only the image tag with a stale chart version applies manifests rendered from an older chart that may lack new fields or ConfigMap keys the new image expects. Both changes must be in the same PR.
+### Break-glass: manual dual-pin bump
 
-Keep chart pins **recent**. Harbor applies a retention policy that garbage-collects old `0.0.0-g<sha>` chart tags. A pin pointing at an SHA that Harbor has GC'd will fail apply with:
+Only when the pipeline is unavailable (e.g. recovering from a stuck release), bump the pins by
+hand. The invariant is that the chart version and image tag move together:
 
-```
-FetchReference ... not found
-```
+!!! warning "Bump both pins in the same PR"
+    Bumping only the chart version leaves the old image running. Bumping only the image tag against
+    a stale chart applies manifests rendered from an older chart that may lack fields or ConfigMap
+    keys the new image expects. Change the `tatara-operator` chart version, both `project-*` chart
+    versions, and `image.tag` in one PR, to versions actually published in Harbor.
 
-If this happens, find the latest published SHA for each chart via `helm search repo` or the Harbor UI, and bump all three pins (`tatara-operator` chart version, `tatara-project` chart version on both `project-*` releases, and `image.tag`) to a recent main HEAD SHA.
+Harbor's retention policy GCs old chart tags, so pinning **backward** to a GC'd `X.Y.Z` fails apply
+with `FetchReference ... not found`. Roll forward to a published version rather than back. Find
+published versions via `helm search repo` or the Harbor UI.
 
 ### Local validation
 

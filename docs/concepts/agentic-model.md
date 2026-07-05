@@ -4,9 +4,11 @@ title: The Agentic Operating Model
 
 # The Agentic Operating Model
 
-Tatara is not a chat interface or a one-shot code generator. It is an **operating model**: a persistent loop where a Kubernetes operator orchestrates autonomous Claude Code sessions that read your issue tracker, conduct a triage conversation, write code, open pull requests, babysit CI, and close the originating issue - while humans remain in control of every consequential gate.
+Tatara is not a chat interface or a one-shot code generator. It is an **operating model**: a persistent loop where a Kubernetes operator orchestrates autonomous Claude Code sessions that read your issue tracker, conduct a triage conversation, write code, open pull requests, babysit CI, and close the originating issue.
 
-This page explains the loop structure, trigger sources, human control points, and the guardrails that keep autonomy bounded. It targets architects and platform engineers evaluating whether tatara's operating model fits their engineering culture.
+Be precise about where the human sits in that loop. In the **shipped defaults** the one hard human gate is at **triage**: a person decides whether an issue gets worked (by allowing the agent to `implement`, or by applying the `triggerLabel`). After that decision, the implement-to-merge path is **autonomous** - under the default `afterApproval` merge policy the operator squash-merges the bot's PR on its own once CI is green (or immediately if the repo has no CI). There is no human merge step and no per-PR sign-off unless you add one yourself via the SCM's branch-protection rules. The stronger "human at every gate" posture is available but is **configuration you opt into**, not the default. This page is explicit about which is which.
+
+It targets architects and platform engineers evaluating whether tatara's operating model fits their engineering culture.
 
 ---
 
@@ -46,14 +48,15 @@ stateDiagram-v2
     Parked --> [*]
 
     note right of Conversation
-        HUMAN GATE 1
+        HUMAN GATE (default)
         Maintainer drives<br/>triage outcome via
         comment or label
     end note
 
-    note right of Implement
-        HUMAN GATE 2
-        PR merge policy:<br/>afterApproval or<br/>autoMergeOnGreenCI
+    note right of Merge
+        AUTONOMOUS (default)
+        Operator squash-merges<br/>on green CI under
+        afterApproval.<br/>No human merge step.
     end note
 ```
 
@@ -78,7 +81,7 @@ The operator listens on a per-Project HMAC-verified webhook endpoint exposed as 
 | `pull_request` (human-authored) | Create a `review` Task (separate path; not the lifecycle). |
 | `push` (default branch) | Triggers a repository re-ingest into the memory graph. |
 
-All events pass through an **intake filter** before a Task is created: the author must be the bot, a `maintainerLogin`, or a `reporterLogin`. Events from unknown authors are dropped at intake so that third-party issue authors cannot drive agent execution via prompt-crafted content.
+All events pass through an **intake filter** before a Task is created - but only once you configure it. When `spec.scm.reporterLogins` is populated, the author must be the bot, a `maintainerLogin`, or a `reporterLogin`, and events from unknown authors are dropped at intake so that third-party issue authors cannot drive agent execution via prompt-crafted content. When `reporterLogins` is **empty (the shipped default)** the operator preserves its historical open behavior and accepts issues and comments from **any** author. The prompt-injection intake defense is therefore opt-in: it is inert until you populate the allowlist. See [Gate 1](#gate-1-triage-outcome) and the [Security boundary summary](#security-boundary-summary).
 
 ### Proactive triggers (in-operator cron)
 
@@ -100,7 +103,7 @@ Selection order within a scan cycle: items carrying `spec.scm.priorityLabel` fir
 
 ## Human-in-the-loop gates
 
-Tatara is autonomous within each state. It is **not** autonomous across states - humans control the transitions that matter.
+Tatara is autonomous within each state. Across states, the human control points are **triage** (Gate 1/2) and **brainstorm approval** (Gate 4). The **merge** transition (Gate 3) is autonomous by default and becomes human-gated only when you configure it - the SCM branch-protection route below. Read each gate for its shipped default, not the aspirational posture.
 
 ### Gate 1: Triage outcome
 
@@ -123,16 +126,19 @@ While the Task is in **Conversation**, the agent pod is torn down. No compute is
 !!! warning "Idle timeout is an inactivity window"
     The conversation idle timer measures continuous silence, not wall-clock age of the issue. A comment from a maintainer resets it to zero. Operator downtime is self-healing: `issueScan` backstop re-binds Tasks whose issues have new `updatedAt` timestamps.
 
-### Gate 3: PR merge policy
+### Gate 3: PR merge policy (autonomous by default)
 
-The operator opens a PR when an **Implement** run completes. It never merges without human involvement unless explicitly configured to do so:
+Read this one carefully, because the default behavior is the opposite of what "afterApproval" sounds like. The operator opens a PR when an **Implement** run completes. From there the lifecycle advances to **MRCI**, and once CI reports green (or immediately, if the repo has no CI at all) the operator moves the Task to **Merge** and calls `mergeAllowed()`. Under the default policy that call **always returns true** - the operator squash-merges the bot's own PR with no human step and no approval signal.
 
-| `spec.scm.mergePolicy` | Merge behavior |
+| `spec.scm.mergePolicy` | Merge behavior (as shipped) |
 |---|---|
-| `afterApproval` (default) | Operator merges when the agent signals `pr_outcome=merge`. The agent infers human intent from the PR/issue thread; the operator does **not** independently verify SCM review state. |
-| `autoMergeOnGreenCI` | Operator merges once the PR CI pipeline is green, without waiting for a human review. |
+| `afterApproval` (default) | `mergeAllowed()` returns **true unconditionally**. The operator squash-merges as soon as the lifecycle reaches **Merge** (CI green, or no CI). It does **not** consult SCM review state and does **not** wait for a human. The name reflects the *intent* (trust that review happened out of band), not an enforced check. |
+| `autoMergeOnGreenCI` | Merges only when CI is present and green; a present-but-failing CI blocks the merge. With no CI configured it falls back to the `afterApproval` behavior (merges). |
 
-`afterApproval` is the recommended default for most teams. `autoMergeOnGreenCI` is appropriate for low-risk autonomous maintenance work (dependency bumps, doc updates) where the CI suite is the sufficient gate.
+!!! warning "There is no `pr_outcome` gate on the lifecycle merge path"
+    The `pr_outcome` MCP tool (`action=merge|close`) is profiled and documented as **`selfImprove`-only** - it drives the operator's own self-improvement PRs, not the `issueLifecycle` state machine. A normal lifecycle Task never signals `pr_outcome=merge`; nothing about the merge is agent-driven. The merge is triggered by the CI-green state transition, full stop.
+
+**If you want a real human merge gate**, it does not come from `afterApproval`. Configure `autoMergeOnGreenCI` **and** an SCM branch-protection rule that requires an approving review before required checks can pass. That makes the forge (not tatara) hold the merge until a human approves. Note that the shipped semver push-CD design goes the other way on purpose: it stamps the significance label and enables the forge's **native auto-merge** on the freshly opened bot PR, so bot-authored PRs merge themselves on green required checks. Autonomous merge is the designed steady state, not an edge case.
 
 ### Gate 4: Brainstorm proposal approval
 
@@ -156,13 +162,17 @@ Autonomous agents that can loop forever are an operational liability. Tatara enf
 
 ### Context window guard
 
-Each agent turn reports its token usage via the operator's callback API. The operator accumulates `Task.status.lastTurnInputTokens`. When this value reaches `spec.agent.handoverThresholdPercent` (default 25%) of `spec.agent.contextWindowTokens` (default 200,000), the operator triggers a handover before re-spawning for the next Implement iteration:
+Each agent turn reports its token usage via the operator's callback API. The operator **overwrites** `Task.status.lastTurnInputTokens` with the latest turn's input-token total on every callback (it is a snapshot of the last turn, not a running sum - the running totals live in separate `cumulative*` fields). It uses that single latest value as a proxy for how full the model's context currently is, and compares it to `spec.agent.handoverThresholdPercent` (default 25%) of `spec.agent.contextWindowTokens` (default 200,000).
+
+**Default path, below the threshold: full-transcript resume.** When a fresh pod picks the Task up for the next Implement iteration, it resumes the entire persisted Claude conversation via `claude --resume` (issue #114). No reset, no summarization - the next pod continues where the last one stopped, with full history.
+
+**At or above the threshold: compacted handover.** Only once `lastTurnInputTokens` crosses `handoverThresholdPercent` does the operator switch to the reset path, to keep the next turn's context from overflowing:
 
 1. The current agent is given one final turn to produce a `submit_handover` artifact: a compact prose summary of what was done, what remains, and what context the next agent needs.
-2. The agent pod is terminated and the conversation is reset.
-3. The next pod starts fresh and receives the handover text as the first turn prompt.
+2. The full-transcript resume is skipped for that spawn.
+3. The next pod starts fresh and receives the compacted handover text as the first turn prompt.
 
-This prevents context overflow from silently degrading code quality on long-running issues.
+The two paths are mutually exclusive: a spawn gets **either** the full transcript (`--resume`, under threshold) **or** the handover summary (at/over threshold), never both. This keeps quality high on ordinary multi-turn work (full history) while preventing context overflow from silently degrading long-running issues (compaction only when genuinely needed).
 
 ### Queue capacity
 
@@ -196,19 +206,22 @@ Every human decision in tatara is expressed through two SCM-native mechanisms: *
 
 **Webhook reactions are human-native actions.** A maintainer approves implementation by applying a label they already use, or by replying to an issue comment. There is no tatara-specific UI to learn. The operator responds to SCM events - the same events your CI system, project management tools, and on-call runbooks already consume.
 
-**The control plane is the issue tracker.** This means the blast radius of a misconfigured agent is bounded: the worst outcome is a PR you can close and an issue comment you can read. There are no hidden side effects in a separate system.
+**The control plane is the issue tracker.** Every agent side effect surfaces as a PR you can close or an issue comment you can read - there are no hidden effects in a separate system, which makes the day-to-day blast radius legible. Be honest about the ceiling, though: that framing bounds the *review surface*, not the *privilege*. The bot PAT carries whatever repo scopes you grant it (org-wide write in the reference deployment), and once the default `afterApproval` merge is autonomous, a misconfigured or prompt-injected agent can land code without a human merge step. Where the platform self-deploys, a merged change to the GitOps repo flows to the cluster via a runner with broad rights. The control plane is legible; the aggregate privilege is not trivial. Bound it with the intake allowlist, a review-gated branch-protection rule on sensitive repos, and least-privilege PAT scopes - see [Trade-offs](why-tatara.md#trade-offs-to-consider) and the [security docs](../operations/security/index.md).
 
 ---
 
 ## Security boundary summary
 
-| Concern | Mechanism |
-|---|---|
-| Third-party prompt injection | `reporterLogins` allowlist: only bot, maintainers, and allowed reporters can drive agent intake |
-| Unauthorized approve-to-implement | `maintainerLogins` gates which comment authors count as human approval signals |
-| SCM write-back authorship | Egress verified via `GetPRState` at operator side, not trusting webhook payload |
-| Webhook authenticity | HMAC-SHA256 verified per GitHub/GitLab spec |
-| Agent network egress | Cluster-side NetworkPolicy; internet access only for `brainstorm` tasks with `internet` source, gated by a pod label the infra helmfile controls |
-| Kubernetes API access | Agent pods have no Kubernetes credentials. Only tatara-cli (MCP server in the pod) can call the operator REST API, which is OIDC-gated |
+These are the mechanisms, with their **shipped default state** called out. Several are opt-in and inert until configured - do not read the "Mechanism" column as an always-on guarantee.
 
-See [Approval Gates](../operations/security/approval-gates.md) and [Prompt-Injection Defenses](../operations/security/prompt-injection.md) for full detail on each mechanism.
+| Concern | Mechanism | Default state |
+|---|---|---|
+| Third-party prompt injection | `reporterLogins` allowlist: only bot, maintainers, and allowed reporters can drive agent intake | **Opt-in.** Empty `reporterLogins` (default) accepts **any** author. Populate the list to activate the filter. |
+| Unauthorized approve-to-implement | `maintainerLogins` gates which comment authors count as human approval signals | **Opt-in.** Empty `maintainerLogins` (default) treats any non-bot human reply as the approval go-ahead. Populate to restrict. |
+| Autonomous merge | Merge is gated only by the SCM's branch protection, not by tatara | **Off.** Default `afterApproval` merges on green CI with no human step (see [Gate 3](#gate-3-pr-merge-policy-autonomous-by-default)). Require an approving review via branch protection to gate. |
+| SCM write-back authorship | Egress verified via `GetPRState` at operator side, not trusting webhook payload | Always on. |
+| Webhook authenticity | **GitHub:** HMAC-SHA256 over the body (`X-Hub-Signature-256`). **GitLab:** constant-time comparison of the static shared-secret `X-Gitlab-Token` header (a replayable bearer, not an HMAC over the payload - materially weaker). | Always on (both require a configured secret). |
+| Agent network egress | Cluster-side NetworkPolicy; internet access only for `brainstorm` tasks with `internet` source, gated by a pod label the infra helmfile controls | On where the NetworkPolicy is applied (cluster config). |
+| Kubernetes API access | Agent pods have no Kubernetes credentials. Only tatara-cli (MCP server in the pod) can call the operator REST API, which is OIDC-gated | Always on. |
+
+The strong intake and approval guarantees in the rows above are real, but only **once you populate the allowlists**. As shipped with empty allowlists and `afterApproval`, the honest posture is: any author can open work, and an implemented PR merges itself on green CI. See [Approval Gates](../operations/security/approval-gates.md) and [Prompt-Injection Defenses](../operations/security/prompt-injection.md) for full detail on each mechanism.

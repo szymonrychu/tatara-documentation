@@ -52,7 +52,12 @@ flowchart TD
 `mrScan` (and the webhook path) suppress re-review of a PR/MR whose head commit has not changed since the last completed review Task. The dedup key is the PR's current `headSHA` compared against the head SHA recorded on the matching Task's `role:reviewed` ledger entry (`WorkItemRef.HeadSHA`); pre-ledger Tasks fall back to a legacy `tatara.io/head-sha` label. Same head + a terminal review Task already exists -> suppressed. A new commit pushed to the PR changes the head SHA -> re-review proceeds.
 
 !!! note "Past incident"
-    An earlier version of this dedup compared against the wrong ledger entry (`role:openedPR` instead of `role:reviewed`), which silently no-opped and caused the same MR to be re-reviewed on every `mrScan` cycle, burning tokens. The fix reads the head SHA off the `role:reviewed` entry specifically.
+    An earlier version of this dedup only consulted the `role:openedPR` ledger entry, which a
+    human-PR review Task never carries, so the check silently no-opped and the same MR was
+    re-reviewed on every `mrScan` cycle, burning tokens. The fix's shared helper `headSHAForTask`
+    now reads `HeadSHA` from **either** a `role:openedPR` or a `role:reviewed` entry (then falls
+    back to `MergedHeadSHA` and the legacy `tatara.io/head-sha` label). For a human-PR review Task
+    the operative entry is `role:reviewed`, so the dedup keys on the reviewed head as intended.
 
 ## Read-only constraint
 

@@ -24,6 +24,14 @@ Tatara is built on a small set of ideas that, once understood, make the rest of 
 
     [:octicons-arrow-right-24: Why tatara](why-tatara.md)
 
+-   :material-map-check-outline: **Portability & Requirements**
+
+    ---
+
+    The honest self-assessment for evaluators: what tatara genuinely requires (Kubernetes, an OIDC IdP, the memory stack), what is just the maintainer's stack, and where the SCM / agent / GitOps seams are welded shut. Read this before deciding whether tatara can run on your stack.
+
+    [:octicons-arrow-right-24: Portability & Requirements](portability.md)
+
 </div>
 
 ## Core ideas
@@ -32,6 +40,6 @@ Tatara is built on a small set of ideas that, once understood, make the rest of 
 
 **Everything is a Kubernetes resource.** Work items (tasks, events, subtasks) are CRDs managed by a controller-runtime operator. You inspect agent state with `kubectl get tasks`. You audit what happened with `kubectl describe task`. You gate access with RBAC. Tatara does not invent a new control plane - it extends the one you already run.
 
-**Human approval at every gate.** The agent proposes; humans decide. No code is written without a human approving the plan. No code merges without a human merging the PR. The operator enforces these gates via allowlist-gated intake and `afterApproval` merge policy. The agent is a powerful assistant, not an autonomous actor with unchecked write access.
+**One hard human gate by default, more when you configure them.** The agent proposes; a human decides whether an issue gets worked - that triage gate is the load-bearing control in the shipped defaults. Be precise about the rest: under the default `afterApproval` merge policy the operator squash-merges the bot's PR **itself** once CI is green, with no human merge step. A human merge is required only if you add a review-gated branch-protection rule on the repo, or if you populate the `reporterLogins` / `maintainerLogins` allowlists (both empty and open by default). Configured that way, tatara is a strongly gated assistant; out of the box the merge is autonomous. See [The Agentic Operating Model](agentic-model.md#gate-3-pr-merge-policy-autonomous-by-default) for exactly which gates are on by default and which you opt into.
 
 **GitOps for everything, including itself.** Tatara deploys via `tatara-helmfile`, a GitOps helmfile repository driven by an in-cluster ARC runner. Operator deployments happen through pull requests that render a diff. Helm chart versions and image tags are pinned in git. `kubectl set-image` is explicitly forbidden.

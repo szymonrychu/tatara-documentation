@@ -63,7 +63,7 @@ The operator checks that the project's memory service is ready (tatara-memory ho
 1. Clones the repository.
 2. Fetches the issue title, body, and all existing comments via the GitHub API.
 3. Loads the code knowledge graph from tatara-memory.
-4. Resumes the prior conversation from S3 if one exists (on first triage there is none).
+4. Reads the prior handoff summary via `get_handoff` (keyed by the task's conversation key) if a previous pod left one; on first triage there is none.
 5. Presents everything to the agent as a structured prompt and waits for a decision.
 
 The agent has read-only access to the repository and issue at this stage - it is not writing code yet.
@@ -122,7 +122,7 @@ The agent:
 2. Queries the code knowledge graph for relevant context.
 3. Plans the change (it may spawn sub-agents for large or cross-repo work).
 4. Writes code, commits, and pushes to branch `tatara/task-<taskname>`.
-5. Calls `change_summary` with a PR title, PR body, what was delivered, and optionally what remains.
+5. Calls `change_summary` with a PR title, PR body, what was delivered, a required **change significance** (`major`/`minor`/`patch`, which drives the semver tag on push-CD repos - see Step 9), and optionally what remains.
 
 The operator then opens the pull request. The PR body contains `Closes #42` so GitHub will auto-close the issue on merge. If the agent reported remaining scope, the operator opens a follow-up issue to track it.
 
@@ -166,12 +166,32 @@ After the squash merge the Task enters **MainCI**. The operator polls the defaul
 | Result | What the operator does |
 |--------|----------------------|
 | Pending | Waits |
-| **Green** | Closes issue #42 (idempotent if `Closes #N` already did it). Task moves to **Done**. |
+| **Green** | For a change with no declared significance, closes issue #42 (idempotent if `Closes #N` already did it) and moves the Task to **Done**. For a push-CD-eligible change (a significance was declared), the Task instead enters **Deploying** - see Step 9 |
 | **Red** | Clears the merged-PR fields, re-enters Implement to open a brand-new PR with the fix |
 
 Once the issue closes, all managed labels disappear with it.
 
 **Issue:** closed.
+
+---
+
+## Step 9 - Opt-in push-CD: tatara ships the change
+
+Repositories wired into semver push-CD (the tatara platform's own components deploy themselves this way) take one more hop before the issue closes. When the agent declared a `change_significance` on `change_summary` - or a human set a `semver:<level>` label on the PR - the merged change is **push-CD-eligible**, and after main CI goes green the Task enters the pod-less **Deploying** lifecycle state instead of going straight to Done.
+
+No agent pod runs during Deploying. The operator supervises a release cascade:
+
+1. The bot-authored PR was auto-merged on green required checks (agents never merge their own PRs).
+2. CI cuts a semver tag from the declared significance (`major`/`minor`/`patch`) and publishes the versioned artifact - container image and/or chart - at `vX.Y.Z`.
+3. The new version pin propagates to the parent repo, and finally to `tatara-helmfile`.
+4. `tatara-helmfile` applies the pin to the cluster on merge (GitOps, via an in-cluster runner).
+5. On a successful apply the operator closes issue #42 and moves the Task to **Done**.
+
+If the apply does not land within the deploy budget, the Task parks recoverable with a `deploy-timeout` reason, so a stuck release surfaces for a human rather than hanging silently.
+
+**Issue label:** `tatara-implementation` (unchanged) until the apply lands, then the issue closes.
+
+This path is opt-in per repository. Repos not wired into push-CD take the Step 8 Green path straight to Done, and everything above stays exactly the same up to that point.
 
 ---
 

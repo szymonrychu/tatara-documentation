@@ -23,6 +23,24 @@ serves both roles; the mode is determined by the subcommand.
                         +-----------+───────────────────────>
 ```
 
+!!! abstract "Security model at a glance"
+    The load-bearing facts for a reader evaluating this as an agent tool surface:
+
+    - **Call-time profile gating is the only authz boundary the CLI enforces.**
+      `tools/list` is byte-identical for every agent kind (so all pods share one
+      Anthropic prompt-cache prefix); the operator-set `TATARA_TOOL_PROFILE` is
+      checked per call, not by filtering the list. See
+      [Per-phase tool gating](#per-phase-tool-gating).
+    - **Fail-open vs fail-closed:** an empty/unset profile is fail-**open** (every
+      registered tool callable, local-dev path, logged WARN); a non-empty but
+      unrecognized profile is fail-**closed** (only the 4 `alwaysOn` tools). A typo
+      never grants the full surface.
+    - **This is defense-in-depth, not a hard boundary.** The profile is set by the
+      operator on the pod, not by the agent. It is not a substitute for SCM branch
+      protection or the operator's own writeback gates.
+    - **Credentials never reach the agent process.** Backend URLs and credential
+      resolution are covered in [URL and credential resolution](#url-and-credential-resolution).
+
 ---
 
 ## Two roles
@@ -88,19 +106,9 @@ sequenceDiagram
 
 ### `tatara login`
 
-Authenticates via OIDC device flow against Keycloak. Prints a URL and a user
-code; after the browser authorization completes the token is saved to disk.
-
-```sh
-tatara login
-# Open this URL in your browser to authorize:
-#   https://auth.szymonrichert.pl/realms/master/device?user_code=ABCD-1234
-# User code: ABCD-1234
-# Waiting for authorization...
-# Logged in. Token saved to /home/you/.config/tatara/token.json
-```
-
-OIDC parameters (defaults match the hosted platform; override for self-hosted):
+OIDC device flow against Keycloak: prints a URL + user code, then writes the
+token to `~/.config/tatara/token.json` on authorization. OIDC parameters
+(defaults match the hosted platform; override for self-hosted):
 
 | Parameter | Default |
 |---|---|
@@ -262,11 +270,13 @@ graph built by tatara-memory-repo-ingester.
 | `code_communities` | Detected communities; optionally list members |
 | `code_bridges` | High-betweenness bridge entities between communities |
 
-### Operator tools (25)
+### Operator tools (26)
 
 Target: `tatara-operator`. Cover project/task lifecycle, issue management, and
-agent self-reporting. A selection of these appears in each profile (see gating
-below). The four `alwaysOn` tools are present in every profile:
+agent self-reporting. Twenty-five are registered via the shared `op()` helper
+(including `project_list`); `report_internal_issue` is registered separately, for
+26 in the group. A selection of these appears in each profile (see gating below).
+The four `alwaysOn` tools are present in every profile:
 
 | Tool | Always available |
 |---|---|
@@ -279,6 +289,7 @@ Additional operator tools (profile-gated):
 
 | Tool | Description |
 |---|---|
+| `project_list` | List all Projects (registered and callable; granted to no named profile - reachable only in fail-open mode) |
 | `task_list` | List tasks in a project |
 | `task_update` | Update task notes/status |
 | `subtask_list` / `subtask_create` / `subtask_update` | Agent self-planning subtask ledger |
@@ -357,7 +368,7 @@ A high-level orientation:
 | `implement` | `implement` | No | r/w | `task_update`, subtask tools, `change_summary`, `decline_implementation`, `already_done`, `submit_handover` |
 | `review` | `review` | No | No | `task_update`, `subtask_list`, `review_verdict`, `submit_handover` |
 | `triage` | `triageIssue` | No | No | `task_list`, `task_update`, subtask tools, `issue_outcome`, `comment`, `comment_on_issue` |
-| `lifecycle` | `issueLifecycle` | Yes | r/w | largest profile (63 tools): union of every other profile's operator tools |
+| `lifecycle` | `issueLifecycle` | Yes | r/w | largest profile (63 tools) - one long-lived pod spans Triage -> Implement -> Merge. **Not** a union of every other profile: its 14 operator tools omit `refine`'s `list_issues`/`list_commits`/`close_issue`/`edit_issue`, `brainstorm`/`incident`'s `propose_issue`, `brainstorm`'s `skip_research`, and `create_issue`/`project_list` |
 | `incident` | `incident` | Yes | r/w | `task_list`, `task_update`, subtask tools, `propose_issue`, `comment_on_issue`, `change_summary`, `decline_implementation`, `submit_handover` |
 | `selfImprove` | `selfImprove` | No | No | `task_update`, subtask tools, `change_summary`, `pr_outcome`, `decline_implementation`, `already_done`, `submit_handover` |
 
@@ -433,8 +444,8 @@ installed in the image and injects the environment the CLI needs:
       "args": ["mcp"],
       "env": {
         "TATARA_MEMORY_URL": "http://tatara-memory.tatara.svc:8080/api/v1/memory",
-        "TATARA_OPERATOR_URL": "http://tatara-operator.tatara.svc:8081/api/v1/operator",
-        "TATARA_CHAT_URL": "http://tatara-chat.tatara.svc:8082/api/v1/chat",
+        "TATARA_OPERATOR_URL": "http://tatara-operator.tatara.svc:8080",
+        "TATARA_CHAT_URL": "http://chat-tatara.tatara.svc:8080",
         "TATARA_TOOL_PROFILE": "implement",
         "TATARA_PROJECT": "tatara",
         "TATARA_TASK": "tatara-tatara-cli-42",
@@ -459,7 +470,12 @@ Key points:
 - `TATARA_TASK` and `TATARA_PROJECT` are injected so that operator tools that
   accept `task` or `project` as optional arguments can fall back to these env
   vars. The agent rarely needs to pass them explicitly.
-- Backend URLs use in-cluster DNS (`*.tatara.svc`). The default hosted URLs are
-  never used inside pods.
+- Backend URLs use in-cluster DNS (`*.tatara.svc`); the default hosted URLs are
+  never used inside pods. Note the exact shapes the operator injects: the operator
+  REST base is the service root on `:8080` with **no** `/api/v1/operator` suffix
+  (`http://tatara-operator.tatara.svc:8080`), and chat is the **per-project**
+  service `chat-<project>` on `:8080` (`http://chat-<project>.<ns>.svc:8080`), not
+  a shared `tatara-chat`. Operator ports `:8081`/`:8082` are the operator's own
+  health and internal-callback binds, not client-facing service ports.
 - The MCP server can optionally expose a `/metrics` endpoint
   (`TATARA_MCP_METRICS_ADDR`), scraped by the Prometheus stack.

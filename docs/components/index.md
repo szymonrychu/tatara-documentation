@@ -4,10 +4,15 @@ title: Components
 
 # Components
 
-Tatara is split into eight independent GitHub repositories. Each ships its own
-Helm chart (or deploy mechanism), CI pipeline, and independent release lifecycle.
+This section covers the eight independent GitHub repositories that make up the
+running platform and its deploy/observability tooling. Each ships its own Helm
+chart (or deploy mechanism), CI pipeline, and independent release lifecycle.
 There is no umbrella helmfile and no monorepo. Components compose into the
 platform at runtime but version, build, and deploy in isolation.
+
+Two further repos support the platform without being runtime components and are
+documented outside this section: `tatara-agent-skills` (the source of the wrapper
+agent skills) and `tatara-documentation` (this site).
 
 ---
 
@@ -42,7 +47,7 @@ Nothing in the data plane runs without the control plane authorizing it.
 
 | Component | Responsibility |
 |---|---|
-| `tatara-operator` | Single source of truth for task state (`Project` / `Repository` / `Task` / `Subtask` CRDs). Decides what runs, when, and with what context. Receives SCM webhooks, enforces concurrency limits, drives the agent turn loop, writes results back to the SCM as PRs and comments. |
+| `tatara-operator` | Single source of truth for task state. Reconciles four CRDs (`Project` / `Repository` / `Task` / `QueuedEvent`); a fifth, `Subtask`, is a data-only REST object with no reconciler. Decides what runs, when, and with what context. Receives SCM and Grafana webhooks, enforces concurrency and token-budget limits, drives the agent turn loop, supervises deploys, writes results back to the SCM as PRs and comments. |
 | `tatara-helmfile` | Single source of truth for deployment state. Every Helm release version and every enrollment CR is pinned here. No component is deployed outside this repo's apply pipeline. |
 
 ### Data plane
@@ -77,12 +82,15 @@ They do not participate in the core agent turn loop.
 
     ---
 
-    The orchestration brain. Owns four CRDs reconciled by a controller-runtime
-    manager: `Project`, `Repository`, `Task`, and `Subtask`. Provisions per-project
-    memory stacks (CNPG Postgres, Neo4j, LightRAG, tatara-memory), ingests repos,
-    receives HMAC-verified GitHub and GitLab webhooks, turns labelled issues into
-    Tasks, spawns `tatara-claude-code-wrapper` pods, and writes results back as
-    one PR per changed repository plus an issue comment.
+    The orchestration brain. Reconciles four CRDs with a controller-runtime
+    manager: `Project`, `Repository`, `Task`, and `QueuedEvent` (a fifth,
+    `Subtask`, is a data-only REST object; `WorkItem` is a Go struct, not a CRD).
+    Provisions per-project memory stacks (CNPG Postgres, Neo4j, LightRAG,
+    tatara-memory), ingests repos, receives HMAC-verified GitHub/GitLab and
+    bearer-verified Grafana webhooks, admits queued work against concurrency and
+    token-budget gates, spawns `tatara-claude-code-wrapper` pods, supervises the
+    post-merge push-CD cascade, and writes results back as one PR per changed
+    repository plus an issue comment.
 
     [:octicons-arrow-right-24: tatara-operator](operator.md)
 
@@ -157,9 +165,10 @@ They do not participate in the core agent turn loop.
     The single source of truth for what is running. A Helmfile repo with four
     releases (`tatara-operator`, `tatara-chat`, `project-tatara`,
     `project-infrastructure`). PRs post a sticky `helmfile diff` comment; merge
-    to main triggers `helmfile apply` on an in-cluster ARC runner with a
-    cluster-admin ServiceAccount. Both the Helm chart version (`0.0.0-g<sha>`) and
-    the image tag pin live here.
+    to main triggers `helmfile apply` on the in-cluster ARC runner
+    (`arc-runner-tatara-helmfile`), using that runner pod's in-cluster
+    ServiceAccount. Both the Helm chart version (bare semver `X.Y.Z`) and the
+    image tag (`vX.Y.Z`) pin live here, auto-bumped by the push-CD pipeline.
 
     [:octicons-arrow-right-24: tatara-helmfile](helmfile.md)
 
@@ -297,12 +306,19 @@ graph TB
 
 ## Release model
 
-Every component that ships a container image uses a `0.0.0-g<sha>` semver
-pre-release tag. The `g` prefix is required: an all-digit leading segment
-(e.g. `0707870`) fails semver validation in `helm package`. Chart versions
-follow the same scheme. `tatara-helmfile` pins both the chart version
-and the image tag independently - an image-only update does not require a
-chart version bump, and vice versa.
+Since the semver push-CD migration (2026-07-05), every component that ships a
+container image publishes at a bare-semver image tag (`vX.Y.Z`) and its chart at
+the matching bare semver (`X.Y.Z`). The release pipeline cuts the tag from a
+`semver:*` label on the merged PR, auto-propagates the version pins into a
+`tatara-helmfile` PR, coalesces sibling components into a deploy train, and lets
+the operator close the originating issue on apply. `tatara-helmfile` pins the
+chart version and the image tag independently - an image-only update does not
+require a chart version bump, and vice versa.
+
+The legacy `0.0.0-g<sha>` pre-release scheme (the `g` prefix avoids an all-digit
+leading segment failing `helm package` semver validation) is still packaged on
+every push to main, but the deployed pins are the bare-semver releases, not the
+per-commit charts.
 
 !!! warning "No hand deploys"
     Every release flows through `tatara-helmfile`. Direct `kubectl set-image`,
