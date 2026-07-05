@@ -146,16 +146,21 @@ nav:
     - QueuedEvent: reference/queued-event.md
     - Subtask: reference/subtask.md
     - WorkItem: reference/work-item.md
+    - MCP Tools by Agent Kind: reference/mcp-tools.md
   - Workflows:
     - workflows/index.md
     - Brainstorm: workflows/brainstorm.md
     - Issue Lifecycle: workflows/issue-lifecycle.md
     - Incident Response: workflows/incident.md
     - PR / MR Review: workflows/review.md
+    - Refine: workflows/refine.md
+    - Deep Architectural Research: workflows/research.md
+    - Semver Push-CD: workflows/push-cd.md
   - Operations:
     - operations/index.md
     - Deployment & GitOps: operations/deployment.md
     - Observability: operations/observability.md
+    - Tuning & On/Off: operations/tuning.md
     - Runbooks: operations/runbooks.md
     - Security:
       - operations/security/index.md
@@ -169,3 +174,10 @@ nav:
     - From Issue to PR: explainers/issue-to-pr.md
     - How Agents Remember Your Code: explainers/memory-graph.md
     - Inside an Agent Session: explainers/agent-sessions.md
+  - Appendix:
+    - appendix/index.md
+    - Design Docs: appendix/design-docs/index.md
+
+not_in_nav: |
+  /appendix/design-docs/[0-9]*.md
+  /appendix/design-docs/_*.md

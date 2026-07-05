@@ -13,6 +13,16 @@ Any of:
 2. The `triggerLabel` is added to an existing issue
 3. A periodic `issueScan` cron picks up labeled issues not yet in the queue
 
+!!! note "`triageIssue` is a legacy Task kind"
+    The `Task.Spec.Kind` enum still lists `triageIssue` as a valid value, and the operator's
+    writeback/turn-loop switches still route it, but no production code path creates a new
+    `triageIssue` Task anymore. Every issue-related Task creation site (`mrScan`, `issueScan`,
+    the backstop sweep) now creates `issueLifecycle` directly, which starts its own state
+    machine at the `Triage` phase described below. `triageIssue` is retained only so
+    Tasks created before this consolidation can finish via the old arms; a `TestBindersNeverCreateTriageIssueOrSelfImprove`
+    guard enforces that no binder creates a new one. Treat any reference to `triageIssue`
+    elsewhere in the docs or CRD as historical.
+
 ## State machine
 
 ```mermaid

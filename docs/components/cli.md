@@ -67,7 +67,7 @@ sequenceDiagram
     participant CH as tatara-chat
 
     CC->>CLI: MCP tools/list
-    CLI-->>CC: filtered tool list (by TATARA_TOOL_PROFILE)
+    CLI-->>CC: full tool list (identical for every profile)
 
     CC->>CLI: MCP tools/call "query" {mode, text}
     CLI->>KK: ensure token fresh (cc grant / disk refresh)
@@ -209,8 +209,13 @@ timeout) on an existing `tatara` entry. Only `command` and `args` are updated.
 
 ## MCP tool surface
 
-The server registers tools from four groups, assembled at startup based on the
-active profile.
+The server registers **all** tools from every group at startup, unconditionally
+- the `tools/list` response is byte-identical for every agent kind so all pods
+share one Anthropic prompt-cache prefix. Profile gating happens later, at
+call time (see [Per-phase tool gating](#per-phase-tool-gating)). For the
+authoritative per-kind allow-sets, counts, and where the gating code lives, see
+the [MCP Tool Profiles reference](../reference/mcp-tools.md); the tables below
+are a high-level tour of the groups.
 
 ### Memory tools (13)
 
@@ -257,7 +262,7 @@ graph built by tatara-memory-repo-ingester.
 | `code_communities` | Detected communities; optionally list members |
 | `code_bridges` | High-betweenness bridge entities between communities |
 
-### Operator tools (~30)
+### Operator tools (25)
 
 Target: `tatara-operator`. Cover project/task lifecycle, issue management, and
 agent self-reporting. A selection of these appears in each profile (see gating
@@ -291,8 +296,8 @@ Additional operator tools (profile-gated):
 | `list_issues` | List open/closed issues across project repos |
 | `list_commits` | Recent default-branch commits across project repos |
 | `close_issue` | Close an issue with a mandatory explanatory comment |
-| `edit_issue` | Patch issue title, body, or labels |
-| `create_issue` | Create an issue directly (splits, followups) |
+| `edit_issue` | Patch issue **title and body only** - labels are not editable (they drive the lifecycle state machine and stay operator-controlled) |
+| `create_issue` | Registered but granted to **no named profile**; reachable only in fail-open (empty profile) mode |
 
 ### Chat tools (10)
 
@@ -311,31 +316,59 @@ Target: `tatara-chat`. Enable agent-to-agent communication rooms.
 | `chat_poll_messages` | Poll for new messages (advances cursor) |
 | `chat_get_log` | Paginated full room log |
 
+### Handoff tools (4)
+
+Target: `tatara-chat`. Carry continuity between agent sessions (added after the
+tool surface was last widely documented). Granted only to continuity-carrying
+profiles; `delete_handoff` is `refine`-only, since refine is the handoff groomer.
+
+| Tool | Gate |
+|---|---|
+| `write_handoff` | `handoff` profiles |
+| `get_handoff` | `handoff` profiles |
+| `list_handoffs` | `handoff` profiles |
+| `delete_handoff` | `refine` only |
+
 ### Per-phase tool gating
 
-The operator sets `TATARA_TOOL_PROFILE` in the agent pod env. The CLI reads
-this at startup and filters the tool registry. Memory and code-graph tools are
-always included in every named profile. Chat tools are included only for phases
-where multi-agent coordination is expected. An empty or unknown profile is
-fail-open: the full tool set is served with a WARN log.
+The operator sets `TATARA_TOOL_PROFILE` in the agent pod env. The CLI does
+**not** filter `tools/list` - every tool is registered for every profile so the
+list stays byte-identical and cache-shareable (Component 4a). Gating is enforced
+at **call time**: before dispatching a tool handler the server checks the
+resolved per-profile allow-set, and a denied call returns
+`tool "<name>" is not permitted for profile "<profile>"` without reaching the
+backend. Memory, code-graph, and the 4 `alwaysOn` tools are callable in every
+named profile. Chat and handoff tools are gated to profiles where multi-agent
+coordination or session continuity is expected.
 
-| Profile | Task kind(s) | Chat | Operator tools included |
-|---|---|---|---|
-| `implement` | `implement` | No | `task_update`, subtask tools, `change_summary`, `decline_implementation`, `already_done`, `submit_handover` |
-| `review` | `review` | No | `task_update`, `subtask_list`, `review_verdict`, `submit_handover` |
-| `brainstorm` | `brainstorm`, `healthCheck` | Yes | `task_list`, subtask tools, `propose_issue`, `comment_on_issue`, `skip_research` |
-| `triage` | `triageIssue` | No | `task_list`, `task_update`, subtask tools, `issue_outcome`, `comment`, `comment_on_issue` |
-| `lifecycle` | `issueLifecycle` | Yes | All of: `task_list`, `task_update`, subtask tools, `issue_outcome`, `comment`, `comment_on_issue`, `change_summary`, `decline_implementation`, `already_done`, `pr_outcome`, `review_verdict`, `submit_handover` |
-| `incident` | `incident` | Yes | `task_list`, `task_update`, subtask tools, `propose_issue`, `comment_on_issue`, `change_summary`, `decline_implementation`, `submit_handover` |
-| `selfImprove` | `selfImprove` | No | `task_update`, subtask tools, `change_summary`, `pr_outcome`, `decline_implementation`, `already_done`, `submit_handover` |
-| `refine` | `refine` | No | `task_list`, `list_issues`, `list_commits`, `close_issue`, `edit_issue`, `create_issue`, `comment_on_issue` |
+- **Empty/unset profile** -> fail-**open**: every registered tool is callable
+  (local-dev path), logged as a WARN.
+- **Non-empty but unrecognized profile** -> fail-**closed**: only the 4
+  `alwaysOn` tools, logged as a WARN. A typo must never grant the full surface.
+
+The per-kind allow-sets and exact counts are in the
+[MCP Tool Profiles reference](../reference/mcp-tools.md) (source of truth).
+A high-level orientation:
+
+| Profile | Task kind(s) | Chat | Handoff | Notable operator tools |
+|---|---|---|---|---|
+| `refine` | `refine` | No | r/w + **delete** | groom-only: `task_list`, `list_issues`, `list_commits`, `close_issue`, `edit_issue` (title/body), `comment_on_issue`. **No `create_issue`, no label edits** |
+| `brainstorm` | `brainstorm`, `healthCheck` | Yes | r/w | `task_list`, subtask tools, `propose_issue`, `comment_on_issue`, `skip_research` |
+| `implement` | `implement` | No | r/w | `task_update`, subtask tools, `change_summary`, `decline_implementation`, `already_done`, `submit_handover` |
+| `review` | `review` | No | No | `task_update`, `subtask_list`, `review_verdict`, `submit_handover` |
+| `triage` | `triageIssue` | No | No | `task_list`, `task_update`, subtask tools, `issue_outcome`, `comment`, `comment_on_issue` |
+| `lifecycle` | `issueLifecycle` | Yes | r/w | largest profile (63 tools): union of every other profile's operator tools |
+| `incident` | `incident` | Yes | r/w | `task_list`, `task_update`, subtask tools, `propose_issue`, `comment_on_issue`, `change_summary`, `decline_implementation`, `submit_handover` |
+| `selfImprove` | `selfImprove` | No | No | `task_update`, subtask tools, `change_summary`, `pr_outcome`, `decline_implementation`, `already_done`, `submit_handover` |
 
 !!! note "Security intent"
-    Profile gating limits the blast radius of a prompt-injection attack. A
-    `review` agent has no tool to push commits or open issues. A `brainstorm`
-    agent cannot call `change_summary` or `pr_outcome`. This is a defense-in-
-    depth measure, not a hard security boundary - the tool profile is set by the
-    operator pod, not by the agent itself.
+    Call-time profile gating limits the blast radius of a prompt-injection
+    attack. A `review` agent has no tool to push commits or open issues. A
+    `brainstorm` agent cannot call `change_summary` or `pr_outcome`. `refine`
+    is deliberately deny-by-default: groom-only, with no `create_issue` and no
+    label mutation. This is a defense-in-depth measure, not a hard security
+    boundary - the tool profile is set by the operator pod, not by the agent
+    itself.
 
 ---
 

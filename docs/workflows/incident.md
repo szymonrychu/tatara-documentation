@@ -176,6 +176,32 @@ spec:
 
 ---
 
+## 5a. Tier-revert incidents
+
+A `tatara_tier_quality` alert (fired by the quality-feedback loop when a model/effort tier
+downgrade regresses review or CI outcomes for a given `kind`) routes through the **identical**
+webhook path as any other Grafana alert: same bearer check, same `groupHash` dedup, same
+`incident` Task, same alert-class queue slot. There is no separate code path, dedup key, or
+Task kind for tier-revert.
+
+The only branch is in **which goal the agent gets**. The webhook checks
+`CommonLabels["tatara_tier_quality"] == "true"`:
+
+| `tatara_tier_quality` label | Goal | Behavior |
+|---|---|---|
+| absent / `false` | `GoalProject` | Standard read-only investigation ending in `propose_issue`; the agent is explicitly told not to remediate |
+| `true` | `GoalTierRevert(project, kind, model)` | Investigates the quality regression for the named `kind`/`model` and opens a **GitOps MR against `tatara-helmfile`** (`values/project-<project>/common.yaml`) bumping `agent.modelByKind[kind]` back to the higher tier (e.g. `claude-opus-4-8`) and raising `agent.effortByKind[kind]` |
+
+!!! warning "Agent proposes, never merges"
+    `GoalTierRevert` explicitly instructs the agent to open the `tatara-helmfile` MR and stop -
+    "Do NOT merge." The tier revert is agent-**proposed** GitOps, not a live edit of the
+    `Project` CR's `modelByKind`/`effortByKind` fields via an MCP tool, and not a dedicated
+    operator reconcile loop. It goes through the same human/CI-gated `tatara-helmfile` merge
+    path as any other deploy pin change, consistent with the platform's GitOps-only deploy
+    rule.
+
+---
+
 ## 6. Queue priority
 
 Incident events are enqueued with `class: alert` rather than the default `class: normal`.
