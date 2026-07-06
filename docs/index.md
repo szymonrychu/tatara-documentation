@@ -64,6 +64,14 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     [:octicons-arrow-right-24: Observability](operations/observability.md)
 
+-   :material-autorenew: **tatara Builds tatara**
+
+    ---
+
+    Tatara is enrolled as its own first Project: it brainstorms, implements, and reviews its own improvements, turns its own alerts into code and alerting fixes, and keeps these docs refreshed from the features it ships.
+
+    [:octicons-arrow-right-24: Self-Improvement](concepts/self-improvement.md)
+
 </div>
 
 ---

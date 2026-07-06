@@ -24,6 +24,14 @@ Tatara is built on a small set of ideas that, once understood, make the rest of 
 
     [:octicons-arrow-right-24: Why tatara](why-tatara.md)
 
+-   :material-autorenew: **tatara Builds tatara**
+
+    ---
+
+    Tatara is enrolled as its own first Project and manages its own codebase - proposing, implementing, and reviewing its own improvements. Concrete examples of brainstorm-driven refactors, alert-driven code and alerting fixes, refinement that closes already-delivered work, and documentation that refreshes itself.
+
+    [:octicons-arrow-right-24: Self-Improvement](self-improvement.md)
+
 -   :material-map-check-outline: **Portability & Requirements**
 
     ---
