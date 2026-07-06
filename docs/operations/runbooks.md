@@ -84,6 +84,33 @@ kubectl -n tatara describe project <project> | grep -A5 -i memory
 
 ---
 
+## Memory postgres/neo4j replica stuck (HA degraded, API still serving)
+
+**Symptoms:** `Memory postgres or neo4j container stuck waiting` fires (`alerts/tatara-memory.yaml`).
+Unlike [Memory stack unavailable](#memory-stack-unavailable), the memory API keeps serving via the
+surviving primary, so agent turns are not failing and `TataraMemoryStackFailed` / "Memory stack stuck
+not ready" stay silent - only this rule catches the degraded HA member.
+
+**Diagnosis:** (substitute the affected `<project>`; the alert's `pod` label tells you which family)
+```bash
+kubectl -n tatara cnpg status mem-<project>-pg                              # postgres member
+kubectl -n tatara get pods -l cnpg.io/cluster=mem-<project>-pg              # postgres pods
+kubectl -n tatara get pods -l app.kubernetes.io/instance=mem-<project>,app.kubernetes.io/component=neo4j  # neo4j pods
+kubectl -n tatara describe pod <stuck-pg-or-neo4j-pod>
+```
+
+**Common causes:**
+1. **WAL/data volume too small** - a cnpg replica crash-loops during basebackup/catchup if its
+   volume fills. Check `kubectl -n tatara get pvc -l cnpg.io/cluster=mem-<project>-pg`.
+2. **CephFS `CreateContainerError`** - see [CephFS write-cap wedge](#cephfs-write-cap-wedge-cnpg-checkpoint-hang) below.
+3. **Legitimate re-clone in progress, not a false positive** - the rule keys on the container waiting
+   *reason* (`CrashLoopBackOff`/`ImagePullBackOff`/`CreateContainerError`/...), not pod-not-ready, so a
+   replica genuinely `Running` through basebackup/catchup does not trip it even past 10m.
+
+Act before the remaining primary also fails - a second member down is a full outage, not just degraded HA.
+
+---
+
 ## CephFS write-cap wedge (CNPG checkpoint hang)
 
 **Symptoms:** CNPG Postgres pod stuck in `end-of-recovery checkpoint`, pwrite64 hang in `D` state, all agent turns stalled.
