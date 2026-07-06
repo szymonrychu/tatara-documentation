@@ -53,6 +53,8 @@ Component repos build via per-repo CI triggered by GitHub webhook on push to `ma
 
 **Chart packaging:** release charts are packaged with the bare semver version (`helm package --version X.Y.Z`) and `helm push`ed to Harbor OCI. Any SHA-suffixed pre-release chart version must use a `g` prefix (e.g. `0.0.0-g0707870`) because Helm's semver validation rejects a pre-release segment that starts with a digit; a bare `0.0.0-0707870` is invalid.
 
+Harbor chart tags are immutable too, same as image tags. If the tag `cut tag` computes has already been published (e.g. the git tag sequence was realigned below an already-released chart version), `helm push` fails with `412 precondition: '<chart>:<version>' configured as immutable`. `release.yml` treats that specific error as a benign no-op — immutability guarantees the existing artifact is identical — and continues to the `tatara-helmfile` version-bump step rather than hard-failing the release and wedging the cascade. Any other push failure (auth, network) still fails the release.
+
 ## ARC runner
 
 The `tatara-helmfile` `apply.yaml` and `diff.yaml` workflows run on an in-cluster GitHub Actions Runner Controller (ARC, `actions-runner-controller`) scale set (`runs-on: arc-runner-tatara-helmfile`). ARC is the GitHub self-hosted runner autoscaler; it is unrelated to Argo CD. The runner ServiceAccount has a `cluster-admin` binding (bounded to the tatara namespace). It has no KUBECONFIG - it uses the in-cluster ServiceAccount token directly.
