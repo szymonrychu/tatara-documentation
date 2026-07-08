@@ -44,7 +44,7 @@ The key within the Secret is exactly `token` (validated alongside `webhookSecret
 Two consumers read the `token` key:
 
 - **Operator (server-side):** reads `token` via the Kubernetes API for its own SCM write-backs (comments, labels, approvals, PR opens) and read scans.
-- **Wrapper pods:** the operator injects it as the `GIT_TOKEN` env var via a `SecretKeyRef` from the same `token` key, so the agent's `git`/SCM operations run as the bot. The token is never baked into the pod spec or image.
+- **Wrapper pods:** the operator injects it as the `GIT_TOKEN` env var via a `SecretKeyRef` from the same `token` key, so the agent's `git`/SCM operations run as the bot. The token is never baked into the pod spec or image. The wrapper also re-exports it as `GITHUB_TOKEN` and `MISE_GITHUB_TOKEN` process env so `mise install` (and its aqua backend) authenticate as the bot when fetching tool releases from the GitHub API, avoiding unauthenticated rate limits during bootstrap. Both keys carry a `_TOKEN` suffix and are auto-redacted from logs.
 
 ## Bot as commit author
 
