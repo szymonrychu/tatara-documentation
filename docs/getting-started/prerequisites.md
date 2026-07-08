@@ -91,17 +91,18 @@ for per-project webhook registration.
 
 ### Default StorageClass (ReadWriteOnce)
 
-Every enrolled Project provisions two PersistentVolumeClaims via the default StorageClass:
+Every enrolled Project provisions three PersistentVolumeClaims via the default StorageClass:
 
-- CNPG Postgres: **10 Gi** per replica (default 1 replica; see CNPG section below).
+- CNPG Postgres data (PGDATA): **10 Gi** per replica (default 1 replica; see CNPG section below).
+- CNPG Postgres WAL: **8 Gi** per replica, on its own dedicated volume.
 - Neo4j graph store: **10 Gi**.
 
-Plan for at least **20 Gi** free capacity per Project you intend to enroll.
+Plan for at least **28 Gi** free capacity per Project you intend to enroll.
 `ReadWriteOnce` access mode is sufficient; `ReadWriteMany` is not required unless you
 share a cluster-level BuildKit cache volume across CI runners.
 
-Both values are configurable per Project via `spec.memory.pgStorage` and
-`spec.memory.neo4jStorage`.
+These values are configurable per Project via `spec.memory.pgStorage`,
+`spec.memory.pgWalStorage`, and `spec.memory.neo4jStorage`.
 
 ### metrics-server (optional)
 
@@ -137,7 +138,8 @@ Each Project gets one Postgres cluster:
 | Field | Default | Notes |
 |---|---|---|
 | `spec.memory.pgInstances` | `1` | Replicas. Set `3` for production HA. |
-| `spec.memory.pgStorage` | `10Gi` | Per-replica PVC size. |
+| `spec.memory.pgStorage` | `10Gi` | Per-replica PGDATA PVC size. |
+| `spec.memory.pgWalStorage` | `8Gi` | Per-replica WAL PVC size, separate from PGDATA. |
 | Extension | `pgvector` | Auto-installed via `postInitApplicationSQL`. tatara-memory and LightRAG share one database (`tatara_memory`). |
 
 !!! warning "Single-replica Postgres is fragile on CephFS"
