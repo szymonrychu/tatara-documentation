@@ -291,7 +291,7 @@ If the issue is out of scope:
 
 ## What to do when a Task is Parked
 
-A Task enters **Parked** when the operator cannot proceed without human input: the babysit deadline expired, a merge conflict was not resolved, the iteration cap was hit, or the agent explicitly declined with `decline_implementation`. The operator always posts a comment explaining what stopped it.
+A Task enters **Parked** when the operator cannot proceed without human input: the babysit deadline expired, a merge conflict was not resolved, the iteration cap was hit, or the agent explicitly declined with `decline_implementation`. The operator posts a comment explaining what stopped it, unless the [comment turn-taking gate](../operations/security/bot-identity.md#comment-turn-taking-gate) withholds it - e.g. a Task that keeps parking on the same unanswered thread stops re-commenting after the first note.
 
 Your options:
 
