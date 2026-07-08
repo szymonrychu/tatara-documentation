@@ -65,6 +65,17 @@ GitHub and GitLab have dedicated noreply commit email formats for bot accounts. 
 
 This is enforced in code, not through configuration. See [Approval Gates](approval-gates.md) for how the self-approve hold and the human-comment release fit into the full merge-gate flow.
 
+## Comment turn-taking gate
+
+Mechanical bot comments (park notes, terminal-diagnostics posts, alert-group re-fire recurrence notes) pass through a turn-taking gate before posting, so the operator does not pile up repeated comments on the same thread:
+
+- **Rule 2 - never comment on the bot's own PR/MR.** If the target PR/MR was authored by `botLogin`, the comment is withheld outright. The author check trusts the webhook's `AuthorLogin` hint only for GitHub (where it is the true author); on GitLab, where that field is the webhook actor rather than the resource author, the operator reads the PR/MR's authoritative author instead.
+- **Rule 1 - stay silent while the bot already has the last word.** On an issue or a human-authored PR/MR, the operator withholds a new comment if its own most recent comment on the thread is still unanswered - unless a comment from a *silence breaker* (an account listed in `reporterLogins` or `maintainerLogins`, unioned; if both lists are empty, any non-bot account qualifies) landed at or after it. This is what stops the runaway re-commenting an alert re-fire or a repeatedly-failing terminal task used to produce.
+
+Both rules fail open: a missing bot login, an unreadable comment list, or any other read error lets the comment through rather than silently dropping it. A withheld comment is recorded as an `operator_scm_writes_total{result="suppressed_bot_mr"}` or `{result="suppressed_last_word"}` write instead - see [Observability](../observability.md#core-counters).
+
+Not every mechanical comment is gated. One-shot, already-idempotent posts - the final "Done, opened PR: ..." outcome notice and PR/MR review verdicts (which key off head SHA and are deduped elsewhere) - post unconditionally, since gating them would risk suppressing the one notice a thread actually needs.
+
 ## One OIDC identity for all agent pods
 
 All agent pods authenticate to tatara-memory and the operator REST API using the **same** OIDC client credentials (the `tatara-claude-code-wrapper` Keycloak client). The `sub` claim is the service account UUID and is identical across all pods.
