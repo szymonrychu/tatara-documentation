@@ -416,8 +416,12 @@ kubectl -n tatara get project my-project -w \
 ```
 
 Wait for `phase` to become `Ready`. The operator sets this once the CNPG cluster, Neo4j,
-LightRAG, and the memory API server are all healthy. Repository enrollments are blocked until
-`status.memory.phase == Ready`.
+LightRAG, and the memory API server are all healthy. Repository enrollments (and task/lifecycle
+agent spawns) stay gated for a further **3 minutes** after `phase` first turns `Ready`, so a
+single blip cannot herd-release the whole backlog at once. During that window a Repository shows
+a `MemoryNotReady` condition with message `waiting for project my-project memory stack to become
+stably Ready` even though `status.memory.phase` already reads `Ready` - this is expected, not a
+stuck reconcile.
 
 !!! info "Phase progression"
     `Provisioning` -> `Ready` (or `Failed` on an apply or password error). If the phase stays
@@ -427,6 +431,9 @@ LightRAG, and the memory API server are all healthy. Repository enrollments are 
     # look for the MemoryReady condition
     kubectl -n tatara get pods -l tatara.dev/project=my-project
     ```
+    If `phase` is already `Ready` but Repository enrollment or task spawning still appears
+    blocked, check `status.memory.readySince` - work stays gated until 3 minutes after that
+    timestamp.
 
 Once `Ready`, grab the webhook URL:
 
