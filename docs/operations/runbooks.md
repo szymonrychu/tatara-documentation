@@ -101,7 +101,11 @@ kubectl -n tatara describe pod <stuck-pg-or-neo4j-pod>
 
 **Common causes:**
 1. **WAL/data volume too small** - a cnpg replica crash-loops during basebackup/catchup if its
-   volume fills. Check `kubectl -n tatara get pvc -l cnpg.io/cluster=mem-<project>-pg`.
+   volume fills. Check `kubectl -n tatara get pvc -l cnpg.io/cluster=mem-<project>-pg`. WAL lives
+   on its own PVC (`spec.memory.pgWalStorage`, default `8Gi`), separate from PGDATA
+   (`spec.memory.pgStorage`); a WAL burst during a standby resync can overrun it even when PGDATA
+   has headroom. **Durable fix:** raise `pgWalStorage` (storage is monotonic - CNPG's admission
+   webhook rejects shrinking it back down).
 2. **CephFS `CreateContainerError`** - see [CephFS write-cap wedge](#cephfs-write-cap-wedge-cnpg-checkpoint-hang) below.
 3. **Legitimate re-clone in progress, not a false positive** - the rule keys on the container waiting
    *reason* (`CrashLoopBackOff`/`ImagePullBackOff`/`CreateContainerError`/...), not pod-not-ready, so a

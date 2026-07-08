@@ -38,6 +38,7 @@ spec:
   memory:
     pgInstances: 3       # CNPG replicas (1=dev, 3=HA)
     pgStorage: 20Gi
+    pgWalStorage: 10Gi   # dedicated WAL volume, separate from PGDATA (default 8Gi)
     neo4jStorage: 10Gi
 ```
 

@@ -103,7 +103,8 @@ Configure storage under `spec.memory`:
 | Field | Default | Description |
 |---|---|---|
 | `pgInstances` | `1` | CNPG cluster replica count. `1` for development; `3` for HA production |
-| `pgStorage` | `10Gi` | PVC size per PostgreSQL replica. Grows with repository count and embedding volume |
+| `pgStorage` | `10Gi` | PVC size per PostgreSQL replica (PGDATA). Grows with repository count and embedding volume |
+| `pgWalStorage` | `8Gi` | PVC size per PostgreSQL replica for CNPG's dedicated WAL volume, separate from PGDATA |
 | `neo4jStorage` | `10Gi` | PVC for the Neo4j graph. Sized proportionally to total ingested lines |
 
 **Scaling guidance:**

@@ -89,11 +89,19 @@ Governs the per-project memory stack: a CNPG-managed Postgres cluster (LightRAG 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `pgInstances` | `int` | `1` | Number of Postgres instances in the CNPG cluster. Set to `3` for HA. |
-| `pgStorage` | `string` | `10Gi` | Persistent volume size for each Postgres instance. |
+| `pgStorage` | `string` | `10Gi` | Persistent volume size for each Postgres instance (PGDATA). |
+| `pgWalStorage` | `string` | `8Gi` | Persistent volume size for CNPG's dedicated WAL volume, separate from PGDATA. |
 | `neo4jStorage` | `string` | `10Gi` | Persistent volume size for Neo4j. |
 
 !!! tip "Production sizing"
     Scale `pgInstances` to `3` to avoid single-node crash-recovery wedges. `pgStorage` is per-instance; total cluster storage is `pgInstances x pgStorage`.
+
+!!! tip "WAL volume sizing"
+    WAL lives on its own PVC (`pgWalStorage`) so a WAL burst -- or WAL retained for a
+    lagging/re-syncing standby -- cannot fill PGDATA and take writes down. CNPG's
+    `max_slot_wal_keep_size` defaults to half the WAL volume, so leave enough headroom
+    for a standby resync to complete without crash-looping. Storage sizes are monotonic:
+    CNPG's admission webhook rejects any shrink, so only raise these values.
 
 ---
 
