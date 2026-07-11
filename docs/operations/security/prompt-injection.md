@@ -16,7 +16,8 @@ The most effective defense: control who can cause the agent to process any conte
 spec:
   scm:
     reporterLogins: [alice, bob, charlie]  # only these accounts trigger agent activity
-    maintainerLogins: [alice, bob]         # these accounts can also approve
+    maintainerLogins: [alice, bob]         # only these accounts can approve, and only by
+                                            # applying the tatara-approved label directly
 ```
 
 **Default:** empty `reporterLogins` means any account can trigger agent activity (open intake, backward-compatible). For production deployments on public repositories, always configure `reporterLogins`.
@@ -46,9 +47,11 @@ The operator sets `TATARA_TOOL_PROFILE` per task kind. The `tatara-cli` MCP serv
 
 A successful injection into a `review` agent gains no ability to push commits - the tool is simply absent.
 
-## Layer 5: Human approval before implementation
+## Layer 5: Maintainer approval before implementation
 
-Even if an injected issue body tricks the triage agent into a bad plan, a human maintainer must approve the plan in the issue thread before any code is written. See [Approval Gates](approval-gates.md).
+Even if an injected issue body tricks the triage agent into a bad plan, no code is written until a
+verified project maintainer applies the `tatara-approved` label directly to the issue - a comment
+in the thread, however convincing, never approves. See [Approval Gates](approval-gates.md).
 
 ## Layer 6: PR review before merge
 
@@ -61,15 +64,14 @@ All code changes are visible as a PR. A human reviewer can detect injected behav
 | Malicious issue body tricks agent into exfiltrating secrets | `reporterLogins` allowlist drops non-allowlisted issues before processing; agent pod egress is constrained by the managed NetworkPolicy (DNS + allowlisted in-cluster services + `443` for SCM/Anthropic/Keycloak); the Anthropic credential (`CLAUDE_CODE_OAUTH_TOKEN`) is mounted from an in-pod Secret only |
 | Issue body instructs agent to push to unrelated branch | Bot PAT only has `repo` scope on enrolled repos; no cross-org access |
 | Issue body instructs agent to open PR to a different repo | Agent clones only repos in `reposInScope`; push is gated to the task branch on enrolled repos |
-| Issue body sets up a loop (agent reopens closed issue) | Dedup by issue ref; a closed issue's lifecycle task is terminal and not re-queued |
+| Issue body sets up a loop (agent reopens closed issue) | Dedup by issue ref; a closed issue's Task is terminal and not re-queued |
 | Webhook replay attack | HMAC-SHA256 signature with rotating secret; validated on every webhook delivery |
 | Bot self-loop (bot's own PR comments triggering new tasks) | `botLogin` excluded from intake; bot-authored issue events are dropped |
 
 ## Recommendations for sensitive environments
 
 1. **Always set `reporterLogins`** - enumerate explicitly who can drive agent activity
-2. **Always set `maintainerLogins`** - enforce the gated approval chain
-3. **Use `mergePolicy: afterApproval`** - require human merge
-4. **Enable branch protection** - require PR review before merge on enrolled repos
+2. **Always set `maintainerLogins`** - it is closed by default (empty means nothing can ever be approved), but populate it with the real accounts you trust to apply `tatara-approved`
+3. **Enable branch protection** - require an approving review (on top of `review`'s own native approval) before merge on enrolled repos, so the forge holds the merge for a human as well
 5. **Monitor intake rejections** - a reporter-allowlist drop is counted as `operator_webhook_events_total{result="ignored"}` (there is no `dropped` result value; querying `result="dropped"` returns nothing and any alert on it would silently never fire). Note `ignored` also covers other benign no-op events (bot-authored, non-actionable actions), so scope the query by `kind`/`action` when alerting.
 6. **Audit commits** - `git log --author=<botEmail>` to review all autonomous commits

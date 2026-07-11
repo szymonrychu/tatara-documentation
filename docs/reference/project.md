@@ -27,6 +27,7 @@ Every `Repository` CR must reference a Project. Every `Task` is born inside a Pr
 | `memory` | [`MemorySpec`](#memoryspec) | see below | no | Size of the per-project memory stack (Postgres + Neo4j). |
 | `scm` | [`ScmSpec`](#scmspec) | - | no | SCM provider binding, labels, cron schedules, and merge policy. |
 | `grafana` | [`GrafanaSpec`](#grafanaspec) | disabled | no | Optional Grafana integration for incident-response tasks. |
+| `documentation` | [`DocumentationSpec`](#documentationspec) | disabled | no | On-switch and docs-target repo for the post-merge documentation agent. Requires `scm.cron.documentation.schedule` to also be set - see [`scm.cron.documentation`](#scmcrondocumentation). |
 | `queue` | [`QueueSpec`](#queuespec) | derived | no | Fine-grained admission queue tuning. |
 | `tokenBudget` | [`TokenBudgetSpec`](#tokenbudgetspec) | nil (inherits operator default, off) | no | Token-budget admission gate: pauses proactive and/or incident work once usage crosses a percentage threshold. |
 | `deployBudgetSeconds` | `int` | `3300` | no | Deploying-phase deadline (seconds) for a push-CD cascade along the longest path to a `tatara-helmfile` apply (2 tag-cut hops, e.g. cli -> wrapper -> helmfile). Exceeding it parks the Task recoverable with reason `deploy-timeout`. |
@@ -55,9 +56,9 @@ Controls every agent pod spawned by this project.
 | `handoverThresholdPercent` | `int` | `25` | When the last-turn input token count exceeds this percentage of `contextWindowTokens`, the next pod receives a compacted handover text instead of the full conversation replay. Below the threshold the full transcript is replayed. |
 | `maxLifecycleIterations` | `int` | `10` (min `3`) | Maximum times a lifecycle task can restart (crash-resume cycles) before the operator marks it terminal. |
 | `effort` | `string` | `xhigh` | Reasoning-effort level forwarded to the wrapper as the `EFFORT` env var. Maps to Claude's extended thinking intensity. One of: `low`, `medium`, `high`, `xhigh`, `max`. |
-| `maxTaskTokens` | `int64` | `0` (disabled) | Per-Task cumulative output-token ceiling for the otherwise turn-uncapped kinds (`implement`, `issueLifecycle`): a runaway backstop, not a cost lever. `0` disables it. When `status.cumulativeTokens` crosses it the Task fails with reason `TokenBudgetExceeded`. |
-| `modelByKind` | `map[string]string` | `{}` | Per-`Task.Spec.Kind` override of `model`. Keys limited to `implement`, `review`, `triageIssue`, `brainstorm`, `issueLifecycle`, `incident`, `selfImprove`, `refine`, `healthCheck` (max 9 entries). `healthCheck` is a pseudo-key: healthCheck Tasks carry `Kind=brainstorm` but resolve against this key first, falling back to the `brainstorm` entry when absent - lets healthCheck be tiered separately from brainstorm. Values must start with `claude-` (max 64 chars). A missing/empty entry falls back to `model`. |
-| `effortByKind` | `map[string]string` | `{}` | Per-kind override of `effort`. Same keys and `healthCheck` pseudo-key semantics as `modelByKind`. Values must be one of `low`, `medium`, `high`, `xhigh`, `max`. A missing/empty entry falls back to `effort`. |
+| `maxTaskTokens` | `int64` | `0` (disabled) | Per-Task cumulative output-token ceiling for the otherwise turn-uncapped `implement` kind: a runaway backstop, not a cost lever. `0` disables it. When `status.cumulativeTokens` crosses it the Task fails with reason `TokenBudgetExceeded`. |
+| `modelByKind` | `map[string]string` | `{}` | Per-`Task.Spec.Kind` override of `model`. The CRD schema allows up to 11 entries (`MaxProperties=11`), gated by an `XValidation` allow-list covering all 11 keys: `implement`, `review`, `clarify`, `triageIssue`, `brainstorm`, `issueLifecycle`, `incident`, `selfImprove`, `refine`, `healthCheck`, `documentation`. All 11 are schema-valid on new writes, not merely retained for old CRs; the retired kinds (`triageIssue`/`issueLifecycle`/`healthCheck`/`selfImprove`) are simply functionally inert since no new Task ever carries those kinds. Locked defaults: `brainstorm`/`incident`/`clarify`/`implement`/`review` = `claude-opus-*`; `documentation`/`refine` = `claude-sonnet-*`. Values must start with `claude-` (max 64 chars). A missing/empty entry falls back to `model`. |
+| `effortByKind` | `map[string]string` | `{}` | Per-kind override of `effort`. Same 11-key allow-list and `MaxProperties=11` as `modelByKind`. Values must be one of `low`, `medium`, `high`, `xhigh`, `max`. A missing/empty entry falls back to `effort`. |
 | `skillsRef` | `string` | `main` | Git ref (branch, tag, or SHA) of the `tatara-agent-skills` repo the wrapper clones at boot. Pin to a SHA to avoid drift from `main`. |
 | `hooks` | [`LifecycleHooks`](#lifecyclehooks) | - | Optional shell commands run at fixed points in the session. |
 | `extraEnvs` | `[]EnvVar` | - | Additional environment variables appended to the wrapper container after the operator's required variables. A stray extra cannot shadow an operator-required variable. |
@@ -120,6 +121,17 @@ Enables an operator-provisioned `grafana-mcp` sidecar and an alert-webhook recei
 
 ---
 
+### DocumentationSpec
+
+The real on/off switch for the post-merge documentation agent, and its docs-target repo. `scm.cron.documentation.schedule` (below) is a separate, required gate - both must be set for the cron to actually fire.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `false` | Master switch. Has no `kubebuilder:default` - do not gate behavior on "unset == false" without checking this field explicitly. |
+| `repo` | `string` | - | Git URL of the central documentation repo the agent maintains. Must also be enrolled as a `Repository` CR under this Project so the bot has push access and mkdocs CI runs. |
+
+---
+
 ### QueueSpec
 
 Fine-grained control over the in-operator admission queue. Omit this section entirely if the defaults derived from `maxConcurrentTasks` are sufficient.
@@ -164,14 +176,14 @@ Binds the project to an SCM provider and configures the full set of operational 
 |---|---|---|---|---|
 | `provider` | `string` | - | **yes** | SCM provider. One of `github` or `gitlab`. |
 | `owner` | `string` | - | **yes** | GitHub organization or user name, or GitLab group/user path. All enrolled repositories must live under this owner. |
-| `botLogin` | `string` | - | **yes** | SCM username of the bot account. Used to distinguish bot comments from human comments and to gate autoapprove. |
+| `botLogin` | `string` | - | **yes** | SCM username of the bot account. Used to distinguish bot comments from human comments, and to exclude the bot from the maintainer-approval actor check (an `issues.labeled` event whose actor is `botLogin` is dropped before that check even runs, so the bot can never self-approve). |
 | `botEmail` | `string` | - | no | Git commit author email for agent commits. When empty the wrapper's default identity applies. |
 
 #### Approval gates
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `maintainerLogins` | `[]string` | `[]` | Trusted human maintainer accounts. Together with `botLogin` they form the "trusted insider" set for autoapprove. When non-empty, a thread comment is only treated as a human approval if its author appears in this list. When empty, any non-bot human reply releases the self-approve hold. Overridable per-repository via `RepositorySpec.maintainerLogins`. |
+| `maintainerLogins` | `[]string` | `[]` | Trusted human maintainer accounts. The **only** approval action the operator recognizes is a listed login applying `approvedLabel` (default `tatara-approved`) directly to the issue - the webhook verifies the label-event actor against this list before recording `Status.ApprovedByMaintainer`. A comment never approves, regardless of author. **Closed by default:** an empty list means no login is a maintainer, so nothing can ever be approved and no issue advances to `implement`. Overridable per-repository via `RepositorySpec.maintainerLogins`. |
 | `reporterLogins` | `[]string` | `[]` | Allowlist of accounts whose issues and issue comments the operator will act on. When non-empty, issues or comments from any account not in this list (and not a bot or maintainer) are silently dropped at intake. Prevents unknown third parties from driving the lifecycle via prompt injection. When empty, any author is accepted. Overridable per-repository via `RepositorySpec.reporterLogins`. |
 
 !!! warning "Prompt-injection defense"
@@ -181,7 +193,7 @@ Binds the project to an SCM provider and configures the full set of operational 
 
 | Field | Type | Default | Enum | Description |
 |---|---|---|---|---|
-| `mergePolicy` | `string` | `afterApproval` | `afterApproval`, `autoMergeOnGreenCI` | When `afterApproval`, the operator merges when the agent signals `pr_outcome=merge` (the agent infers human intent from the PR/issue thread; SCM review state is not independently verified). When `autoMergeOnGreenCI`, the bot merges as soon as CI is green. |
+| `mergePolicy` | `string` | `afterApproval` | `afterApproval`, `autoMergeOnGreenCI` | Merge is performed by the operator-only [deploy supervisor](../workflows/deploy-supervisor.md) - never by an agent - once `review` has applied `tatara-approved` (from a separate pod that cannot approve its own diff) and required checks are green. No agent signals `pr_outcome=merge` in the live kind set. **`mergePolicy` itself has zero effect on this discrete `implement`/`review`/deploy-supervisor flow**: the merge gate (`superviseApprovedPRs`) checks `tatara-approved` + green CI + mergeable state directly and never consults `MergePolicy`. The field is read only by the legacy `issueLifecycle` drain's `handleMerge` path (in-flight pre-redesign Tasks); a new-model Project can leave it at either value with no behavioral difference. |
 | `prReactionScope` | `string` | *(empty)* | `labeledOrMentioned`, `all` | Controls which PRs/MRs trigger bot review. Empty (the default) is the historical open behavior: reviews every open human PR/MR. `labeledOrMentioned` restricts reviews to PRs carrying `triggerLabel` or @-mentioning the bot, so unlabeled/un-mentioned MRs are not re-reviewed every scan cycle. `all` is an explicit synonym for the empty/open default. The default is deliberately not `labeledOrMentioned`: a defaulted value would be indistinguishable from an explicit opt-in, silently gating every project. |
 
 !!! tip "Enable `labeledOrMentioned` to stop repeat re-reviews"
@@ -191,7 +203,7 @@ Binds the project to an SCM provider and configures the full set of operational 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `guidance` | `string` | - | Free-form project charter text appended verbatim to the brainstorm and healthCheck goal context. Use to steer agent proposals toward project-specific priorities. |
+| `guidance` | `string` | - | Free-form project charter text appended verbatim to the brainstorm goal context. Use to steer agent proposals toward project-specific priorities. |
 | `babysitDeadlineMinutes` | `int` | `60` | Minutes after task creation that the babysit controller starts checking for stuck tasks. |
 | `conversationIdleMinutes` | `int` | `60` | Minutes of inactivity after which the operator considers a conversation stale and triggers recovery. |
 
@@ -237,16 +249,28 @@ Opt-in self-driven issue-proposal cycle. Disabled unless `enabled: true`.
 !!! note "One brainstorm per project per cycle"
     `maxPerCycle` is deprecated and ignored. The controller hard-caps brainstorm at one task per project per cycle.
 
-### `scm.cron.healthCheck`
+!!! note "`scm.cron.healthCheck` retired"
+    `healthCheck` had its own cron block (`scm.cron.healthCheck`); it is retired along with the
+    kind. The `HealthCheckActivity` cron is dropped. See the retirement note on
+    [the kind taxonomy](index.md#task-kinds-and-scoping).
 
-Periodic project-health survey. Proposes one targeted discovery issue per cycle via the `tatara-health-check` skill. Disabled unless `enabled: true`.
+### `scm.cron.documentation`
+
+Schedule-driven documentation-repo updates. Replaces the previous push-webhook trigger
+(`maybeEnqueueDocumentation`, now removed) entirely - `documentation` only ever fires on this
+cron, never on a push event. This `CronActivity` has no `enabled` field of its own; the real
+on-switch is the top-level [`spec.documentation`](#documentationspec) block (`enabled` + `repo`).
+Both `spec.documentation.enabled` and a non-empty `schedule` here are required for the cron to
+fire.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | `bool` | `false` | Must be `true` to activate. |
-| `schedule` | `string` | - | 5-field cron expression. |
-| `maxOpenProposals` | `int` | `5` | Same semantics as brainstorm: cycle is skipped when open proposals meet this cap. |
-| `sources` | `[]string` | - | Same allowed values as brainstorm: `docs`, `memory`, `internet`. |
+| `schedule` | `string` | - | 5-field cron expression. Empty disables the activity. |
+| `maxPerRepo` | `int` | `1` | Maximum in-progress documentation tasks per repo (per-repo lane throttle). |
+
+On each tick the agent determines when docs were last updated and what changed since (a
+diff-since-last-run across the enrolled repos), and updates the docs repo only if the delta is
+non-trivial.
 
 ### `scm.cron.refine`
 
@@ -265,7 +289,7 @@ The operator projects a set of SCM labels onto issues to communicate task phase.
 | Field (`scm.*`) | Default value | Semantics |
 |---|---|---|
 | `brainstormingLabel` | `tatara-brainstorming` | Issue is in triage or discussion (pre-approval). Applied by the triage agent. |
-| `approvedLabel` | `tatara-approved` | Issue is approved for implementation. Set when a maintainer approves the proposal thread. |
+| `approvedLabel` | `tatara-approved` | Issue is approved for implementation. Set only by a `maintainerLogins` member applying this exact label directly to the issue - the operator never applies it itself, and never treats a comment or a non-maintainer's/bot's label-apply as equivalent. |
 | `implementationLabel` | `tatara-implementation` | Implementation is in flight. Applied when the implement task starts. |
 | `declinedLabel` | `tatara-declined` | Issue was declined before implementation (triage reject). |
 | `incidentLabel` | `tatara-incident` | Issue originated from an incident investigation. Applied additively alongside `brainstormingLabel`; never swept by the phase-label reconciler. |
@@ -302,9 +326,10 @@ All timestamps are RFC 3339 and reflect the last time the corresponding activity
 | `lastMRScan` | MR/PR review scan |
 | `lastIssueScan` | Issue scan |
 | `lastBrainstorm` | Brainstorm cycle |
-| `lastHealthCheck` | Health check cycle |
+| `lastDocumentation` | Documentation cron cycle |
 | `lastCDScan` | Push-CD deploy-supervision backstop scan |
 | `lastRefine` | Refine pre-step |
+| `lastHealthCheck` | RETIRED - `healthCheck` no longer fires. Read-only, kept only for back-compat round-trip of stored Projects; no writer sets it any more. |
 
 ### TokenBudgetStatus
 
@@ -349,11 +374,11 @@ spec:
     # (11)!
     maxTaskTokens: 3000000
     modelByKind:
-      triageIssue: claude-sonnet-5
-      review: claude-sonnet-5
+      documentation: claude-sonnet-5
+      refine: claude-sonnet-5
     effortByKind:
-      triageIssue: low
-      review: medium
+      documentation: low
+      refine: medium
     skillsRef: 395713a0ef849fde8df5e27121840e043276eccf
     hooks:
       # (3)!
@@ -375,6 +400,11 @@ spec:
     enabled: true
     url: https://grafana.example.com
     secretRef: grafana-tatara-credentials
+
+  # (15)!
+  documentation:
+    enabled: true
+    repo: https://github.com/my-org/my-docs
 
   queue:
     # (6)!
@@ -436,12 +466,9 @@ spec:
         sources:
           - memory
           - docs
-      healthCheck:
-        enabled: true
+      documentation:
         schedule: "0 10 * * 1"
-        maxOpenProposals: 8
-        sources:
-          - memory
+        maxPerRepo: 1
       refine:
         closedLookbackDays: 14
 ```
@@ -453,10 +480,11 @@ spec:
 5. Grafana integration provisions a `grafana-mcp` sidecar for incident-response tasks. The `secretRef` Secret must contain `serviceAccountToken` and `webhookSecret` keys.
 6. `capacity` overrides the `maxConcurrentTasks` default for queue admission. `alertCapacity` reserves dedicated slots so incident tasks are never starved by a backlog of normal tasks.
 7. `botLogin` must match the SCM account whose token is in `scmSecretRef`. Mismatches cause the operator to misidentify its own comments as human input.
-8. `maintainerLogins` + `reporterLogins` form the security perimeter. At minimum set `maintainerLogins` to restrict who can approve proposals.
-9. MR scan every 15 minutes, issue scan hourly, brainstorm and health check weekly on Monday morning.
+8. `maintainerLogins` + `reporterLogins` form the security perimeter. `maintainerLogins` is not optional hardening here - it is **required** for anything to ever be approved: empty means no login can ever satisfy the maintainer-approval check, so no issue advances to `implement`.
+9. MR scan every 15 minutes, issue scan hourly, brainstorm and documentation cron weekly on Monday morning.
 10. Deploy budgets bound how long a `Deploying`-phase Task can wait for its push-CD cascade to reach a `tatara-helmfile` apply before parking recoverable. `deployBudgetSeconds` covers the longest 2-hop path (e.g. cli -> wrapper -> helmfile); `deploySingleHopBudgetSeconds` is tighter for single-hop artifacts (operator, memory, ingester, chat).
-11. `maxTaskTokens` is a runaway backstop for the turn-uncapped `implement`/`issueLifecycle` kinds, not a cost lever. `modelByKind`/`effortByKind` tier specific kinds down (here `triageIssue`/`review` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a SHA to avoid `main` drift.
+11. `maxTaskTokens` is a runaway backstop for the turn-uncapped `implement` kind, not a cost lever. `modelByKind`/`effortByKind` tier specific kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a SHA to avoid `main` drift.
 12. `tokenBudget` is off unless this block is present with `enabled: true`. `customWindow` mode meters absolute tokens against `tokenLimit` inside the cron-anchored `resetSchedule`/`windowDuration` window; `claudeSubscription` mode gates on wrapper-reported Claude usage percentages instead (see [TokenBudgetSpec](#tokenbudgetspec)).
 13. `cdScan` is the push-CD deploy-supervision backstop: it sweeps stalled `Deploying` Tasks past 1.5x the deploy budget and rerolls them. Empty `schedule` disables it.
 14. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `maxOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
+15. `documentation.enabled` + `documentation.repo` is the real on-switch and docs-target repo for the post-merge documentation agent; `scm.cron.documentation.schedule` (below) is a separate, also-required gate - the cron `CronActivity` has no `enabled` field of its own.

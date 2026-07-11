@@ -37,7 +37,7 @@ kind: QueuedEvent
 | `source` | TaskSource | SCM work-item that originated the event |
 | `labels` | `map[string]string` | Labels to apply to the created Task |
 | `annotations` | `map[string]string` | Annotations to apply to the created Task |
-| `name` | string | Fixed Task name (for idempotent admission, e.g. issueLifecycle) |
+| `name` | string | Fixed Task name (for idempotent admission, e.g. clarify) |
 | `generateName` | string | Name prefix when `name` is empty |
 | `provider` | string | SCM provider (for pod naming) |
 | `podRepo` | string | Repo slug used in pod name |
@@ -65,14 +65,14 @@ Alert-class events (incidents) have dedicated reserved capacity. A full normal q
 
 When a new `QueuedEvent` arrives with a `dedupKey` that matches an existing `Queued` or `Admitted` event, the new event is dropped. This prevents duplicate Tasks when, for example, a webhook fires twice or a cron overlaps with a still-running task for the same issue.
 
-For `issueLifecycle` tasks, the dedup key is the issue `owner/repo#N` reference. The operator uses a fixed `name` (not `generateName`) to make admission idempotent even if the QueuedEvent is re-created.
+For `clarify` tasks, the dedup key is the issue `owner/repo#N` reference. The operator uses a fixed `name` (not `generateName`) to make admission idempotent even if the QueuedEvent is re-created.
 
 ## Inspecting the queue
 
 ```sh
 kubectl -n tatara get queuedevents
 # NAME                        SEQ   CLASS    KIND             STATE
-# my-project-12345            17    normal   issueLifecycle   Queued
+# my-project-12345            17    normal   clarify          Queued
 # my-project-alert-98765      18    alert    incident         Admitted
 
 kubectl -n tatara describe queuedevent my-project-12345

@@ -48,7 +48,7 @@ you need the normal-pool and alert-pool (incident) concurrency to diverge from
 ## Disable a specific flow
 
 Every cron-driven activity (`mrScan`, `issueScan`, `cdScan`) is off when its
-`schedule` is empty. `brainstorm` and `healthCheck` additionally require
+`schedule` is empty. `brainstorm` and `documentation` additionally require
 `enabled: true` - clearing `enabled` (or leaving it unset) disables them
 regardless of `schedule`.
 
@@ -58,11 +58,11 @@ regardless of `schedule`.
 | Issue scan | `scm.cron.issueScan.schedule: ""` |
 | Push-CD deploy-supervision backstop | `scm.cron.cdScan.schedule: ""` |
 | Brainstorm (self-driven proposals) | `scm.cron.brainstorm.enabled: false` |
-| Health check (periodic tech-debt survey) | `scm.cron.healthCheck.enabled: false` |
+| Documentation (periodic docs upkeep) | `scm.cron.documentation.enabled: false` |
 
 `scm.cron.refine` has no independent schedule - it fires as a mandatory
 barrier before every due scan/brainstorm cycle and cannot be disabled short of
-removing all of mrScan/issueScan/brainstorm/healthCheck schedules.
+removing all of mrScan/issueScan/brainstorm/documentation schedules.
 
 Both live projects currently run `mrScan` every 2h and `issueScan` every 4h
 (stretched from hourly for token conservation; push webhooks cover real-time
@@ -136,29 +136,24 @@ agent:
   model: claude-opus-4-8
   effort: high
   modelByKind:
-    triageIssue: claude-sonnet-5
-    review: claude-sonnet-5
+    documentation: claude-sonnet-5
+    refine: claude-sonnet-5
   effortByKind:
-    triageIssue: low
-    review: medium
+    documentation: medium
+    refine: medium
 ```
 
-`modelByKind`/`effortByKind` accept nine keys (kubebuilder caps them at
-`MaxProperties=9` with a matching enum validation): the eight distinct
-`Task.Spec.Kind` values you tier per kind - `implement`, `review`,
-`triageIssue`, `brainstorm`, `issueLifecycle`, `incident`, `selfImprove`,
-`refine` - plus `healthCheck`. `healthCheck` is itself a ninth `Task.Spec.Kind`
-enum value, but healthCheck work is spawned as a `brainstorm`-Kind Task carrying
-`activity=healthCheck`; the map resolves the `healthCheck` key first, then falls
-back to the `brainstorm` entry, then the project-wide `model`/`effort`. A missing
-or empty entry falls back to the project-wide value. Both live projects currently
-tier only `triageIssue` and `review` to Sonnet; every other kind stays on Opus at
-`high` effort.
+`modelByKind`/`effortByKind` accept the 7 live `Task.Spec.Kind` values:
+`brainstorm`, `incident`, `clarify`, `implement`, `review`, `documentation`,
+`refine`. A missing or empty entry falls back to the project-wide
+`model`/`effort`. The locked default tiering is `brainstorm`/`incident`/
+`clarify`/`implement`/`review` on Opus at `high` effort, and `documentation`/
+`refine` on Sonnet - both live projects run this default unmodified.
 
 ### 3. Per-task runaway backstop (`maxTaskTokens`)
 
 `agent.maxTaskTokens` is a cumulative output-token ceiling for the
-otherwise turn-uncapped `implement`/`issueLifecycle` kinds. It is a safety
+otherwise turn-uncapped `implement`/`clarify` kinds. It is a safety
 backstop against a looping agent, not a cost-tuning lever - `0` (default)
 disables it. Both live projects run `maxTaskTokens: 3000000`. Tune it from
 observed per-kind token telemetry once a healthy-run distribution is known,

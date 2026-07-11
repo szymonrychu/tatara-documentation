@@ -20,10 +20,10 @@ was [enrolled to dogfood itself](../appendix/design-docs/2026-06-07-enroll-tatar
 early, and has been running against its own repos ever since.
 
 !!! info "This page is itself an example"
-    The document you are reading was written by a tatara `issueLifecycle` agent, on a
-    branch it opened, in reaction to an approved improvement proposal, and merged through
-    the normal PR flow - see [Documentation refreshes itself](#documentation-refreshes-itself)
-    below.
+    The document you are reading was written by a tatara `documentation` agent, on a
+    branch it opened, in reaction to changes landed elsewhere in the project, and merged
+    through the normal PR flow - see
+    [Documentation refreshes itself](#documentation-refreshes-itself) below.
 
 ---
 
@@ -35,8 +35,8 @@ forgotten, and the docs drift from the code. Tatara inverts each of these becaus
 same agent loop that ships product work is pointed at the platform itself:
 
 - **Idle improvements get done.** The periodic [brainstorm](../workflows/brainstorm.md)
-  surveys the code graph and files concrete proposals; a human approves the good ones and
-  the loop implements them.
+  surveys the code graph and files concrete proposals; a maintainer applies `tatara-approved`
+  to the good ones and the loop implements them.
 - **Incidents close their own loops.** A firing alert spawns an
   [incident](../workflows/incident.md) investigation that produces an evidence-backed
   issue - which is then implemented, whether the fix is in code or in the alerting itself.
@@ -55,9 +55,10 @@ tatara's own repositories.
 
 The [brainstorm](../workflows/brainstorm.md) cron queries tatara's own knowledge graph,
 scores improvement candidates, and files them as proposal issues carrying the
-`tatara-brainstorming` label. **Brainstorm never implements** - a human approves a proposal
-(applying `tatara-approved` or the `triggerLabel`) before the loop writes any code. This is
-[Gate 4](agentic-model.md#gate-4-brainstorm-proposal-approval) and it is the load-bearing
+`tatara-brainstorming` label. **Brainstorm never implements** - a verified maintainer must
+apply `tatara-approved` directly to the proposal issue before the loop writes any code; a
+comment never releases it, and the bot cannot approve its own proposal. This is
+[Gate 3](agentic-model.md#gate-3-brainstorm-proposal-approval) and it is the load-bearing
 control on self-directed work.
 
 A representative cycle on tatara's own codebase:
@@ -67,16 +68,17 @@ flowchart LR
     A[brainstorm cron<br/>fires on tatara Project] --> B[Query code graph:<br/>find coupling / gaps]
     B --> C[propose_issue:<br/>tighten context guard]
     C --> D[Issue opened,<br/>tatara-brainstorming label]
-    D --> E[Human approves<br/>tatara-approved]
-    E --> F[issueLifecycle Task<br/>implements + opens PR]
-    F --> G[Merged on green CI]
+    D --> E[Maintainer applies label<br/>tatara-approved]
+    E --> F[clarify hands off:<br/>tatara-implementation label]
+    F --> G[implement Task<br/>implements + opens PR]
+    G --> H[review approves,<br/>merged on green CI]
 ```
 
 **Example - a graph-discovered refactor.** A brainstorm pass reading the operator's code
 graph notices that a token-accounting helper is copy-pasted across three reconcilers. It
 files *"Deduplicate per-turn token accounting into a single helper"* with a problem
-statement, a proposed approach, and the expected benefit. A maintainer approves it; an
-`issueLifecycle` agent implements the extraction, adds a table-driven test, and opens a PR
+statement, a proposed approach, and the expected benefit. A maintainer applies `tatara-approved`; `clarify`
+hands off to `implement`, which extracts the helper, adds a table-driven test, and opens a PR
 that squash-merges once CI is green. The improvement is one a human would have wanted and
 never scheduled.
 
@@ -93,7 +95,7 @@ against tatara's repos.
 When a Grafana alert fires against tatara's own services, the operator spawns an
 [incident](../workflows/incident.md) agent with read-only Grafana MCP access. It queries
 metrics, logs, and the firing rule, forms a diagnosis, and files one evidence-backed
-issue. That issue is then implemented through the normal lifecycle. Two shapes of fix come
+issue. That issue then goes through the normal `clarify` -> `implement` -> `review` handoff. Two shapes of fix come
 out of this, and tatara does both.
 
 ### 1. Fixing the code the alert pointed at
@@ -177,26 +179,27 @@ contract.
 
 The documentation site you are reading is **not maintained by hand on the side** - it is
 an enrolled `Repository` on the same `tatara` Project as the operator and the memory
-service. Doc updates flow through the identical `issueLifecycle` that ships product code:
-an agent opens a branch, writes the change, and the operator merges the PR on green CI.
+service. Doc updates flow through the schedule-driven `documentation` kind: on each cron
+tick the agent determines when the docs repo was last meaningfully updated, diffs what
+changed across the project's other repos since then, and opens a PR only if the
+accumulated change is non-trivial. There is no push-webhook trigger and no doc-issue - a
+merge elsewhere in the project does not by itself spawn a documentation Task; only the
+next due cron tick does. See [Documentation](../workflows/documentation.md).
 
 The freshness signal comes from the component repos themselves. When a feature lands, the
 implementing agent records what shipped via
-[`change_summary`](../workflows/issue-lifecycle.md) - its `delivered_scope` and
-`most_problematic` fields are recorded into the MR body **and carried into the docs**. The
-same scan and brainstorm machinery that watches for code drift also watches for
-documentation drift (`docs` is a first-class [brainstorm
-source](../workflows/brainstorm.md#configuring-brainstorm-sources)), so a merged
-component MR that changes behaviour becomes a documentation issue, worked by a docs
-lifecycle task.
+[`change_summary`](../workflows/implement.md) - its `delivered_scope` and
+`most_problematic` fields are recorded into the MR body **and carried into the docs** the
+next time the `documentation` cron fires.
 
 ```mermaid
 flowchart LR
-    A[Component MR merges<br/>feature delivered] --> B[change_summary records<br/>delivered_scope]
-    B --> C[Scan / brainstorm notices<br/>doc drift vs. delivered feature]
-    C --> D[Doc issue opened on<br/>tatara-documentation]
-    D --> E[issueLifecycle agent<br/>edits docs/*.md, opens PR]
-    E --> F[mkdocs build --strict<br/>green -> merged -> published]
+    A[Component MRs merge<br/>features delivered] --> B[change_summary records<br/>delivered_scope on each]
+    B --> C[documentation cron tick<br/>scm.cron.documentation]
+    C --> D{Non-trivial change<br/>since last run?}
+    D -->|no| E[Skip this tick]
+    D -->|yes| F[documentation agent<br/>edits docs/*.md, opens PR]
+    F --> G[mkdocs build --strict<br/>green -> merged -> published]
 ```
 
 You can see the evidence in this repository's own history: commits authored as

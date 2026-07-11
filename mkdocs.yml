@@ -151,12 +151,14 @@ nav:
   - Workflows:
     - workflows/index.md
     - Brainstorm: workflows/brainstorm.md
-    - Issue Lifecycle: workflows/issue-lifecycle.md
     - Incident Response: workflows/incident.md
+    - Clarify: workflows/clarify.md
+    - Implement: workflows/implement.md
     - PR / MR Review: workflows/review.md
+    - Documentation: workflows/documentation.md
     - Refine: workflows/refine.md
     - Deep Architectural Research: workflows/research.md
-    - Semver Push-CD: workflows/push-cd.md
+    - Deploy Supervisor & Semver Push-CD: workflows/deploy-supervisor.md
   - Operations:
     - operations/index.md
     - Deployment & GitOps: operations/deployment.md

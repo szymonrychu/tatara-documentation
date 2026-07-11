@@ -14,14 +14,14 @@ apiVersion: tatara.dev/v1alpha1
 kind: Subtask
 ```
 
-!!! important "Subtasks drive the generic turn loop, not `issueLifecycle`"
-    Subtasks are the execution model for the **single-shot** task kinds (`implement`, `review`,
-    `triageIssue`, `brainstorm`, `selfImprove`, `refine`, `healthCheck`, `incident`): the Task
-    reconciler's generic turn loop plans, then drains Pending subtasks one turn at a time. The
-    `issueLifecycle` kind is different - it runs its own multi-phase state machine
-    (`Triage` -> `Conversation` -> `Implement` -> `MRCI` -> ...) and does **not** decompose into
-    ordered Subtasks. See the [issueLifecycle state machine](task.md#state-machine) for that
-    driver.
+!!! important "Subtasks drive every kind's turn loop, not deploy supervision"
+    Subtasks are the execution model for all seven live agent kinds (`brainstorm`, `incident`,
+    `clarify`, `implement`, `review`, `documentation`, `refine`): the Task reconciler's generic
+    turn loop plans, then drains Pending subtasks one turn at a time. The **deploy supervisor**
+    is different - it is not an agent kind at all, runs its own multi-phase state machine
+    (`Merge` -> `MainCI` -> `Deploying` -> ...) driven entirely by the operator reconcile loop,
+    and does **not** decompose into ordered Subtasks. See the
+    [deploy state machine](task.md#deploy-state-machine) for that driver.
 
 Subtasks are **namespaced** resources. The operator `kubectl` print columns expose `Order`
 and `Phase` so you can monitor progress at a glance:

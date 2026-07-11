@@ -28,7 +28,7 @@ flowchart TD
     F -->|yes| H[call propose_issue MCP tool]
     H --> J[Operator opens issue\non target repo]
     J --> K[Apply tatara-brainstorming label]
-    K --> L[Enqueue issueLifecycle\nTask for the new issue]
+    K --> L[Enqueue clarify\nTask for the new issue]
     L --> M[Human receives proposal\nin issue tracker]
 ```
 
@@ -45,7 +45,7 @@ Brainstorm runs at **project scope**, not per-repo. At most one non-terminal bra
 
 ## Refine barrier
 
-Before a due brainstorm tick proceeds, the operator gates it on the [refine workflow](refine.md) completing a pass first. This is cadence-derived (no separate `refine` cron schedule): a due brainstorm tick creates a `refine` Task and holds (polling roughly every 30s) until that Task reaches a terminal state (`Succeeded` or `Failed` - a failed refine still releases the gate, so a broken refine never wedges brainstorm). Only brainstorm waits on this barrier; `mrScan`, `issueScan`, and `healthCheck` do not.
+Before a due brainstorm tick proceeds, the operator gates it on the [refine workflow](refine.md) completing a pass first. This is cadence-derived (no separate `refine` cron schedule): a due brainstorm tick creates a `refine` Task and holds (polling roughly every 30s) until that Task reaches a terminal state (`Succeeded` or `Failed` - a failed refine still releases the gate, so a broken refine never wedges brainstorm). Only brainstorm waits on this barrier; `mrScan`, `issueScan`, and `documentation` do not.
 
 ## Proposal structure
 
@@ -81,8 +81,18 @@ When the brainstorm identifies a cross-cutting issue affecting multiple reposito
 
 - Each proposal gets a `tatara/systemic-<id>` label
 - The group counts as one against `maxOpenProposals`
-- Per repo, the lead is elected as the **lowest issue number** in that repo for the group; the lead task opens a single combined PR that closes all same-repo siblings from the PR body (`Closes #N, Closes #M`)
+- Per repo, the lead is elected as the **lowest issue number** in that repo for the group; the lead task opens a single combined PR
 - Cross-repo siblings are reference-only in the lead's prompt - the lead never edits another repo's code
+
+!!! warning "Each sibling needs its own maintainer approval"
+    Approval is never group-wide. The lead's combined PR body includes `Closes #N` only for
+    same-repo siblings that already carry their own recorded maintainer approval
+    (`Status.ApprovedByMaintainer` on that sibling's own Task). A sibling with no recorded
+    approval - or one a maintainer explicitly declined - is excluded from the implementation
+    prompt, and any `Closes #N` directive that would otherwise target it is downgraded to
+    `refs #N` before the PR body is posted, so merging the lead PR never force-closes an
+    unapproved sibling's issue. A late approval co-resolves on the next reconcile. See
+    [Approval Gates](../operations/security/approval-gates.md#systemicgrouped-issue-sets-approval-is-per-issue-not-per-group).
 
 ```mermaid
 flowchart LR
@@ -91,6 +101,12 @@ flowchart LR
     S --> R3[Repo A issue #11\nsibling of #10]
     R1 --> |combined PR closes| R3
 ```
+
+For a systemic group spanning up to 6 repos, or any single-repo survey deep enough to need
+per-concern isolation, the brainstorm agent fans out `Agent`-tool subagents split by context
+boundary (per-repo, per-concern) rather than holding all of it in one context - each subagent
+reports back a compact result; the agent never uses the retired `Workflow` tool or `ultracode`
+effort tier for this fan-out.
 
 ## Staleness reaper (auto-decline)
 
@@ -102,12 +118,18 @@ Every issue in an agent's context carries an `[bot-engaged]` marker when the bot
 
 The actual "don't repeat yourself" behaviors that consume this marker live elsewhere:
 
-- **healthCheck** (see below) uses `[bot-engaged]` to decide whether to comment on an existing issue, propose a new one, or skip - it explicitly avoids re-commenting on an issue already marked engaged.
 - **issueScan** independently skips triage re-entry for a bot-authored, brainstorming-labeled issue that has had no human activity since the bot's own comment (bot-only `updatedAt` bumps do not count as engagement).
+
+!!! note "healthCheck absorbed into brainstorm"
+    The retired `healthCheck` kind used to consult `[bot-engaged]` to decide whether to comment
+    on an existing issue, propose a new one, or skip. brainstorm now also absorbs what
+    `healthCheck` used to cover (platform-health survey framed as a proposal) - there is no
+    separate report-issue output type; health-survey findings are filed the same way as any
+    other brainstorm proposal. See [the kind taxonomy](../reference/index.md#task-kinds-and-scoping).
 
 ## Conversation forking
 
-When a brainstorm agent opens multiple proposal issues, each resulting `issueLifecycle` task gets a **forked copy** of the brainstorm conversation (S3 copy-object). This gives each implementation agent the brainstorm context as its starting point, without the transcripts interfering with each other.
+When a brainstorm agent opens multiple proposal issues, each resulting `clarify` task gets a **forked copy** of the brainstorm conversation (S3 copy-object). This gives each `clarify` agent the brainstorm context as its starting point, without the transcripts interfering with each other.
 
 ## Configuring brainstorm sources
 
@@ -126,6 +148,9 @@ spec:
 
 With `internet` in sources, the operator stamps `tatara.io/egress: internet` on the brainstorm Pod, which a NetworkPolicy can use to grant `0.0.0.0/0` egress for that pod class only. As of Phase 1 of the [deep architectural research](research.md) build, this remains the only egress hook - no dedicated web-search/academic MCP servers are wired yet.
 
-## Health check vs. brainstorm
-
-The `healthCheck` workflow is a lighter-weight variant. Instead of proposing new work, it assesses the health of the current platform state (stalled tasks, drift, CI failures) and produces a report issue. It runs on its own `spec.scm.cron.healthCheck` schedule, and unlike brainstorm it retains the `[bot-engaged]`-gated re-comment path described above.
+!!! note "healthCheck retired"
+    The `healthCheck` kind (a lighter-weight variant that assessed platform health - stalled
+    tasks, drift, CI failures - and produced a report issue on its own
+    `spec.scm.cron.healthCheck` schedule) is retired. Its behavior is absorbed into brainstorm's
+    own survey pass, filed as an ordinary brainstorm proposal rather than a separate report-issue
+    output. See [the kind taxonomy](../reference/index.md#task-kinds-and-scoping).

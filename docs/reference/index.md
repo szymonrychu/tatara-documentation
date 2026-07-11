@@ -66,7 +66,7 @@ Key derivation rules:
 
 - A `Project` must exist before any `Repository`, `QueuedEvent`, or `Task` can reference it.
 - A webhook event or cron scan produces a `QueuedEvent`. The dispatcher promotes it to a `Task` when a concurrency slot is available.
-- `issueLifecycle` tasks are given a deterministic name - `lc-` plus the first 16 hex chars of `sha256(projectName \0 issueRef \0 isPR-flag)`, e.g. `lc-3f2a9c1d4b6e0f78` - so repeated webhook deliveries for the same work item collide on `Create` (AlreadyExists) and stay idempotent. The `isPR` flag disambiguates a GitHub issue #N from a PR #N in the same repo. Grep `kubectl get tasks` for the `lc-` prefix, not for the issue number.
+- `clarify` tasks are given a deterministic name - `lc-` plus the first 16 hex chars of `sha256(projectName \0 issueRef \0 isPR-flag)`, e.g. `lc-3f2a9c1d4b6e0f78` - so repeated webhook deliveries for the same work item collide on `Create` (AlreadyExists) and stay idempotent. The `isPR` flag disambiguates a GitHub issue #N from a PR #N in the same repo. Grep `kubectl get tasks` for the `lc-` prefix, not for the issue number.
 - `Subtask` resources are created by the agent via the MCP REST API; the Task reconciler feeds them to the running agent session one turn at a time.
 - The `WorkItems` ledger is seeded from `Task.Spec.Source` on first reconcile and maintained by the operator as the agent drives MCP actions (open PR, merge, close issue).
 
@@ -76,15 +76,29 @@ A `Task.Spec.Kind` determines whether the task is *repo-scoped* (requires `repos
 
 | Kind | Scope | Description |
 |------|-------|-------------|
-| `implement` | repo | Implements a GitHub/GitLab issue; opens a PR |
-| `review` | repo | Reviews a human-authored PR/MR and posts a verdict |
-| `selfImprove` | repo | Agent-driven repo improvement (CI, docs, linting) |
-| `triageIssue` | repo | Triages a new issue: implement, close, or discuss |
-| `issueLifecycle` | repo | Full lifecycle driver: Triage -> Implement -> MRCI -> Merge -> MainCI |
-| `brainstorm` | project | Surveys all project repos; proposes new improvement issues |
-| `healthCheck` | project | Surveys repo health; proposes targeted discovery issues |
-| `incident` | project | Investigates a Grafana alert; files incident proposals |
-| `refine` | project | Pre-scan refiner: loads closed issues for dedup detection |
+| `brainstorm` | project | Surveys all project repos + external research; proposes a linked issue set across affected repos |
+| `incident` | project | Investigates a Grafana alert; files an evidence-backed incident proposal |
+| `clarify` | project | Runs the triage/human conversation on a new or commented issue; hands off to `implement` |
+| `implement` | project | Picks up the whole Task CR (all issues+comments+open PRs/MRs); opens/updates PRs across every affected repo under the Task |
+| `review` | project | Reviews all PRs/MRs under a Task; approves (label + native review) or invokes `implement` again |
+| `documentation` | repo (docs repo) | Schedule-driven: updates docs when non-trivial changes have landed since the last run |
+| `refine` | project | Groom-only backlog peer: closes duplicates, dedups, recovers stalled `implement` runs |
+
+!!! note "Retired kinds: still valid enum values, no longer created"
+    `selfImprove`, `triageIssue`, `healthCheck`, and `issueLifecycle` remain in the
+    `Task.Spec.Kind` CRD enum so pre-existing stored Tasks can still be read, but no production
+    code path creates a new Task of any of these kinds. `triageIssue` and the front half of
+    `issueLifecycle` were absorbed into `clarify`; `healthCheck` was absorbed into `brainstorm`;
+    the back half of `issueLifecycle` (Merge/MainCI/Deploying) survives as the operator-only
+    [deploy supervisor](../workflows/deploy-supervisor.md), not an agent kind. Treat any other
+    reference to these four names elsewhere in the docs or CRD as historical.
+
+!!! info "Almost everything is project-scoped now"
+    Where the prior model split kinds roughly evenly between repo-scoped and project-scoped,
+    six of the seven live kinds are now project-scoped - the Task CR is a cross-repo umbrella
+    (see [Task reference](task.md#task-umbrella-and-the-workitem-ledger)) and `implement`/`review`
+    write back across every affected repo under one Task. Only `documentation` stays repo-scoped,
+    since it targets one docs repo per run.
 
 ## Conventions used in field tables
 
@@ -144,20 +158,20 @@ kubectl -n tatara get repositories
 | `lastMRScan` | `*Time` | Timestamp of most recent MR scan cycle |
 | `lastIssueScan` | `*Time` | Timestamp of most recent issue scan cycle |
 | `lastBrainstorm` | `*Time` | Timestamp of most recent brainstorm cycle |
-| `lastHealthCheck` | `*Time` | Timestamp of most recent health-check cycle |
+| `lastDocumentation` | `*Time` | Timestamp of most recent documentation cron cycle |
 | `lastCDScan` | `*Time` | Timestamp of the most recent push-CD deploy-supervision backstop sweep (the `cdScan` cron) |
 | `lastRefine` | `*Time` | Timestamp of most recent refine pre-step |
 | `tokenBudget` | object | Token-budget accumulator/snapshot: the custom-window running total and the latest Claude-subscription usage snapshot reported by the wrapper. See [Project reference](project.md). |
 
 ## Task.Status fields at a glance
 
-`Task.Status` is split into two logical sections: fields that apply to all task kinds, and lifecycle fields used exclusively by `issueLifecycle` tasks.
+`Task.Status` is split into two logical sections: fields that apply to all task kinds, and deploy-supervision fields populated only once a Task's PR has been review-approved and the deploy supervisor has taken it over.
 
 ### All kinds
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `phase` | enum | `Planning`, `Running`, `Succeeded`, `Failed`, `Deploying` (empty for `issueLifecycle` except during the post-merge `Deploying` window) |
+| `phase` | enum | `Planning`, `Running`, `Succeeded`, `Failed`, `Deploying` (populated for every kind; `Deploying` only once the deploy supervisor has taken the Task over post-merge) |
 | `podName` | string | Name of the current or most recent agent pod |
 | `turnsCompleted` | int | Total agent turns executed |
 | `prURL` | string | URL of the PR/MR opened (if any) |
@@ -178,33 +192,37 @@ kubectl -n tatara get repositories
 | `lastTurnInputTokens` | int64 | Input token count of the most recent turn (context-window pressure signal) |
 | `cumulativeInput` / `cumulativeOutput` / `cumulativeCacheRead` / `cumulativeCacheCreation` | int64 | Per-category token totals across all turns (uncached input, output, cache-read, cache-creation) |
 
-### issueLifecycle only
+### Deploy-supervision only
+
+Populated only once a Task's PR has been review-approved and the deploy supervisor has taken it
+over - never populated for a `clarify`/`implement`/`review` Task still in agent-driven flow.
+
+!!! note "Wire key vs. Go name"
+    The JSON/CRD key is unchanged: `lifecycleState`. Only the Go struct field was renamed, to
+    `DeployState` (`api/v1alpha1/task_types.go`). `kubectl -o jsonpath` and any Grafana panel or
+    automation must read `.status.lifecycleState`, not `.status.deployState`.
 
 | Field | Type | Enum values | Description |
 |-------|------|-------------|-------------|
-| `lifecycleState` | string | `Triage`, `Conversation`, `Implement`, `MRCI`, `Merge`, `MainCI`, `Deploying`, `Done`, `Stopped`, `Parked` | Current lifecycle phase |
+| `lifecycleState` | string | `Triage`, `Conversation`, `Implement`, `MRCI`, `Merge`, `MainCI`, `Deploying`, `Done`, `Stopped`, `Parked` (front four legacy-drain-only, never set by new-model kinds) | Current deploy-supervision phase (Go field: `DeployState`) |
 | `lastActivityAt` | `*Time` | - | Last state transition or agent activity |
 | `deadlineAt` | `*Time` | - | Babysit deadline; task is parked if exceeded |
 | `headBranch` | string | - | Name of the task's feature branch |
 | `prNumber` | int | - | PR/MR number in the SCM tracker |
 | `mergeCommitSHA` | string | - | SHA of the merge commit after a successful merge |
 | `mergedHeadSHA` | string | - | Head SHA of the most recently merged branch; guards against duplicate re-proposals |
-| `lifecycleIterations` | int | - | Number of full Implement-MRCI-Merge cycles completed |
-| `handover` | string | - | Compacted handover text used when context window exceeds `handoverThresholdPercent` |
-| `conversationObjectKey` | string | - | S3 object key of the full conversation transcript |
-| `sessionID` | string | - | Claude session ID; passed as `--resume` to the next pod |
-| `implementContext` | string | - | Re-entry prompt injected at next Implement turn start; cleared after delivery |
-| `implementEmptyRetries` | int | - | Consecutive empty-commit Implement runs; task is parked after cap |
-| `implementGiveUps` | int | - | Give-up count for this durable lifecycle Task; bounds the auto-reroll backstop |
-| `writebackSkip4xxAttempts` | int | - | Consecutive writeback cycles with all-4xx OpenChange; loop-breaker |
-| `parkReason` | string | - | Reason string from the last Parked transition |
 | `cascadeStage` | string | `tagged`, `parent-pr-open`, `parent-merged`, `helmfile-applied` | Push-CD cascade progress during the `Deploying` phase |
 | `deployedVersion` | string | - | Semver (`vX.Y.Z`) this Task's artifact is driving toward the cluster |
 | `deployArtifact` | string | - | Deploy-ledger artifact identity (`repo@vX.Y.Z`) |
 | `deployDeadline` | `*Time` | - | Deploy-cascade deadline; the Task parks recoverable (`deploy-timeout`) if exceeded |
 
+`lifecycleIterations`, `implementGiveUps`, `implementEmptyRetries`, `writebackSkip4xxAttempts`,
+`handover`, `conversationObjectKey`, `sessionID`, and `implementContext` move to Task-wide fields
+(they now apply across the whole Task's `clarify`/`implement` conversation history, not one
+phase-scoped lifecycle) - see [Task reference](task.md#conversation-resume-fields-all-kinds).
+
 !!! warning "Terminal state detection"
-    A `Task` is terminal when `phase` is `Succeeded` or `Failed`, **or** when `lifecycleState` is `Done`, `Stopped`, or `Parked`. `Deploying` (on either field) is not terminal. Testing `phase` alone misses finished `issueLifecycle` tasks, whose `phase` is empty for the whole lifecycle except the non-terminal `Deploying` window. Use the `TaskTerminal()` helper in the Go client or check both fields in your automation.
+    A `Task` is terminal when `phase` is `Succeeded` or `Failed`, **or** when `lifecycleState` is `Done`, `Stopped`, or `Parked`. `Deploying` (on either field) is not terminal. Use the `TaskTerminal()` helper in the Go client or check both fields in your automation.
 
 ## QueuedEvent lifecycle
 
@@ -226,16 +244,16 @@ The dispatcher evaluates the queue on every reconcile cycle. `normal`-class even
 | Role | Applies to | Meaning |
 |------|-----------|---------|
 | `source` | issue or PR | The originating item that triggered this task |
-| `proposed` | issue | An agent-created proposal issue awaiting human approval |
+| `proposed` | issue | An agent-created proposal issue awaiting a maintainer to apply `tatara-approved` |
 | `closes` | issue | An issue this task's PR will close on merge |
 | `openedPR` | PR | A PR/MR the agent opened |
 | `reviewed` | PR | A human-authored PR the agent reviewed |
 
 | State | Meaning |
 |-------|---------|
-| `proposed` | Proposal issue created; awaiting human approval |
-| `approved` | Human approved the proposal |
-| `declined` | Human or triage agent declined the proposal |
+| `proposed` | Proposal issue created; awaiting a maintainer to apply `tatara-approved` directly (no other action approves it) |
+| `approved` | A verified maintainer applied the `tatara-approved` label directly to the proposal |
+| `declined` | A maintainer applied `tatara-declined`, or the triage agent declined the proposal |
 | `implemented` | Implementation merged; issue closed |
 | `open` | Issue or PR is open in the tracker |
 | `closed` | Issue closed without merge |

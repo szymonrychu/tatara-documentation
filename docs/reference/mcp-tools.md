@@ -70,7 +70,7 @@ Memory (`create_memory`, `get_memory`, `delete_memory`,
 `code_communities`, `code_bridges`) are unconditional: every named profile
 gets all 32 of them, unfiltered.
 
-### alwaysOn (all 8 named profiles, plus fail-closed unknown)
+### alwaysOn (all 7 named profiles, plus fail-closed unknown)
 
 | Tool | Description |
 |---|---|
@@ -101,36 +101,40 @@ everywhere else in the docs tree.
 
 ## Per-kind profile table
 
-`toolProfileForKind` maps a Task `kind` to a profile name (note `triageIssue`
--> `triage` and `issueLifecycle` -> `lifecycle`; the CRD kind and the MCP
-profile name diverge for these two).
+`toolProfileForKind` maps a Task `kind` to a profile name. Under the 7-kind model the profile
+name matches the kind name for all seven live kinds - `clarify` gets its own profile rather than
+diverging from its kind name the way the retired `triageIssue -> triage` /
+`issueLifecycle -> lifecycle` mapping did (confirm this against source at execution time per the
+warning below).
 
 | Profile | Task kind(s) | Chat | Handoff (r/w) | Handoff delete | Operator tools | Total allowed |
 |---|---|:---:|:---:|:---:|---:|---:|
 | `refine` | `refine` | no | yes | **yes** | 6 | 46 |
-| `brainstorm` | `brainstorm`, `healthCheck` | yes | yes | no | 7 | 56 |
+| `brainstorm` | `brainstorm` | yes | yes | no | 7 | 56 |
 | `implement` | `implement` | no | yes | no | 8 | 47 |
 | `review` | `review` | no | no | no | 4 | 40 |
-| `triage` | `triageIssue` | no | no | no | 8 | 44 |
-| `lifecycle` | `issueLifecycle` | yes | yes | no | 14 | 63 |
+| `clarify` | `clarify` | ? | ? | no | ? | ? |
 | `incident` | `incident` | yes | yes | no | 10 | 59 |
-| `selfImprove` | `selfImprove` | no | no | no | 9 | 45 |
+| `documentation` | `documentation` | no | ? | no | ? | ? |
 | *(empty)* | fail-open, local dev | - | - | - | all 22 (+`project_list`) | 72 |
 | *(unrecognized string)* | fail-closed | no | no | no | 0 | 4 |
 
-Total = 32 (memory + code-graph, unconditional) + chat (0 or 10) + handoff
-(0, 3, or 4) + profile-specific operator tools + 4 (alwaysOn). `healthCheck`
-shares Kind and profile with `brainstorm` per the operator ("same goal, same
-tools").
+!!! warning "Do not invent tool counts"
+    `clarify` and `documentation` are new profiles with no shipped tool-set yet as of this
+    plan. The spec names a new `clarify` profile "from old lifecycle/triage" (implying it
+    inherits most of the retired `triage`/`lifecycle` profiles' operator-tool surface) and
+    leaves `documentation`'s tool set unspecified. **Re-derive both from
+    `tatara-cli/internal/mcp/profiles.go` once that change merges** - do not publish a
+    fabricated tool count. `brainstorm` also drops its `healthCheck` dual-kind row since
+    `healthCheck` no longer exists as a kind sharing the profile, and the `selfImprove` profile
+    is removed outright (the kind was already dead before this redesign).
 
-`lifecycle` is the largest named profile (63 tools) because it is a single
-long-lived pod spanning Triage -> Conversation -> Implement -> MRCI -> Merge;
-per-lifecycle-state gating is infeasible without restarting the MCP server,
-so it gets the union of every other profile's operator tools.
+Total = 32 (memory + code-graph, unconditional) + chat (0 or 10) + handoff
+(0, 3, or 4) + profile-specific operator tools + 4 (alwaysOn).
 
 `refine`'s 6-tool operator surface is deliberately deny-by-default: it omits
 `create_issue` (issue creation is an escalation vector) and every SCM-mutation
-or lifecycle-escalation tool. Historical notes elsewhere describe refine as
+or merge-escalation tool. Historical notes elsewhere describe refine as
 "~42 tools" - that count predates the `handoff` group being added (32 + 6 +
 4 = 42); with `handoff` + `delete_handoff` now included, refine is 46.
 
@@ -146,30 +150,37 @@ injecting a profile).
 All 25 `OperatorTools()` (`project_get`, `repo_list`, `task_get` are the
 alwaysOn 3 of these and are omitted below since every profile has them).
 
-| Tool | refine | brainstorm | implement | review | triage | lifecycle | incident | selfImprove |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| `project_list` | | | | | | | | |
-| `task_list` | x | x | | | x | x | x | |
-| `task_update` | | | x | x | x | x | x | x |
-| `subtask_list` | | x | x | x | x | x | x | x |
-| `subtask_create` | | x | x | | x | x | x | x |
-| `subtask_update` | | x | x | | x | x | x | x |
-| `propose_issue` | | x | | | | | x | |
-| `review_verdict` | | | | x | | x | | |
-| `pr_outcome` | | | | | | x | | x |
-| `change_summary` | | | x | | | x | x | x |
-| `submit_handover` | | | x | x | | x | x | x |
-| `issue_outcome` | | | | | x | x | | |
-| `decline_implementation` | | | x | | | x | x | x |
-| `already_done` | | | x | | | x | | x |
-| `skip_research` | | x | | | | | | |
-| `comment` | | | | | x | x | | |
-| `list_issues` | x | | | | | | | |
-| `list_commits` | x | | | | | | | |
-| `close_issue` | x | | | | | | | |
-| `edit_issue` | x | | | | | | | |
-| `create_issue` | | | | | | | | |
-| `comment_on_issue` | x | x | | | x | x | x | |
+!!! warning "clarify and documentation columns are not yet shipped"
+    The `clarify` and `documentation` columns below are placeholders (`?`), not confirmed grants
+    - see the [Do not invent tool counts](#per-kind-profile-table) warning above. `clarify`
+    absorbs the retired `triage`/`lifecycle` profiles' responsibilities per the spec; do not
+    assume it gets their exact per-tool grants without checking `profiles.go` once merged. The
+    `selfImprove` profile is dropped from this matrix entirely (retired kind, no longer wired).
+
+| Tool | refine | brainstorm | implement | review | clarify | incident | documentation |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `project_list` | | | | | | | |
+| `task_list` | x | x | | | ? | x | ? |
+| `task_update` | | | x | x | ? | x | ? |
+| `subtask_list` | | x | x | x | ? | x | ? |
+| `subtask_create` | | x | x | | ? | x | ? |
+| `subtask_update` | | x | x | | ? | x | ? |
+| `propose_issue` | | x | | | ? | x | ? |
+| `review_verdict` | | | | x | ? | | ? |
+| `pr_outcome` | | | | | ? | | ? |
+| `change_summary` | | | x | | ? | x | ? |
+| `submit_handover` | | | x | x | ? | x | ? |
+| `issue_outcome` | | | | | ? | | ? |
+| `decline_implementation` | | | x | | ? | x | ? |
+| `already_done` | | | x | | ? | | ? |
+| `skip_research` | | x | | | ? | | ? |
+| `comment` | | | | | ? | | ? |
+| `list_issues` | x | | | | ? | | ? |
+| `list_commits` | x | | | | ? | | ? |
+| `close_issue` | x | | | | ? | | ? |
+| `edit_issue` | x | | | | ? | | ? |
+| `create_issue` | | | | | | | |
+| `comment_on_issue` | x | x | | | ? | x | ? |
 
 ### By category
 
@@ -194,9 +205,18 @@ alwaysOn 3 of these and are omitted below since every profile has them).
   server-side if omitted or not one of the three enum values. This is what
   drives the auto-merge -> semver tag -> `tatara-helmfile` cascade; humans
   set the equivalent via a `semver:<level>` PR label.
+- `review_verdict`'s `approve` action carries an additional `semver` list
+  (`SemverAssignment{repo, number, level}` per MR). On approve, review
+  stamps a `semver:<level>` label on every MR in the stream - human-authored
+  MRs included, not just tatara-created ones - respecting any label a human
+  already set and otherwise falling back to that MR's own
+  `change_significance`, then `patch`. This is the only semver-labeling path
+  for human MRs, closing the gap where a human-authored MR merged with no
+  label and never released; see [Deploy Supervisor Component
+  1b](../workflows/deploy-supervisor.md#component-1b-review-semver-stamping-human-mrs).
 - `edit_issue` patches only `title` and `body`. Labels are intentionally not
-  editable through this tool - issue labels drive the lifecycle state
-  machine and stay operator/maintainer-controlled, so no profile (including
+  editable through this tool - the four managed labels drive kind handoffs
+  and stay operator/maintainer-controlled, so no profile (including
   `refine`, the groomer) can set them.
 - `decline_implementation` / `already_done` / `skip_research` all require a
   non-empty `reason`; a silent finish with no PR and no outcome call is

@@ -61,9 +61,24 @@ GitHub and GitLab have dedicated noreply commit email formats for bot accounts. 
 
 ## Bot exclusion from approval gates
 
-`spec.scm.maintainerLogins` must NOT include `botLogin`. The self-approve guard does not depend on that convention: the approval-comment scan skips any comment authored by `botLogin` before the approver-membership check runs (`if c.Author == "" || c.Author == botLogin { continue }` in the lifecycle controller), so a bot-authored comment can never release the self-approve hold or count as an approval - even if `botLogin` were mistakenly listed in `maintainerLogins`.
+`spec.scm.maintainerLogins` must NOT include `botLogin` - but the guard does not depend on that
+convention. Approval is granted by exactly one action: a maintainer applying the `tatara-approved`
+label directly to the issue. Two independent checks keep the bot from ever satisfying it:
 
-This is enforced in code, not through configuration. See [Approval Gates](approval-gates.md) for how the self-approve hold and the human-comment release fit into the full merge-gate flow.
+1. **Bot-actor label events are dropped before the maintainer check runs.** The webhook ignores
+   any `issues.labeled` event whose actor is `botLogin` outright - an agent/pod acting as the bot
+   that applies `tatara-approved` to its own (or any) issue never even reaches the maintainer
+   verification step.
+2. **The maintainer check itself excludes the bot.** `IsMaintainer` returns `false` for `botLogin`
+   even if it were mistakenly present in `maintainerLogins`, so a bot login can never satisfy the
+   actor check on its own merits either.
+
+Comments were never part of this check to begin with under the current model - only a verified
+label-apply event sets `Status.ApprovedByMaintainer`, so there is no comment-based path for the
+bot to exploit in the first place.
+
+This is enforced in code, not through configuration. See [Approval Gates](approval-gates.md) for
+how the maintainer-approval label check fits into the full merge-gate flow.
 
 ## Comment turn-taking gate
 

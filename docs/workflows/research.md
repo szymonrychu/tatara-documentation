@@ -64,6 +64,15 @@ Research still rides the existing `spec.scm.cron.brainstorm.sources` egress hook
 stamps `tatara.io/egress: internet` on the brainstorm Pod. No dedicated web-search, academic
 paper, or crawl MCP server is wired to consume that egress yet - that is Phase 2 scope.
 
+## Subagent-only fan-out
+
+The per-repo research fan-out that used to go through the `Workflow` tool (with an `ultracode`
+effort tier) is now plain `Agent`-tool subagent dispatch - same topology (one subagent per repo
+or per research angle, results reported back compactly), cheaper mechanism. `tatara-health-check`
+(the skill backing the retired `healthCheck` kind) is removed along with the kind; its
+"survey and report" behavior is absorbed into brainstorm's own subagent fan-out described on
+[Brainstorm](brainstorm.md).
+
 ## Current capability (Phase 1)
 
 As deployed, deep architectural research is: the existing brainstorm loop, plus a skill that asks

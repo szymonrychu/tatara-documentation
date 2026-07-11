@@ -288,7 +288,7 @@ fresh from a handover. This ensures the context window never overflows.
 ### Fork isolation for brainstorm siblings
 
 When a brainstorm Task generates multiple implementation proposals, each
-proposed issue gets its own independent pod. Rather than starting cold, each
+proposed issue gets its own independent `clarify` pod. Rather than starting cold, each
 sibling pod begins from the brainstorm conversation. The operator uses S3's
 copy-object API to fork the brainstorm transcript onto the sibling's own object
 key (`CONVERSATION_FORK_FROM_KEY`), and the wrapper resumes from that fork. This
@@ -305,10 +305,10 @@ pod. The review pod sets `CHECKOUT_BRANCH` (the PR head) and does not set
 
 ## Context guard and handover
 
-For long-running `issueLifecycle` Tasks that iterate through multiple
-implement-test-fix cycles, context exhaustion is a risk. The operator implements
-a context guard to detect when the agent's context is filling and orchestrate a
-clean handover before it overflows.
+For a Task whose kind spans multiple turns - `implement` in particular, iterating through
+multiple implement-test-fix cycles, and `clarify` during its live-polling window - context
+exhaustion is a risk. The operator implements a context guard to detect when the agent's
+context is filling and orchestrate a clean handover before it overflows.
 
 ### Detection
 

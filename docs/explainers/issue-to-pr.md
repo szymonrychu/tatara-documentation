@@ -25,29 +25,32 @@ You create a GitHub issue in any repository enrolled in your tatara Project. The
 
 **Issue label:** *(nothing yet)*
 
-If you want tatara to start immediately and skip straight to writing code - because the change is already well-defined and you trust it - add the *trigger label* (configured in `Project.spec.triggerLabel`, commonly `tatara`). That fires the webhook path, which skips triage and enters the Implement state directly. For everything else, the periodic issue scan (default: hourly) picks up the issue on its next pass.
+If `spec.scm.reporterLogins`-style intake gating requires it, add the *trigger label*
+(configured in `Project.spec.triggerLabel`, commonly `tatara`) so the webhook path engages
+immediately instead of waiting for the next periodic issue scan (default: hourly). The trigger
+label only affects **intake** - whether the operator creates a Task for this issue at all. It
+does not skip `clarify`'s conversation and it does not grant approval: every issue, trigger-labeled
+or not, still needs a maintainer to apply `tatara-approved` before `implement` runs (see Step 4).
 
-This page follows the full path - issue opened, no trigger label, triage runs first.
+This page follows the full path - issue opened, `clarify` runs first.
 
 ---
 
 ## Step 2 - The operator creates a Task
 
-The issueScan reconciler sees a new open issue in an enrolled repository and creates a **Task** custom resource. A Task is the durable, per-issue unit that carries all state for the entire lifecycle - branch name, PR number, CI results, token counts, and the current state-machine position. There is exactly one Task per issue at a time; reopening the issue re-enters the existing Task rather than creating a new one.
+The issueScan reconciler sees a new open issue in an enrolled repository and creates (or joins) a **Task** custom resource. A Task is the durable, per-project unit that carries state across the whole implementation stream - branch names, PR numbers, CI results, token counts, and (once a PR lands) the deploy supervisor's `lifecycleState`. There is one project-scoped Task per implementation stream; a new issue starts (or joins) that Task's umbrella [`WorkItems` ledger](../reference/task.md#task-umbrella-and-the-workitem-ledger) rather than getting its own isolated object.
 
 ```yaml
 apiVersion: tatara.dev/v1alpha1
 kind: Task
 metadata:
-  name: myproject-myrepo-42-a3f9d  # deterministic from project + issue ref
+  name: myproject-42-a3f9d  # deterministic from project + issue ref
 spec:
-  kind: issueLifecycle
+  kind: clarify
   source:
     issueRef: "owner/myrepo#42"
     number: 42
     title: "Support dark mode in the dashboard"
-status:
-  lifecycleState: Triage
 ```
 
 The operator applies the first label to the issue.
@@ -56,21 +59,21 @@ The operator applies the first label to the issue.
 
 ---
 
-## Step 3 - An agent pod spins up and reads the issue
+## Step 3 - `clarify` reads the issue
 
-The operator checks that the project's memory service is ready (tatara-memory holds a code knowledge graph built from recent repository ingests), then schedules a **wrapper pod** - a container running `tatara-claude-code-wrapper` with `tatara-cli` as its MCP server. The pod:
+The operator checks that the project's memory service is ready (tatara-memory holds a code knowledge graph built from recent repository ingests), then schedules a **wrapper pod** running the `clarify` kind - a container running `tatara-claude-code-wrapper` with `tatara-cli` as its MCP server. The pod:
 
 1. Clones the repository.
 2. Fetches the issue title, body, and all existing comments via the GitHub API.
 3. Loads the code knowledge graph from tatara-memory.
-4. Reads the prior handoff summary via `get_handoff` (keyed by the task's conversation key) if a previous pod left one; on first triage there is none.
+4. Reads the prior handoff summary via `get_handoff` (keyed by the task's conversation key) if a previous pod left one; on first contact there is none.
 5. Presents everything to the agent as a structured prompt and waits for a decision.
 
-The agent has read-only access to the repository and issue at this stage - it is not writing code yet.
+`clarify` has read-only access to the repository and issue at this stage - it does not write code. See [Clarify](../workflows/clarify.md) for the full workflow.
 
 ---
 
-## Step 4 - Triage: should we do this?
+## Step 4 - `clarify` decides: should we do this?
 
 The agent reads the issue and the codebase and calls the `issue_outcome` MCP tool with one of three answers.
 
@@ -81,7 +84,7 @@ The issue is out of scope, already fixed elsewhere, or not actionable. The agent
 - Swaps the label to `tatara-declined`.
 - Posts the reason as a comment.
 - Closes the issue.
-- Marks the Task **Done**.
+- Marks the issue's WorkItem done within the Task.
 
 **Issue label:** `tatara-declined` - then issue closes.
 
@@ -95,24 +98,37 @@ The issue needs clarification, a design choice, or human input. The agent calls 
 
 **Issue label:** `tatara-brainstorming` (waiting)
 
-When you reply, the webhook fires and the Task re-enters Triage immediately: the agent re-reads the full comment thread and tries again. This loop continues until you apply the trigger label (skip to Implement) or 60 minutes pass with no activity (Task parks in **Stopped**, resumable by commenting again).
+When you reply, the webhook fires and `clarify` runs again immediately: the agent re-reads the full comment thread and tries again. This loop continues until a maintainer applies `tatara-approved` (see Path C) or 60 minutes pass with no activity (the Task parks, resumable by commenting again or by the maintainer applying the label directly).
 
-!!! note "Self-approve guard"
-    If the issue was filed by the tatara bot itself (e.g., from a brainstorm proposal), tatara will not auto-approve implementation without a human engaging first. It enters Conversation and waits. Issues opened by a human bypass this guard.
+!!! danger "Comments never approve - only a maintainer's label-apply does"
+    A reply in the thread, no matter how clear ("looks good, ship it") or who wrote it, does
+    **not** approve the issue. The operator only records approval when the webhook sees an
+    `issues.labeled` event for `tatara-approved` whose actor is listed in
+    `spec.scm.maintainerLogins` and is not the bot. This applies uniformly - a bot-authored
+    brainstorm proposal and a human-filed issue are gated identically; there is no fast path
+    for either. If `maintainerLogins` is empty, no actor can ever satisfy this check and the
+    issue never advances past `clarify`, regardless of how much discussion happens. See
+    [Approval Gates](../operations/security/approval-gates.md#gate-2-maintainer-approval-label-who-can-approve-implementation).
 
 ### Path C - implement
 
-The agent decides this is worth building. It calls `issue_outcome(action="implement")`. The operator swaps the label.
+The agent decides this is worth building. It calls `issue_outcome(action="implement")`. The
+operator checks whether a maintainer has already applied `tatara-approved` to the issue
+(`Status.ApprovedByMaintainer` recorded).
 
-**Issue label:** `tatara-approved`
+- **Already approved:** the operator swaps the label to `tatara-approved` -> `tatara-implementation`
+  and schedules an `implement` pod next.
+- **Not yet approved:** the `implement` verdict is downgraded - the issue stays on
+  `tatara-brainstorming` and `clarify` keeps polling, exactly as in Path B, until a maintainer
+  applies the label.
 
-The Task transitions to **Implement**.
+**Issue label:** `tatara-approved` (only once a maintainer has applied it; otherwise stays `tatara-brainstorming`)
 
 ---
 
-## Step 5 - The implement agent writes the code
+## Step 5 - `implement` writes the code
 
-A new pod spawns. The operator sets the implementation label.
+A new pod spawns running the `implement` kind (see [Implement](../workflows/implement.md)). It may work across every affected repo under the Task's umbrella - a run is not scoped to just the repo the issue was filed in. The operator sets the implementation label.
 
 **Issue label:** `tatara-implementation`
 
@@ -120,9 +136,9 @@ The agent:
 
 1. Re-reads the issue and its conversation thread.
 2. Queries the code knowledge graph for relevant context.
-3. Plans the change (it may spawn sub-agents for large or cross-repo work).
+3. Plans the change - for large or cross-repo work it tiers out sub-agents (see [subagent tiering](../workflows/implement.md#subagent-tiering)).
 4. Writes code, commits, and pushes to branch `tatara/task-<taskname>`.
-5. Calls `change_summary` with a PR title, PR body, what was delivered, a required **change significance** (`major`/`minor`/`patch`, which drives the semver tag on push-CD repos - see Step 9), and optionally what remains.
+5. Calls [`change_summary`](../workflows/implement.md) with a PR title, PR body, what was delivered, a required **change significance** (`major`/`minor`/`patch`, which drives the semver tag on push-CD repos - see Step 9), and optionally what remains.
 
 The operator then opens the pull request. The PR body contains `Closes #42` so GitHub will auto-close the issue on merge. If the agent reported remaining scope, the operator opens a follow-up issue to track it.
 
@@ -130,44 +146,53 @@ If the agent exhausted a significant portion of its context window during a long
 
 ---
 
-## Step 6 - CI runs, the operator babysits
+## Step 6 - CI runs; once green, `review` is invoked
 
-The Task moves to **MRCI** (MR CI poll). The pod is gone. Every 30 seconds the operator checks the PR's CI pipeline.
+The `implement` pod is gone once it finishes pushing. Every 30 seconds the operator checks the PR's CI pipeline.
 
 **Issue label:** `tatara-implementation` (unchanged)
 
 | CI result | What the operator does |
 |-----------|----------------------|
 | Pending | Waits and polls again |
-| **Green** | Moves to Merge |
-| **Red** | Re-spawns an Implement pod with the failing check output as context; agent fixes and pushes; repeat |
+| **Green** | The PR becomes eligible for `review`; the operator schedules a review pod |
+| **Red** | Re-spawns an `implement` pod with the failing check output as context; agent fixes and pushes; repeat |
 | Deadline (60 min) | Posts a comment on the PR and parks the Task |
 
-If CI never goes green within the deadline the PR is left open for a human and the Task enters **Parked**. The lifecycle iteration counter (capped at 10 by default) provides a hard backstop so the fix loop cannot run indefinitely.
+If CI never goes green within the deadline the PR is left open for a human and the Task parks. An iteration counter (capped at 10 by default) provides a hard backstop so the fix loop cannot run indefinitely.
 
 ---
 
-## Step 7 - Human approves, the operator merges
+## Step 7 - `review` approves, the deploy supervisor merges
 
-When CI is green, the Task enters **Merge**. The operator reads `mergePolicy` from the Project:
+A `review` pod spawns against the opened PR (see [PR / MR Review](../workflows/review.md)). It
+checks the diff read-only and calls one of three verdicts:
 
-- If `mergePolicy: afterApproval` (the default), the operator merges when the agent signals `pr_outcome=merge`. The agent reads the PR thread and infers whether a human has approved the work; the operator does **not** independently verify SCM review state. To require a hard SCM review gate, pair `afterApproval` with a branch protection rule requiring an approving review before CI passes - the CI gate then proxies human review.
-- If `mergePolicy: autoMergeOnGreenCI`, the operator merges as soon as CI is green, without waiting for the agent's `pr_outcome` signal.
-- Once merge is allowed, the operator calls the GitHub squash-merge API. The author of all commits is the bot account (`spec.scm.botLogin`, e.g., `szymonrychu-bot`).
+- **approve** - applies `tatara-approved` to the PR and posts a native PR approval. This is the
+  entire signal the deploy supervisor needs; no separate human sign-off step runs in the shipped
+  default.
+- **request_changes** - re-adds `tatara-implementation`, invoking `implement` again with the
+  review feedback as context.
+- **comment** - posts feedback without blocking; the Task stays where it is.
 
-If the merge hits a conflict (GitHub returns `405 Method Not Allowed`), the operator re-spawns an Implement agent with instructions to rebase the default branch into the task branch, resolve conflicts, and push. The previous implementation had a bug here where this 405 caused an infinite controller-runtime backoff loop; the current state machine absorbs the error and routes it correctly.
+**Issue label:** `tatara-implementation` (unchanged) until review approves.
+
+Once required checks are green **and** `tatara-approved` is present, the
+[deploy supervisor](../workflows/deploy-supervisor.md) - not any agent pod - merges the PR. If
+the merge hits a conflict, the deploy supervisor re-invokes `implement` to rebase and push again;
+`review` then re-reviews the updated head.
 
 ---
 
 ## Step 8 - Post-merge CI is watched, then the issue closes
 
-After the squash merge the Task enters **MainCI**. The operator polls the default-branch pipeline for the merge commit SHA every 30 seconds.
+After the squash merge, the deploy supervisor polls the default-branch pipeline for the merge commit SHA every 30 seconds.
 
 | Result | What the operator does |
 |--------|----------------------|
 | Pending | Waits |
-| **Green** | For a change with no declared significance, closes issue #42 (idempotent if `Closes #N` already did it) and moves the Task to **Done**. For a push-CD-eligible change (a significance was declared), the Task instead enters **Deploying** - see Step 9 |
-| **Red** | Clears the merged-PR fields, re-enters Implement to open a brand-new PR with the fix |
+| **Green** | For a change with no declared significance, closes issue #42 (idempotent if `Closes #N` already did it) and sets `lifecycleState` to done. For a push-CD-eligible change (a significance was declared), `lifecycleState` instead moves to deploying - see Step 9 |
+| **Red** | Clears the merged-PR fields and re-invokes `implement` to open a brand-new PR with the fix |
 
 Once the issue closes, all managed labels disappear with it.
 
@@ -177,7 +202,7 @@ Once the issue closes, all managed labels disappear with it.
 
 ## Step 9 - Opt-in push-CD: tatara ships the change
 
-Repositories wired into semver push-CD (the tatara platform's own components deploy themselves this way) take one more hop before the issue closes. When the agent declared a `change_significance` on `change_summary` - or a human set a `semver:<level>` label on the PR - the merged change is **push-CD-eligible**, and after main CI goes green the Task enters the pod-less **Deploying** lifecycle state instead of going straight to Done.
+Repositories wired into semver push-CD (the tatara platform's own components deploy themselves this way) take one more hop before the issue closes. When the agent declared a `change_significance` on `change_summary` - or a human set a `semver:<level>` label on the PR - the merged change is **push-CD-eligible**, and after main CI goes green the Task enters the pod-less **Deploying** state instead of going straight to Done.
 
 No agent pod runs during Deploying. The operator supervises a release cascade:
 
@@ -187,7 +212,7 @@ No agent pod runs during Deploying. The operator supervises a release cascade:
 4. `tatara-helmfile` applies the pin to the cluster on merge (GitOps, via an in-cluster runner).
 5. On a successful apply the operator closes issue #42 and moves the Task to **Done**.
 
-If the apply does not land within the deploy budget, the Task parks recoverable with a `deploy-timeout` reason, so a stuck release surfaces for a human rather than hanging silently.
+If the apply does not land within the deploy budget, the Task parks recoverable with a `deploy-timeout` reason, so a stuck release surfaces for a human rather than hanging silently. See [Deploy Supervisor & Semver Push-CD](../workflows/deploy-supervisor.md) for the full mechanics.
 
 **Issue label:** `tatara-implementation` (unchanged) until the apply lands, then the issue closes.
 
@@ -200,29 +225,36 @@ This path is opt-in per repository. Repos not wired into push-CD take the Step 8
 ```mermaid
 sequenceDiagram
     participant Dev as Developer
+    participant M as Maintainer
     participant GH as GitHub
     participant Op as tatara-operator
     participant Pod as Agent Pod
+    participant Rev as review Pod
     participant Mem as tatara-memory
 
     Dev->>GH: Open issue #42
     GH-->>Op: issueScan (periodic)
-    Op->>Op: Create Task (issueLifecycle)
+    Op->>Op: Create Task (kind=clarify)
     Op->>GH: Add label: tatara-brainstorming
 
-    Note over Op,Pod: LifecycleState = Triage
+    Note over Op,Pod: clarify pod running
 
     Op->>Mem: Wait for memory-ready
     Mem-->>Op: Ready
-    Op->>Pod: Schedule triage pod
+    Op->>Pod: Schedule clarify pod
     Pod->>GH: Fetch issue + comments
     Pod->>Mem: Query code graph
     Pod-->>Op: issue_outcome = "implement"
+    Op->>Op: check Status.ApprovedByMaintainer (not yet set)
+    Op->>GH: Keep label: tatara-brainstorming
 
-    Op->>GH: Swap label: tatara-approved
+    M->>GH: Apply label: tatara-approved
+    GH-->>Op: issues.labeled webhook (actor=M)
+    Op->>Op: verify M in maintainerLogins
+    Op->>Op: record Status.ApprovedByMaintainer
     Op->>GH: Swap label: tatara-implementation
 
-    Note over Op,Pod: LifecycleState = Implement
+    Note over Op,Pod: implement pod running
 
     Op->>Pod: Schedule implement pod
     Pod->>GH: Clone repo
@@ -231,19 +263,21 @@ sequenceDiagram
     Pod-->>Op: change_summary (title, body, scope)
     Op->>GH: Open PR (Closes #42)
 
-    Note over Op: LifecycleState = MRCI
-
     loop Poll CI every 30 s
         Op->>GH: GetPRState (CI status)
         GH-->>Op: pending ... success
     end
 
-    Note over Op: LifecycleState = Merge
+    Op->>Rev: Schedule review pod
 
-    Dev->>GH: Approve PR
-    Op->>GH: Squash-merge PR
+    Note over Op,Rev: review pod running
 
-    Note over Op: LifecycleState = MainCI
+    Rev->>GH: Read PR diff (read-only)
+    Rev-->>Op: verdict = "approve"
+    Op->>GH: Apply label: tatara-approved (on PR)
+    Rev->>GH: Post native PR approval
+
+    Op->>GH: Squash-merge PR (required checks green + tatara-approved)
 
     loop Poll default-branch CI
         Op->>GH: GetCommitCIStatus (merge SHA)
@@ -251,7 +285,6 @@ sequenceDiagram
     end
 
     Op->>GH: Close issue #42
-    Note over Op: LifecycleState = Done
 ```
 
 ---
@@ -262,27 +295,28 @@ Here is the same journey as a label timeline.
 
 ```
 Issue #42 opened
-  [tatara-brainstorming]  -- Triage running
-  [tatara-approved]       -- Triage: will implement
-  [tatara-implementation] -- Code being written, CI running
-  (issue closed)          -- Done: merged + main CI green
+  [tatara-brainstorming]  -- clarify running
+  [tatara-brainstorming]  -- clarify: will implement, awaiting maintainer approval
+  [tatara-approved]       -- maintainer applies the label directly - approval recorded
+  [tatara-implementation] -- implement running, CI running, then review running
+  (issue closed)          -- merged + main CI green
 ```
 
 If the agent needs clarification:
 
 ```
-  [tatara-brainstorming]  -- Triage: discuss (questions posted)
+  [tatara-brainstorming]  -- clarify: discuss (questions posted)
   [tatara-brainstorming]  -- Waiting for your reply...
-  (you reply)
-  [tatara-brainstorming]  -- Triage re-running
-  [tatara-approved]       -- Approved, proceeding
+  (you reply - a comment, does NOT approve)
+  [tatara-brainstorming]  -- clarify re-running
+  [tatara-approved]       -- Maintainer applies the label directly - approval recorded
   [tatara-implementation] -- ...
 ```
 
 If the issue is out of scope:
 
 ```
-  [tatara-brainstorming]  -- Triage running
+  [tatara-brainstorming]  -- clarify running
   [tatara-declined]       -- Declined, reason posted
   (issue closed)
 ```
@@ -295,8 +329,8 @@ A Task enters **Parked** when the operator cannot proceed without human input: t
 
 Your options:
 
-- **Comment on the issue** to reactivate it. The Task re-enters Triage with the full thread as context.
-- **Apply the trigger label** to skip Triage and go straight to Implement.
-- **Fix the underlying problem** (e.g., merge conflict, failing test) and then apply the trigger label.
+- **Comment on the issue** to reactivate it. The Task re-enters `clarify` with the full thread as context - this restarts the conversation but does not itself approve anything.
+- **Apply `tatara-approved`** (maintainer only) to record approval directly, independent of `clarify`'s conversational state.
+- **Fix the underlying problem** (e.g., merge conflict, failing test) and comment to resume; no re-approval is needed if `Status.ApprovedByMaintainer` was already recorded earlier in the same Task.
 
 While Parked the Task consumes no resources. It waits indefinitely until you act.

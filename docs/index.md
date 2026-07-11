@@ -20,9 +20,9 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     ---
 
-    Issues become pull requests without human intervention. Agents triage, plan, implement, and open PRs. Humans approve; the agent merges.
+    Issues move through triage, implementation, and review agents in sequence, each handing off automatically. A maintainer approves by applying a label; tatara merges once required checks are green.
 
-    [:octicons-arrow-right-24: Workflows](workflows/index.md)
+    [:octicons-arrow-right-24: The agentic operating model](concepts/agentic-model.md)
 
 -   :material-brain: **Durable Knowledge Graph**
 
@@ -90,7 +90,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     You want your team's backlog to move faster without more headcount. You want proposals to appear automatically, implemented code to be reviewable, and a clear audit trail.
 
-    Tatara generates improvement proposals from a periodic brainstorm, routes them through your normal PR review flow, and requires a human maintainer to approve before any merge. Nothing is unilateral.
+    Tatara generates improvement proposals from a periodic brainstorm, routes them through your normal PR review flow, and requires a human maintainer to apply an explicit approval label before any code is written. Nothing is unilateral.
 
     Read [The Big Picture](explainers/big-picture.md) and [Workflows](workflows/index.md).
 
@@ -118,7 +118,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 | Autonomous implementation | Writes code, commits to a branch, opens a PR |
 | PR review | Reviews human-authored PRs with inline suggestions |
 | Incident response | Grafana alert fires an investigation agent with Grafana MCP access |
-| Brainstorm | Periodic health-check generates improvement proposals |
+| Brainstorm | Periodic scan of the codebase and knowledge graph proposes improvements, from new features to tech-debt and CI health fixes |
 | Conversation persistence | S3-backed transcripts resume across pod restarts |
 | Multi-repo tasks | Single task can span and open PRs across multiple repositories |
 | Systemic improvements | Groups related issues into one agent run with a combined PR |

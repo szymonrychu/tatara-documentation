@@ -194,15 +194,16 @@ spec:
 
 ## 4. Approval and intake
 
-Tatara's intake model determines which humans can drive the agent loop and whose comments count as
-approvals. Configure these fields to close the prompt-injection surface: without explicit
-allow-lists, any user who can comment on an issue can influence agent behavior.
+Tatara's intake model determines which humans can drive the agent loop; a separate allow-list
+determines who can approve an issue for implementation. Approval is granted by exactly one
+action - a maintainer applying the `tatara-approved` label directly to the issue - never by a
+comment, regardless of author.
 
 ### Allow-lists
 
 | Field | Effect when empty | Effect when set |
 |---|---|---|
-| `spec.scm.maintainerLogins` | Any non-bot human reply counts as an approval go-ahead | Only comments from listed logins count as approvals; others are observed but not trusted |
+| `spec.scm.maintainerLogins` | **Closed by default.** No login is a maintainer, so `tatara-approved` can never be verified and no issue - human-filed or bot-authored - ever advances to implementation | Only a label-apply event whose actor is a listed login records approval; a non-maintainer or bot applying the same label is ignored |
 | `spec.scm.reporterLogins` | Issues and comments from any author are processed | Only the bot, maintainers, and listed reporters trigger the agent loop; all others are silently dropped at intake |
 
 !!! danger "Security recommendation"
@@ -231,7 +232,7 @@ box; override only to match organizational naming conventions.
 
 | Field | Default | Lifecycle role |
 |---|---|---|
-| `approvedLabel` | `tatara-approved` | Applied when a maintainer approves a proposal; triggers implementation |
+| `approvedLabel` | `tatara-approved` | Applied directly by a maintainer to approve an issue - the only approval action; triggers implementation once the webhook verifies the actor |
 | `brainstormingLabel` | `tatara-brainstorming` | Applied while a proposal is under triage or discussion |
 | `implementationLabel` | `tatara-implementation` | Applied while an implementation agent is active |
 | `declinedLabel` | `tatara-declined` | Applied when a proposal is rejected before implementation |
@@ -240,11 +241,18 @@ box; override only to match organizational naming conventions.
 
 ### Merge policy
 
-`spec.scm.mergePolicy` controls when the operator merges an agent-opened PR:
+An agent-opened PR is never merged by an agent. Once a `review` pod approves it (applying
+`tatara-approved` plus a native PR approval, from a separate pod that structurally cannot approve
+its own diff), the operator-only [deploy supervisor](../workflows/deploy-supervisor.md) merges it
+as soon as required checks are green. There is no human merge step in the shipped default; to
+require one on top of `review`'s approval, add an SCM branch-protection rule mandating an
+approving review.
 
-- `afterApproval` (default): merge after a maintainer approves the PR in the SCM review UI.
-- `autoMergeOnGreenCI`: merge automatically once CI passes, without a human approval step. Use
-  only in trusted, low-risk repositories.
+!!! note "`mergePolicy` field"
+    `spec.scm.mergePolicy` still exists on the Project CR; its exact accepted values and their
+    effect under the deploy-supervisor merge model should be re-derived from the merged
+    `tatara-operator` source rather than assumed from the pre-redesign `afterApproval`/
+    `autoMergeOnGreenCI` semantics.
 
 ### PR reaction scope
 
@@ -322,23 +330,22 @@ disables that activity.
     | `memory` | The structured knowledge graph (entity + relationship queries) |
     | `internet` | External web search for relevant context and prior art |
 
-=== "Health check"
+=== "Documentation"
 
     ```yaml
     spec:
       scm:
         cron:
-          healthCheck:
+          documentation:
             enabled: true
             schedule: "0 2 * * *"   # nightly at 02:00
-            maxOpenProposals: 5
-            sources:
-              - docs
-              - memory
     ```
 
-    Health-check is a distinct activity from brainstorm: it surveys CI failures, coverage gaps,
-    pipeline steps, code to simplify, and other tech-debt rather than proposing new features.
+    `documentation` is a schedule-driven, repo-scoped kind that keeps a project's docs repo
+    current: on each tick it diffs what changed across the project's other repos since the docs
+    repo was last meaningfully updated, and opens a PR to the docs repo only if the accumulated
+    change is non-trivial. There is no webhook path - only the cron tick drives it. See the
+    [Documentation workflow](../workflows/documentation.md) for details.
 
 ### Grafana incident-response integration
 
@@ -532,13 +539,9 @@ spec:
           - docs
           - memory
           - internet
-      healthCheck:
+      documentation:
         enabled: true
         schedule: "0 2 * * *"
-        maxOpenProposals: 5
-        sources:
-          - docs
-          - memory
       refine:
         closedLookbackDays: 30  # (30)!
 
@@ -591,16 +594,19 @@ spec:
     the operator never registers webhooks (you configure them manually, section 6).
 19. GitHub noreply commit-author email for the bot. Links agent commits to the bot account in
     the GitHub web UI. Find this in the bot account's GitHub email settings.
-20. Human maintainer logins. When set, only thread comments from these accounts count as the
-    approval go-ahead, and they form the trusted-insider set the operator treats as authoritative
-    for approve/decline decisions on a proposal thread. Overridable per-repository.
+20. Human maintainer logins. **Required for anything to ever be approved** - empty means no
+    approvals are ever possible. When set, only these accounts' `tatara-approved` label-apply
+    events are recorded as approval (never a comment); they also form the trusted-insider set for
+    intake bypass. Overridable per-repository.
 21. Reporter allow-list. When set, issues and comments from accounts not in this list, not in
     `maintainerLogins`, and not the bot are silently dropped at intake. Closes the primary
     prompt-injection vector. Overridable per-repository.
 22. The six lifecycle labels that the operator applies and sweeps. Defaults work out of the box.
     Override only to match organizational label naming conventions.
-23. `afterApproval` (default): the PR is merged after a maintainer approves it in the SCM review
-    UI. `autoMergeOnGreenCI`: merged automatically once CI passes, no human approval required.
+23. Merge is performed by the operator-only deploy supervisor once `review` has approved
+    (`tatara-approved` + native PR approval) and required checks are green - no agent and no human
+    merge step in the shipped default. `mergePolicy` still exists as a field; re-derive its exact
+    accepted values and effect under the deploy-supervisor model from the merged operator source.
 24. Cron `mrScan` re-review scope. This example opts in to the narrow setting. Left unset (or
     `all`), the `mrScan` path re-reviews every open human PR/MR each cycle. `labeledOrMentioned`
     restricts scheduled re-review to PRs labeled with `triggerLabel` or that `@mention` the bot.
