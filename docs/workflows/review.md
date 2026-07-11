@@ -81,15 +81,22 @@ The agent posts a GitHub/GitLab review with:
 
 ```go
 type ReviewVerdict struct {
-    Decision    string       // approve | request_changes | comment
-    Body        string       // review summary
-    Suggestions []Suggestion // inline suggestions
+    Decision    string             // approve | request_changes | comment
+    Body        string             // review summary
+    Suggestions []Suggestion       // inline suggestions
+    Semver      []SemverAssignment // approve only: per-MR semver:<level> assignments
 }
 
 type Suggestion struct {
     Path string
     Line int
     Body string  // suggested replacement code
+}
+
+type SemverAssignment struct {
+    Repo   string // owner/repo slug, matches WorkItemRef.Repo
+    Number int    // MR/PR number
+    Level  string // major | minor | patch
 }
 ```
 
@@ -106,3 +113,34 @@ structurally never wrote the diff it is reviewing, is the merge gate. If review 
 any MR under the Task unmergeable (conflict, failed pipeline), it withholds approval and
 re-adds `tatara-implementation` to invoke `implement` again - see
 [Deploy Supervisor](deploy-supervisor.md) for what happens once approval + green CI both hold.
+
+## Semver labeling on approve
+
+On the same `approve` action, review also assigns a per-MR `semver:<level>` label to **every**
+MR in the stream - human/maintainer-authored MRs and tatara-created MRs alike. This closes a real
+gap: `change_significance` (declared via `change_summary`) is an `implement`-only signal, so a
+human-authored MR in the same stream previously got no semver label from anyone, and the push-CD
+pipeline refused to cut a release tag for it - the change merged but never deployed.
+
+Rules, applied best-effort in the approve writeback (a labeling failure never blocks the
+`approve` verb itself):
+
+- **Per-MR level.** Review judges each member MR's level independently from its own diff:
+  breaking change -> `major`, backward-compatible new functionality -> `minor`, fix/docs/other
+  -> `patch`. One stream can mix levels across its member MRs (e.g. a docs-only MR at `patch`
+  alongside an API-changing MR at `minor`).
+- **Respect an existing human label.** If a member MR already carries any `semver:*` label,
+  review leaves it untouched - a deliberately human-set level is authoritative and is never
+  overwritten. This also makes the pass idempotent for bot MRs the operator already labeled at
+  PR-open time (see [Deploy Supervisor Component 2](deploy-supervisor.md#component-2-bot-gated-auto-merge)).
+- **Fallback for unassigned bot MRs.** A tatara-authored MR with no existing label falls back to
+  the `change_significance` its `implement` agent already declared via `change_summary`, then to
+  `patch` if that is also absent.
+- **Sole stamping opportunity for human MRs.** Human-authored MRs never call `change_summary`, so
+  this is the only place a human MR gets a `semver:*` label at all - without it, `cd-release` has
+  nothing to tag from and the merged change never ships.
+
+The assignments travel on the `review_verdict` MCP call as `ReviewVerdict.Semver`
+(`[]SemverAssignment{Repo, Number, Level}`, see the struct above). See
+[Deploy Supervisor Component 1b](deploy-supervisor.md#component-1b-review-semver-stamping-human-mrs)
+for how the operator applies this list and where it fits in the wider push-CD cascade.

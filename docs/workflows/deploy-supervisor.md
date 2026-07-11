@@ -58,7 +58,7 @@ sequenceDiagram
     Op->>Agent: Task Done; originating issue closed with\n"Deployed <repo>@vX.Y.Z, applied via tatara-helmfile@<sha>"
 ```
 
-## Component 1 - significance declaration (the only agent/MCP touch)
+## Component 1 - significance declaration (implement's agent/MCP touch)
 
 `change_significance` is a **required** enum parameter on the existing `change_summary` MCP tool
 (`tatara-cli`): `major | minor | patch`.
@@ -74,9 +74,36 @@ missing or invalid value is rejected (HTTP 400) at the operator's REST handler. 
 makes a merged change **push-CD-eligible** (`pushCDEligible`); it does **not** gate PR opening. An
 `implement` PR whose agent never recorded a significance still opens - the operator
 logs a WARN (`writeback_no_significance`) and routes the merged change down the legacy
-close-and-Done path with no `semver:*` label and no auto-merge. This is the **only** change to the
-agent-facing surface; all tag/merge/propagation logic lives in CI and the operator, not in any
-generic superpowers skill.
+close-and-Done path with no `semver:*` label and no auto-merge. This is `implement`'s only touch
+on the agent-facing surface for significance - it only covers MRs `implement` opens itself.
+`review` carries a second, complementary touch (Component 1b below) that stamps per-MR labels on
+approve, including for MRs `implement` never opened. Past those two declarations, all
+tag/merge/propagation logic lives in CI and the operator, not in any generic superpowers skill.
+
+## Component 1b - review semver stamping (human MRs)
+
+`change_significance` only covers MRs `implement` opens itself. A human- or maintainer-authored
+MR in the same stream never calls `change_summary`, so before this it carried no `semver:*` label
+from anyone, and `cd-release` refused to cut a tag for it - the change merged but never deployed.
+`review`, on `approve`, closes this gap: it assigns a per-MR `semver:<level>` label to **every**
+MR in the stream, human and tatara-created alike, via `ReviewVerdict.Semver`
+(`[]SemverAssignment{Repo, Number, Level}` on the `review_verdict` MCP call).
+
+- **Per-MR level**, judged from that MR's own diff: breaking change -> `major`, backward-compatible
+  new functionality -> `minor`, fix/docs/other -> `patch`. One stream can mix levels across its
+  member MRs.
+- **Respects an existing human `semver:*` label** - never overwritten; a deliberately human-set
+  level is authoritative. This also makes the pass idempotent for bot MRs the operator already
+  labeled at PR-open time (Component 2 below).
+- **Falls back**, for an unlabeled tatara-authored MR, to that MR's own `change_significance` from
+  `change_summary`, then to `patch`.
+- **Best-effort**: applied across every stream member in the approve writeback; a labeling failure
+  on one member never blocks the `approve` verb itself.
+- **Sole stamping path for human MRs** - without it, a human-authored MR never gets a `semver:*`
+  label and the push-CD pipeline never cuts a tag for it.
+
+See [Review workflow](review.md#semver-labeling-on-approve) for the full rubric from the agent
+side.
 
 ## Component 2 - bot-gated auto-merge
 
@@ -179,11 +206,14 @@ are coalesced rather than raced:
 
 ## Humans in this flow
 
-The pattern applies to local/human development too: a human (or any agent) declares significance
-via a `semver:*` label on their own PR and gets the same downstream automation - auto-merge is
-bot-gated, so a human still merges their own PR by hand, but everything from tag-cut onward
-(propagation, deploy-train, apply, issue-close) is identical either way. Agents never self-merge;
-that is a hard rule in every component repo's `CLAUDE.md`.
+The pattern applies to local/human development too, and since Component 1b a human no longer has
+to manually label their own PR for it to release: `review` stamps a `semver:<level>` label on
+every MR in an approved stream, human-authored MRs included. A human can still set `semver:*` on
+their own PR ahead of review - review respects and never overwrites an existing human label - but
+it is no longer required for the release tag to get cut. Everything from tag-cut onward
+(propagation, deploy-train, apply, issue-close) is identical either way. Auto-merge stays
+bot-gated, so a human still merges their own labeled PR by hand; agents never self-merge - that is
+a hard rule in every component repo's `CLAUDE.md`.
 
 ## Reference
 
@@ -191,7 +221,8 @@ that is a hard rule in every component repo's `CLAUDE.md`.
 |---|---|---|---|
 | `change_significance` (MCP param on `change_summary`) | enum `major\|minor\|patch` | required, no default | Declared by the implementing agent; gates PR opening and auto-merge |
 | `Task.Status.ChangeSummary.Significance` | string | - | Operator-side landing spot for the declared value |
-| `semver:<level>` PR label | string | - | Additive label stamped on the PR; author-agnostic trigger for tag-cut/propagation |
+| `ReviewVerdict.Semver` (MCP field on `review_verdict`) | `[]SemverAssignment{Repo, Number, Level}` | none, best-effort | Per-MR `semver:<level>` assigned by review on approve, for every MR in the stream; respects an existing human label, falls back to that MR's `change_significance` then `patch`; sole labeling path for human MRs (Component 1b) |
+| `semver:<level>` PR label | string | - | Additive label stamped on the PR; author-agnostic trigger for tag-cut/propagation. Stamped by writeback at PR-open for bot MRs with declared significance, and by review on approve for every MR in the stream |
 | `spec.deployBudgetSeconds` (Project CR) | int | `3300` (multi-hop), `2100` (single-hop override) | `Deploying`-phase deadline before Park/reroll |
 | `cd/deploy-train` branch (tatara-helmfile only) | - | - | Shared coalescing branch for terminal-hop bumps |
 | `cdScan` | cron activity | peer cadence to `issueScan`/`mrScan` | Backstop that catches stalled cascades with no live watcher |

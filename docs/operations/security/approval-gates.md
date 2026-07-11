@@ -30,7 +30,7 @@ sequenceDiagram
     OP->>AG: spawn implement agent
     AG->>SCM: open PR
     OP->>AG: spawn review agent
-    AG->>SCM: approve-label + native review
+    AG->>SCM: approve-label + semver:<level> labels + native review
     OP->>SCM: deploy supervisor merges (per mergePolicy)
 ```
 
@@ -161,6 +161,16 @@ native SCM approval.
 If `review` finds any MR under the Task unmergeable (a conflict, a failed pipeline), it withholds
 approval and re-adds `tatara-implementation`, invoking `implement` again rather than leaving the
 PR in a stuck state for a human to unblock.
+
+On the same `approve` action, `review` also assigns a per-MR `semver:<level>` label to every MR
+in the stream - human/maintainer-authored MRs included, not just tatara-created ones. This closes
+a real deploy gap: `change_significance` (declared via `change_summary`) is an `implement`-only
+signal, so a human-authored MR previously carried no semver label from anyone, and the push-CD
+pipeline refused to cut a release tag for it even after a clean merge. Review respects any
+`semver:*` label a human already set (never overwriting it) and otherwise falls back to that
+MR's own `change_significance`, then `patch`. See
+[Deploy Supervisor Component 1b](../../workflows/deploy-supervisor.md#component-1b-review-semver-stamping-human-mrs)
+for the full rubric.
 
 !!! note "review structurally cannot approve its own diff"
     Because `implement` and `review` are separate pods spawned on separate turns, the merge gate

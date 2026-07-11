@@ -205,6 +205,15 @@ alwaysOn 3 of these and are omitted below since every profile has them).
   server-side if omitted or not one of the three enum values. This is what
   drives the auto-merge -> semver tag -> `tatara-helmfile` cascade; humans
   set the equivalent via a `semver:<level>` PR label.
+- `review_verdict`'s `approve` action carries an additional `semver` list
+  (`SemverAssignment{repo, number, level}` per MR). On approve, review
+  stamps a `semver:<level>` label on every MR in the stream - human-authored
+  MRs included, not just tatara-created ones - respecting any label a human
+  already set and otherwise falling back to that MR's own
+  `change_significance`, then `patch`. This is the only semver-labeling path
+  for human MRs, closing the gap where a human-authored MR merged with no
+  label and never released; see [Deploy Supervisor Component
+  1b](../workflows/deploy-supervisor.md#component-1b-review-semver-stamping-human-mrs).
 - `edit_issue` patches only `title` and `body`. Labels are intentionally not
   editable through this tool - the four managed labels drive kind handoffs
   and stay operator/maintainer-controlled, so no profile (including

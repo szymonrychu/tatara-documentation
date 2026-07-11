@@ -192,6 +192,7 @@ All other outcome fields are absent.
 | `decision` | enum | `approve`, `request_changes`, or `comment` |
 | `body` | string | Review comment body |
 | `suggestions` | `[]Suggestion` | Inline code suggestions. Each entry: `path` (file path), `line` (1-based), `body` (suggestion text). |
+| `semver` | `[]SemverAssignment` | `approve` only: per-MR `semver:<level>` assignments applied best-effort across every MR in the stream, human and tatara-authored alike. Each entry: `repo` (owner/repo slug, matches `WorkItemRef.Repo`), `number` (MR/PR number), `level` (`major`\|`minor`\|`patch`). Respects an existing human `semver:*` label on that MR; otherwise falls back to the MR's own `change_significance`, then `patch`. The only semver-labeling path for human-authored MRs - see [Review workflow](../workflows/review.md#semver-labeling-on-approve). |
 
 #### PROutcome
 

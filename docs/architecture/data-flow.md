@@ -284,7 +284,7 @@ observes `Condition[WritebackPending]=True`. The behavior is kind-specific:
 |---|---|
 | `clarify` | No PR. Removes `tatara-brainstorming`, adds `tatara-implementation` to hand the umbrella Task off to `implement`. |
 | `implement` | Opens PR(s) via `OpenChange` across every repo in scope; comments on the originating issue; upserts the WorkItems ledger (`role=openedPR`). |
-| `review` | Posts a `ReviewVerdict` (`approve`, `request_changes`, or `comment`) as a single atomic verb; never merges. |
+| `review` | Posts a `ReviewVerdict` (`approve`, `request_changes`, or `comment`) as a single atomic verb; never merges. On `approve`, also stamps a per-MR `semver:<level>` label across every MR in the stream (human and bot), the only labeling path for human MRs. |
 | `brainstorm` | Project-scoped, never opens a PR. Calls `propose_issue`; the operator records `Status.DiscoveredIssues`. |
 | `incident` | Project-scoped, never opens a PR. Calls `propose_issue` the same way brainstorm does, tagged to the alert rule. |
 | `documentation` | Opens a PR to the project's docs repo via the same `OpenChange` path as `implement`, scoped to that one repo, only when accumulated change is non-trivial. |
@@ -329,6 +329,14 @@ The agent's `ReviewVerdict` (`approve`, `request_changes`, or `comment`) is post
 as a single atomic verb. If the verb reaches the SCM but the subsequent
 `WritebackPending` clear fails, the operator detects the already-sent state on
 requeue and does not re-post.
+
+On `approve`, the writeback additionally applies the verdict's per-MR
+`semver:<level>` label assignments (`ReviewVerdict.Semver`) across every MR in
+the stream - best-effort, never blocking the `approve` verb itself. This is
+the only path that labels human-authored MRs, closing the gap where a
+human-authored MR merged with no semver label and the push-CD pipeline
+refused to tag it. See [Deploy Supervisor Component
+1b](../workflows/deploy-supervisor.md#component-1b-review-semver-stamping-human-mrs).
 
 ### Brainstorm / incident writeback
 
