@@ -81,8 +81,18 @@ When the brainstorm identifies a cross-cutting issue affecting multiple reposito
 
 - Each proposal gets a `tatara/systemic-<id>` label
 - The group counts as one against `maxOpenProposals`
-- Per repo, the lead is elected as the **lowest issue number** in that repo for the group; the lead task opens a single combined PR that closes all same-repo siblings from the PR body (`Closes #N, Closes #M`)
+- Per repo, the lead is elected as the **lowest issue number** in that repo for the group; the lead task opens a single combined PR
 - Cross-repo siblings are reference-only in the lead's prompt - the lead never edits another repo's code
+
+!!! warning "Each sibling needs its own maintainer approval"
+    Approval is never group-wide. The lead's combined PR body includes `Closes #N` only for
+    same-repo siblings that already carry their own recorded maintainer approval
+    (`Status.ApprovedByMaintainer` on that sibling's own Task). A sibling with no recorded
+    approval - or one a maintainer explicitly declined - is excluded from the implementation
+    prompt, and any `Closes #N` directive that would otherwise target it is downgraded to
+    `refs #N` before the PR body is posted, so merging the lead PR never force-closes an
+    unapproved sibling's issue. A late approval co-resolves on the next reconcile. See
+    [Approval Gates](../operations/security/approval-gates.md#systemicgrouped-issue-sets-approval-is-per-issue-not-per-group).
 
 ```mermaid
 flowchart LR

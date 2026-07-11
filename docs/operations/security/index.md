@@ -20,7 +20,7 @@ Tatara runs autonomous AI agents with write access to your repositories. The sec
 
     ---
 
-    How human approval is required before any code is written or merged.
+    How a maintainer applying the `tatara-approved` label - the only approval action - is required before any code is written, and how the merge gate works.
 
     [:octicons-arrow-right-24: Approval Gates](approval-gates.md)
 
@@ -55,7 +55,8 @@ tatara-operator (webhook server)
   v
 QueuedEvent created
   |
-  | Maintainer allowlist check (approval comment from maintainerLogins?)
+  | Maintainer-approval check (tatara-approved label applied by a
+  | verified maintainerLogins member - never a comment, never the bot)
   v
 Task transitions to Implement
   |
@@ -82,7 +83,7 @@ Every boundary is authenticated. By default the merge is autonomous once `review
 |---|---|
 | Webhook authenticity | HMAC-SHA256 signature validation |
 | Issue intake gate | `reporterLogins` allowlist |
-| Implementation approval | `maintainerLogins` allowlist + natural-language triage |
+| Implementation approval | `maintainerLogins` allowlist, verified against the actor of a `tatara-approved` label-apply event on the issue - the sole approval action; closed by default (empty list approves nothing) |
 | Code merge gate | Deploy supervisor merges on green CI + `tatara-approved` (set by `review`, a separate pod that cannot approve its own diff); add branch protection to require a human review too |
 | API authentication | OIDC bearer tokens, per-service audience |
 | Agent tool surface | `TATARA_TOOL_PROFILE` per task kind |

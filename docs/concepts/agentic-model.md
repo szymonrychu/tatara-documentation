@@ -6,7 +6,18 @@ title: The Agentic Operating Model
 
 Tatara is not a chat interface or a one-shot code generator. It is an **operating model**: a persistent loop where a Kubernetes operator orchestrates discrete, single-purpose autonomous Claude Code sessions - one kind per pod - that read your issue tracker, run a clarifying conversation, write code, open pull requests, review the diff, and (once approved) hand off to a merge/deploy step the operator drives on its own.
 
-Be precise about where the human sits in that loop. In the **shipped defaults** the one hard human gate is at **clarify's conversation**: a person decides whether an issue gets worked (by replying `implement`-ready, or by applying the `triggerLabel`). After that decision, the implement-review-merge path is **autonomous** - `review` approves the bot's own PR from a separate pod, and the deploy supervisor squash-merges once required checks are green and that approval is present. There is no human merge step and no per-PR human sign-off unless you add one yourself via the SCM's branch-protection rules. The stronger "human at every gate" posture is available but is **configuration you opt into**, not the default. This page is explicit about which is which.
+Be precise about where the human sits in that loop. The one hard human gate is **maintainer
+approval**: a project maintainer decides whether an issue gets worked, and the *only* action
+that grants that approval is a maintainer applying the `tatara-approved` label directly to the
+issue. `clarify`'s conversation shapes the plan but does not itself release the gate - a
+comment never approves, regardless of author, and a non-maintainer or bot applying the label
+never approves either. After a verified maintainer approval is recorded, the
+implement-review-merge path is **autonomous** - `review` approves the bot's own PR from a
+separate pod, and the deploy supervisor squash-merges once required checks are green and that
+approval is present. There is no human merge step and no per-PR human sign-off unless you add
+one yourself via the SCM's branch-protection rules. The stronger "human at every gate" posture
+is available but is **configuration you opt into**, not the default. This page is explicit
+about which is which.
 
 It targets architects and platform engineers evaluating whether tatara's operating model fits their engineering culture.
 
@@ -82,7 +93,7 @@ so that third-party issue authors cannot drive agent execution via prompt-crafte
 `reporterLogins` is **empty (the shipped default)** the operator preserves its historical open
 behavior and accepts issues and comments from **any** author. The prompt-injection intake
 defense is therefore opt-in: it is inert until you populate the allowlist. See
-[Gate 1](#gate-1-clarifys-live-conversation) and the [Security boundary summary](#security-boundary-summary).
+[Gate 1](#gate-1-maintainer-approval-label) and the [Security boundary summary](#security-boundary-summary).
 
 Selection order within a scan cycle: items carrying `spec.scm.priorityLabel` first, then
 oldest-updated-first within each group, capped at `maxPerRepo` concurrent tasks per repository
@@ -95,34 +106,60 @@ issues before brainstorm proposes new ones.
 ## Human-in-the-loop gates
 
 Tatara is autonomous within each kind's run. Across kind handoffs, the human control points are
-**clarify's conversation** (Gate 1) and **brainstorm approval** (Gate 3). The **review-approval
--> merge** transition (Gate 2) is autonomous by default and becomes human-gated only when you
-configure it - the SCM branch-protection route below. Read each gate for its shipped default,
-not the aspirational posture.
+**the maintainer-approval label** (Gate 1) and **brainstorm approval** (Gate 3, the same
+mechanism applied to bot-authored proposals). The **review-approval -> merge** transition
+(Gate 2) is autonomous by default and becomes human-gated only when you configure it - the SCM
+branch-protection route below. Read each gate for its shipped default, not the aspirational
+posture.
 
-### Gate 1: Clarify's live conversation
+### Gate 1: Maintainer-approval label
+
+The load-bearing human gate is not a conversation - it is a single, identity-verified SCM
+action: **a project maintainer applies the `tatara-approved` label directly to the issue.**
+Nothing else grants approval. A comment never approves, no matter its content or author. A
+non-maintainer applying the label - including the issue's own reporter - does not approve;
+the operator observes the label-add event, checks the actor against `spec.scm.maintainerLogins`,
+and silently ignores the event if the actor is not a verified maintainer. An agent or bot
+applying the label does not approve either: label-add events whose actor is the bot are
+dropped before the maintainer check ever runs, so no pod can self-approve its own proposal.
+`spec.scm.maintainerLogins` is closed by default - an empty list means the project has no
+maintainers, so nothing can ever be approved and no issue advances past `clarify` into
+implementation until the list is populated.
 
 `clarify` is a **live polling pod**: on a new issue or a comment on an existing one, the
 operator spawns a clarify pod that converses on the thread and waits up to 1 hour wall-clock
-for the next human reply (comments delivered live via the existing `PendingInterjections`
+for the next reply (comments delivered live via the existing `PendingInterjections`
 mechanism). The operator kills the pod on timeout - no agent runs while nobody is talking.
 Clarify always starts with full cross-repo context (every linked issue + comment thread, every
 repo at its newest default branch) so it is never in a position to say "I don't have enough
 context" - the rigid `implement` skill downstream inherits the same rule (spec: implement "may
-NOT reject for insufficient context").
+NOT reject for insufficient context"). That conversation shapes the plan and can be as
+persuasive as it likes, but it is informational: even when clarify concludes the issue is
+implement-ready and calls `issue_outcome(action=implement)`, the operator checks for a recorded
+maintainer approval first. No recorded approval -> the issue is parked back to
+`tatara-brainstorming` and clarify keeps waiting for the label, regardless of what the
+conversation concluded.
 
 On a new issue, clarify creates the project-scoped Task CR, digests the human's issue body, and
 asks clarifying questions via the normal issue-comment channel. On a comment, clarify reads the
 existing Task CR (or retro-creates it from full SCM history) and either answers back and waits,
-or launches `implement` and exits.
+or - once a maintainer approval is recorded - launches `implement` and exits.
 
-When a maintainer applies the `triggerLabel` (default `tatara`) to an issue, clarify's
-conversation is bypassed entirely: the hand-off to `implement` happens directly, treating the
-label as explicit human approval to proceed.
+A maintainer can apply `tatara-approved` at any point in the conversation, including
+immediately on filing, to short-circuit further back-and-forth: the webhook records the
+approval as soon as the event arrives, independent of clarify's own conversational state, so
+the very next reconcile proceeds straight to handoff.
 
 On handing off to implementation, clarify removes `tatara-brainstorming` and adds
 `tatara-implementation` - the same two-label swap the old Conversation->Implement transition
-did, just performed by a different, narrower kind.
+did, just performed by a different, narrower kind, and gated on the recorded approval rather
+than on clarify's own verdict.
+
+For a systemic-improvement group (multiple sibling issues opened together across repos), this
+gate applies **per issue**, not once for the whole group: each sibling needs its own recorded
+maintainer approval, and an unapproved or declined sibling is never force-closed by the lead's
+combined PR - its `Closes #N` reference is downgraded to `refs #N` instead. See
+[Approval Gates](../operations/security/approval-gates.md#systemicgrouped-issue-sets-approval-is-per-issue-not-per-group).
 
 !!! warning "Clarify cannot answer its own comments"
     The self-comment guard lives in the **permission layer**, not skill prose: the MCP comment
@@ -161,7 +198,7 @@ designed steady state, not an edge case.
 
 ### Gate 3: Brainstorm proposal approval
 
-Brainstorm-generated issues are never implemented automatically. The agent applies `spec.scm.brainstormingLabel` (default `tatara-brainstorming`) to every proposal. A human must apply `spec.scm.approvedLabel` (default `tatara-approved`) - or add the `triggerLabel` - before `clarify` hands the issue to `implement`. At or above `maxOpenProposals` (default 5) open unapproved proposals, the next brainstorm cycle is skipped entirely.
+Brainstorm-generated issues are never implemented automatically. The agent applies `spec.scm.brainstormingLabel` (default `tatara-brainstorming`) to every proposal. This is the same Gate 1 mechanism applied to bot-authored proposals: a verified maintainer must apply `spec.scm.approvedLabel` (default `tatara-approved`) directly to the proposal issue before `clarify` hands it to `implement` - there is no other way to approve a proposal, and a bot-authored proposal can never approve itself. At or above `maxOpenProposals` (default 5) open unapproved proposals, the next brainstorm cycle is skipped entirely.
 
 ---
 
@@ -222,7 +259,7 @@ Every human decision in tatara is expressed through two SCM-native mechanisms: *
 
 **Comments create a natural audit log.** Every agent action - triage decision, design question, scope summary, merge outcome, give-up reason - appears as an issue or PR comment. The comment thread is the complete history of the agent's reasoning, visible to everyone with SCM read access, survives operator restarts, and requires no tatara-specific tooling to interpret.
 
-**Webhook reactions are human-native actions.** A maintainer approves implementation by applying a label they already use, or by replying to an issue comment. There is no tatara-specific UI to learn. The operator responds to SCM events - the same events your CI system, project management tools, and on-call runbooks already consume.
+**Webhook reactions are human-native actions.** A maintainer approves implementation by applying a label they already use - no comment, no reply, no tatara-specific UI to learn. The operator responds to SCM events - the same events your CI system, project management tools, and on-call runbooks already consume.
 
 **The control plane is the issue tracker.** Every agent side effect surfaces as a PR you can close or an issue comment you can read - there are no hidden effects in a separate system, which makes the day-to-day blast radius legible. Be honest about the ceiling, though: that framing bounds the *review surface*, not the *privilege*. The bot PAT carries whatever repo scopes you grant it (org-wide write in the reference deployment), and because `review` approves the bot's own PR and the deploy supervisor then merges it autonomously on green CI, a misconfigured or prompt-injected agent can land code without a human merge step. Where the platform self-deploys, a merged change to the GitOps repo flows to the cluster via a runner with broad rights. The control plane is legible; the aggregate privilege is not trivial. Bound it with the intake allowlist, a review-gated branch-protection rule on sensitive repos, and least-privilege PAT scopes - see [Trade-offs](why-tatara.md#trade-offs-to-consider) and the [security docs](../operations/security/index.md).
 
@@ -235,11 +272,18 @@ These are the mechanisms, with their **shipped default state** called out. Sever
 | Concern | Mechanism | Default state |
 |---|---|---|
 | Third-party prompt injection | `reporterLogins` allowlist: only bot, maintainers, and allowed reporters can drive agent intake | **Opt-in.** Empty `reporterLogins` (default) accepts **any** author. Populate the list to activate the filter. |
-| Unauthorized approve-to-implement | `maintainerLogins` gates which comment authors count as human approval signals | **Opt-in.** Empty `maintainerLogins` (default) treats any non-bot human reply as the approval go-ahead. Populate to restrict. |
+| Unauthorized approve-to-implement | `maintainerLogins` gates whose `tatara-approved` label-apply the operator records as approval; a comment never approves | **Closed by default.** Empty `maintainerLogins` means no login is a maintainer, so `tatara-approved` can never be verified and nothing ever advances to implement. Populate the list to allow any approvals at all. |
 | Autonomous merge | Merge is gated by the deploy supervisor: required checks green AND `tatara-approved` present (set only by `review`'s approve action, never by `implement`). No agent calls a merge API. | On by construction - `review` structurally cannot approve its own diff (separate pod, separate turn). See [Gate 2](#gate-2-review-approval-approve-label-native-review-never-a-merge-call). |
 | SCM write-back authorship | Egress verified via `GetPRState` at operator side, not trusting webhook payload | Always on. |
 | Webhook authenticity | **GitHub:** HMAC-SHA256 over the body (`X-Hub-Signature-256`). **GitLab:** constant-time comparison of the static shared-secret `X-Gitlab-Token` header (a replayable bearer, not an HMAC over the payload - materially weaker). | Always on (both require a configured secret). |
 | Agent network egress | Cluster-side NetworkPolicy; internet access only for `brainstorm` tasks with `internet` source, gated by a pod label the infra helmfile controls | On where the NetworkPolicy is applied (cluster config). |
 | Kubernetes API access | Agent pods have no Kubernetes credentials. Only tatara-cli (MCP server in the pod) can call the operator REST API, which is OIDC-gated | Always on. |
 
-The strong intake and approval guarantees in the rows above are real, but only **once you populate the allowlists**. As shipped with empty allowlists, the honest posture is: any author can open work, and a `review`-approved PR merges itself on green CI with no human step. See [Approval Gates](../operations/security/approval-gates.md) and [Prompt-Injection Defenses](../operations/security/prompt-injection.md) for full detail on each mechanism.
+Intake and approval do not fail the same way when left unconfigured. As shipped with an empty
+`reporterLogins`, intake is **open**: any author can open work and drive the conversation. As
+shipped with an empty `maintainerLogins`, approval is **closed**: nobody can ever satisfy the
+maintainer check, so no issue - however it was opened - ever advances to implementation until
+you populate the list. Once you do, a `review`-approved PR still merges itself on green CI with
+no human merge step by default. See [Approval Gates](../operations/security/approval-gates.md)
+and [Prompt-Injection Defenses](../operations/security/prompt-injection.md) for full detail on
+each mechanism.

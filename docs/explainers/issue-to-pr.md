@@ -25,9 +25,14 @@ You create a GitHub issue in any repository enrolled in your tatara Project. The
 
 **Issue label:** *(nothing yet)*
 
-If you want tatara to start immediately and skip straight to writing code - because the change is already well-defined and you trust it - add the *trigger label* (configured in `Project.spec.triggerLabel`, commonly `tatara`). That fires the webhook path, which skips `clarify` and spawns an `implement` pod directly. For everything else, the periodic issue scan (default: hourly) picks up the issue on its next pass.
+If `spec.scm.reporterLogins`-style intake gating requires it, add the *trigger label*
+(configured in `Project.spec.triggerLabel`, commonly `tatara`) so the webhook path engages
+immediately instead of waiting for the next periodic issue scan (default: hourly). The trigger
+label only affects **intake** - whether the operator creates a Task for this issue at all. It
+does not skip `clarify`'s conversation and it does not grant approval: every issue, trigger-labeled
+or not, still needs a maintainer to apply `tatara-approved` before `implement` runs (see Step 4).
 
-This page follows the full path - issue opened, no trigger label, `clarify` runs first.
+This page follows the full path - issue opened, `clarify` runs first.
 
 ---
 
@@ -93,18 +98,31 @@ The issue needs clarification, a design choice, or human input. The agent calls 
 
 **Issue label:** `tatara-brainstorming` (waiting)
 
-When you reply, the webhook fires and `clarify` runs again immediately: the agent re-reads the full comment thread and tries again. This loop continues until you apply the trigger label (skip to `implement`) or 60 minutes pass with no activity (the Task parks, resumable by commenting again).
+When you reply, the webhook fires and `clarify` runs again immediately: the agent re-reads the full comment thread and tries again. This loop continues until a maintainer applies `tatara-approved` (see Path C) or 60 minutes pass with no activity (the Task parks, resumable by commenting again or by the maintainer applying the label directly).
 
-!!! note "Self-approve guard"
-    If the issue was filed by the tatara bot itself (e.g., from a brainstorm proposal), `clarify` will not auto-approve implementation without a human engaging first. It posts a discuss outcome and waits. Issues opened by a human bypass this guard.
+!!! danger "Comments never approve - only a maintainer's label-apply does"
+    A reply in the thread, no matter how clear ("looks good, ship it") or who wrote it, does
+    **not** approve the issue. The operator only records approval when the webhook sees an
+    `issues.labeled` event for `tatara-approved` whose actor is listed in
+    `spec.scm.maintainerLogins` and is not the bot. This applies uniformly - a bot-authored
+    brainstorm proposal and a human-filed issue are gated identically; there is no fast path
+    for either. If `maintainerLogins` is empty, no actor can ever satisfy this check and the
+    issue never advances past `clarify`, regardless of how much discussion happens. See
+    [Approval Gates](../operations/security/approval-gates.md#gate-2-maintainer-approval-label-who-can-approve-implementation).
 
 ### Path C - implement
 
-The agent decides this is worth building. It calls `issue_outcome(action="implement")`. The operator swaps the label.
+The agent decides this is worth building. It calls `issue_outcome(action="implement")`. The
+operator checks whether a maintainer has already applied `tatara-approved` to the issue
+(`Status.ApprovedByMaintainer` recorded).
 
-**Issue label:** `tatara-approved`
+- **Already approved:** the operator swaps the label to `tatara-approved` -> `tatara-implementation`
+  and schedules an `implement` pod next.
+- **Not yet approved:** the `implement` verdict is downgraded - the issue stays on
+  `tatara-brainstorming` and `clarify` keeps polling, exactly as in Path B, until a maintainer
+  applies the label.
 
-The operator schedules an `implement` pod next.
+**Issue label:** `tatara-approved` (only once a maintainer has applied it; otherwise stays `tatara-brainstorming`)
 
 ---
 
@@ -207,6 +225,7 @@ This path is opt-in per repository. Repos not wired into push-CD take the Step 8
 ```mermaid
 sequenceDiagram
     participant Dev as Developer
+    participant M as Maintainer
     participant GH as GitHub
     participant Op as tatara-operator
     participant Pod as Agent Pod
@@ -226,8 +245,13 @@ sequenceDiagram
     Pod->>GH: Fetch issue + comments
     Pod->>Mem: Query code graph
     Pod-->>Op: issue_outcome = "implement"
+    Op->>Op: check Status.ApprovedByMaintainer (not yet set)
+    Op->>GH: Keep label: tatara-brainstorming
 
-    Op->>GH: Swap label: tatara-approved
+    M->>GH: Apply label: tatara-approved
+    GH-->>Op: issues.labeled webhook (actor=M)
+    Op->>Op: verify M in maintainerLogins
+    Op->>Op: record Status.ApprovedByMaintainer
     Op->>GH: Swap label: tatara-implementation
 
     Note over Op,Pod: implement pod running
@@ -272,7 +296,8 @@ Here is the same journey as a label timeline.
 ```
 Issue #42 opened
   [tatara-brainstorming]  -- clarify running
-  [tatara-approved]       -- clarify: will implement
+  [tatara-brainstorming]  -- clarify: will implement, awaiting maintainer approval
+  [tatara-approved]       -- maintainer applies the label directly - approval recorded
   [tatara-implementation] -- implement running, CI running, then review running
   (issue closed)          -- merged + main CI green
 ```
@@ -282,9 +307,9 @@ If the agent needs clarification:
 ```
   [tatara-brainstorming]  -- clarify: discuss (questions posted)
   [tatara-brainstorming]  -- Waiting for your reply...
-  (you reply)
+  (you reply - a comment, does NOT approve)
   [tatara-brainstorming]  -- clarify re-running
-  [tatara-approved]       -- Approved, proceeding
+  [tatara-approved]       -- Maintainer applies the label directly - approval recorded
   [tatara-implementation] -- ...
 ```
 
@@ -304,8 +329,8 @@ A Task enters **Parked** when the operator cannot proceed without human input: t
 
 Your options:
 
-- **Comment on the issue** to reactivate it. The Task re-enters `clarify` with the full thread as context.
-- **Apply the trigger label** to skip `clarify` and go straight to `implement`.
-- **Fix the underlying problem** (e.g., merge conflict, failing test) and then apply the trigger label.
+- **Comment on the issue** to reactivate it. The Task re-enters `clarify` with the full thread as context - this restarts the conversation but does not itself approve anything.
+- **Apply `tatara-approved`** (maintainer only) to record approval directly, independent of `clarify`'s conversational state.
+- **Fix the underlying problem** (e.g., merge conflict, failing test) and comment to resume; no re-approval is needed if `Status.ApprovedByMaintainer` was already recorded earlier in the same Task.
 
 While Parked the Task consumes no resources. It waits indefinitely until you act.

@@ -44,9 +44,27 @@ re-spawns a fresh clarify pod against the same Task).
 
 ## 4. Handoff to implement
 
-When the conversation reaches an implement-ready state, clarify removes `tatara-brainstorming`
-and adds `tatara-implementation` on the issue - the label swap the operator watches to spawn an
-`implement` pod. Clarify itself never writes code.
+Clarify's own judgment that the conversation has reached an implement-ready state is
+**not** sufficient to hand off. When clarify calls `issue_outcome(action=implement)`, the
+operator checks whether a verified maintainer approval has already been recorded on the
+Task (`Status.ApprovedByMaintainer`). That fact is set exclusively by a maintainer
+applying the `tatara-approved` label directly to the issue - never by a comment, never by
+clarify's own verdict, and never by a non-maintainer or bot applying the label. See
+[Approval Gates](../operations/security/approval-gates.md#gate-2-maintainer-approval-label-who-can-approve-implementation)
+for the full mechanism.
+
+- **Approval already recorded:** clarify removes `tatara-brainstorming` and adds
+  `tatara-implementation` on the issue - the label swap the operator watches to spawn an
+  `implement` pod.
+- **No recorded approval:** the `implement` verdict is downgraded. The issue stays on
+  `tatara-brainstorming` and clarify keeps polling (or the pod is killed on the 1-hour
+  idle timeout, resumable by a future comment or by the maintainer applying the label
+  directly). Clarify never writes code, and it never grants itself the approval it is
+  waiting on.
+
+A maintainer can apply `tatara-approved` at any point - even before clarify reaches an
+implement-ready verdict - and the operator records the approval as soon as the webhook
+event arrives, independent of clarify's own conversational state.
 
 !!! warning "Clarify cannot answer its own comments"
     This guard lives in the permission layer, not skill prose: the MCP comment action refuses
@@ -60,9 +78,9 @@ and adds `tatara-implementation` on the issue - the label swap the operator watc
 | Label | Applied when |
 |---|---|
 | `tatara-brainstorming` | Clarify is actively conversing (question posted, awaiting reply) |
-| `tatara-approved` | A human (or clarify itself, once satisfied) signals implement-ready |
+| `tatara-approved` | Applied **only** by a maintainer, directly on the issue - the sole action the operator records as approval; clarify never applies this label itself |
 | `tatara-implementation` | Clarify hands off; an `implement` pod is about to spawn |
 | `tatara-declined` | Clarify determines the issue should not be implemented |
 
-See [Approval Gates](../operations/security/approval-gates.md) for the self-approve guard
-governing bot-authored (brainstorm-originated) issues.
+See [Approval Gates](../operations/security/approval-gates.md) for the full maintainer-approval
+gate governing every issue, bot-authored or human-filed alike.

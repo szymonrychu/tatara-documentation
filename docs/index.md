@@ -20,7 +20,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     ---
 
-    Issues move through triage, implementation, and review agents in sequence, each handing off automatically. Humans approve; tatara merges once required checks are green.
+    Issues move through triage, implementation, and review agents in sequence, each handing off automatically. A maintainer approves by applying a label; tatara merges once required checks are green.
 
     [:octicons-arrow-right-24: The agentic operating model](concepts/agentic-model.md)
 
@@ -90,7 +90,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     You want your team's backlog to move faster without more headcount. You want proposals to appear automatically, implemented code to be reviewable, and a clear audit trail.
 
-    Tatara generates improvement proposals from a periodic brainstorm, routes them through your normal PR review flow, and requires a human maintainer to approve before any merge. Nothing is unilateral.
+    Tatara generates improvement proposals from a periodic brainstorm, routes them through your normal PR review flow, and requires a human maintainer to apply an explicit approval label before any code is written. Nothing is unilateral.
 
     Read [The Big Picture](explainers/big-picture.md) and [Workflows](workflows/index.md).
 

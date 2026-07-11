@@ -1,32 +1,34 @@
 ---
 title: Approval Gates
-description: How humans stay in control of tatara agents - intake allowlisting, clarify-driven label approval, and the deploy-supervisor merge gate.
+description: How humans stay in control of tatara agents - intake allowlisting, the maintainer-approval label gate, and the deploy-supervisor merge gate.
 ---
 
 # Approval Gates
 
 Tatara is designed to be useful without being autonomous. Two independent gates
 prevent an agent from writing or merging code without explicit human intent: an
-intake gate that controls which issues the operator acts on, and an approval gate
-that controls whether a clarify verdict leads to implementation. A third gate -
+intake gate that controls which issues the operator acts on, and a maintainer-approval
+gate that controls whether a front-half issue (still in `clarify`/brainstorming) advances
+into the autonomous implement->review->merge->deploy chain. A third gate -
 review approval plus the deploy supervisor - governs whether the resulting PR is
 merged automatically once a `review` pod approves it and required checks are
 green.
 
 ```mermaid
 sequenceDiagram
-    participant H as Human
+    participant M as Maintainer
     participant SCM as SCM (GitHub/GitLab)
     participant OP as Operator
     participant AG as Agent pod
 
     OP->>SCM: brainstorm: open proposal issue<br/>(tatara-brainstorming label)
-    OP->>SCM: @mention maintainerLogins for review
-    H->>SCM: reply in issue thread
-    OP->>AG: spawn clarify agent (reads full thread)
-    AG->>OP: issue_outcome(action=implement)
-    OP->>OP: self-approve guard:<br/>human comment present?
-    OP->>SCM: add tatara-approved label
+    AG->>OP: clarify: issue_outcome(action=implement)
+    OP->>OP: check Status.ApprovedByMaintainer
+    Note over OP: not set -> park to brainstorming,<br/>keep polling for the label
+    M->>SCM: apply tatara-approved label
+    SCM->>OP: issues.labeled webhook (actor=M)
+    OP->>OP: verify actor in MaintainerLogins<br/>(and actor != bot)
+    OP->>OP: record Status.ApprovedByMaintainer
     OP->>AG: spawn implement agent
     AG->>SCM: open PR
     OP->>AG: spawn review agent
@@ -71,83 +73,102 @@ spec:
     reporterLogins:       # restrict intake to these accounts
       - alice
       - ci-system
-    maintainerLogins:     # see Gate 2
+    maintainerLogins:     # see Gate 2 - the ONLY approval-granting set
       - alice
       - bob
 ```
 
-## Gate 2: Clarify approval - who can approve implementation
+## Gate 2: Maintainer-approval label - who can approve implementation
 
-Before an agent writes any code the operator must see evidence of human approval.
-Approval happens through the normal SCM comment thread on the issue, not through
-a separate UI or label click. The `clarify` agent reads the full thread (title,
-body, all comments) and calls an `issue_outcome` MCP tool with one of three
-verdicts:
+Before an agent writes any code, the operator requires a verified, identity-checked
+approval fact recorded on the Task: `Status.ApprovedByMaintainer`. There is exactly
+**one** action that sets this field, and it is not a conversational one:
 
-| Verdict | Meaning |
+!!! danger "The only approval action"
+    **A maintainer applies the `tatara-approved` label (`spec.scm.approvedLabel`) directly
+    to the issue.** That is the entire mechanism. Nothing else approves an issue for
+    implementation:
+
+    - **A comment never approves**, regardless of its content or who wrote it. "Looks good,
+      ship it" in a comment thread does **not** release the gate - the old comment-based
+      approval model has been removed entirely.
+    - **A non-maintainer applying the label does not approve.** If the issue reporter, a
+      trusted `reporterLogins` account, or any other non-maintainer applies
+      `tatara-approved`, the operator observes the label-add event, verifies the actor
+      is not a maintainer, and **ignores it** - no approval is recorded.
+    - **An agent or bot applying the label does not approve.** Label-add events whose
+      actor is the configured `botLogin` are dropped before the maintainer check even
+      runs. An agent/pod acting as the bot structurally cannot self-approve its own (or
+      anyone else's) proposal by writing the label itself.
+
+`clarify` still runs its conversation - asking questions, proposing a plan, reading the
+full comment thread - but that conversation is informational and scoping only. When
+`clarify` calls `issue_outcome(action=implement)`, the operator does **not** treat the
+verdict itself as approval:
+
+| `clarify` verdict | Operator behavior |
 |---------|---------|
-| `implement` | `clarify` judges the issue ready for implementation |
-| `discuss` | More information or human input is needed |
+| `implement` | Checks `Status.ApprovedByMaintainer`. **Set** -> proceeds to spawn `implement`. **Empty** -> fails closed: parks the issue back to `tatara-brainstorming` and keeps waiting for a maintainer to apply the label. |
+| `discuss` | More information or human input is needed; issue stays in `tatara-brainstorming`, `clarify` keeps polling |
 | `close` | Issue should be rejected and closed |
 
-### Self-approve guard
+### Who verifies the approval, and how
 
-Tatara never approves its own brainstorm proposals without human engagement. When
-`clarify` returns `implement` for a bot-authored issue:
+The webhook server is the sole writer of `Status.ApprovedByMaintainer`. On every
+`issues.labeled` event it applies this check, in order:
 
-1. The operator checks the comment thread for at least one comment whose author
-   is **not** the bot.
-2. If no such comment exists, the verdict is downgraded to `discuss` - the issue
-   stays in brainstorming (`tatara-brainstorming` label) and `clarify` keeps
-   polling (1-hour wall-clock, `PendingInterjections`), waiting for human input.
-   No `implement` pod is spawned.
-3. If a human comment is present, the verdict is honored: the `tatara-approved`
-   label is applied and an `implement` pod is dispatched.
+1. **Drop bot-actor label events.** If the event's actor is the project's `botLogin`,
+   the event is an echo of the operator's own SCM write (e.g. a phase-label swap) and is
+   ignored outright - it never reaches the approval check.
+2. **Match the changed label.** Only an add of exactly `spec.scm.approvedLabel` (default
+   `tatara-approved`) is considered; every other label change is irrelevant to this gate.
+3. **Verify the actor is a maintainer.** The actor login is checked against
+   `EffectiveMaintainerLogins` for the issue's repository (the Repository-level override,
+   falling back to the Project-level `spec.scm.maintainerLogins`) - and the bot login is
+   structurally excluded from that set even if it were mistakenly listed. Only a match
+   here counts as verified.
+4. **Record the fact.** On a match, the operator writes `Status.ApprovedByMaintainer` on
+   the owning Task to the maintainer's login (kept for audit) - not the raw label
+   presence. Every subsequent gate check reads this recorded fact, not the SCM label
+   state, so the approval cannot be spoofed by an agent re-adding a label the operator
+   itself might otherwise sweep or re-apply.
 
-This guard is fail-closed: if the authorship check fails for any reason (SCM
-error, token issue), the operator treats the issue as bot-authored and withholds
-approval.
+!!! warning "Fail closed: empty `MaintainerLogins` approves nothing, ever"
+    `spec.scm.maintainerLogins` is **closed by default**. An empty (or unset) list means
+    the project has **no** maintainers - nobody's label-apply can ever satisfy the actor
+    check, so `Status.ApprovedByMaintainer` can never be set and no issue ever advances
+    past `clarify` into implementation. This is deliberate: a project must explicitly name
+    its maintainers before tatara will write any code against it. There is no "any human"
+    fallback for an unpopulated allowlist, unlike the intake gate (Gate 1).
 
-!!! note "Guard enforcement moved to the permission layer"
-    This guard used to live in triage-agent skill prose. It is now enforced structurally: the
-    MCP comment action itself refuses to post when the last comment on the thread is
-    bot-authored, and the webhook actor-check refuses to (re)spawn `clarify` off a bot's own
-    comment - not something the clarify agent has to remember to check.
+### Applying the label at any point in the conversation
 
-### Third-party fast path
+A maintainer does not need to wait for `clarify` to ask; the label can be applied at any
+time while the issue sits in `tatara-brainstorming` (including immediately on filing, to
+skip straight past discussion once `clarify` next reconciles). The webhook records the
+approval as soon as it sees the event, independent of whatever `clarify` verdict comes
+next - so a maintainer who applies the label while `clarify` is mid-conversation does not
+need to wait for the pod to finish; the next reconcile sees the recorded approval and
+proceeds.
 
-Issues filed by a known third-party contributor (an author who is neither the bot
-nor a maintainer, but is in the `reporterLogins` allowlist) bypass the self-approve
-guard and proceed directly to implementation when the `clarify` verdict is
-`implement`. The reasoning: a human already filed the work request; no additional
-approval signal is needed.
+### Systemic/grouped issue sets: approval is per-issue, not per-group
 
-### Who counts as a "human" for the approval check
+A systemic-improvement group (see [Brainstorm](../../workflows/brainstorm.md#systemic-improvements))
+files one lead issue plus same-repo sibling issues that share a `tatara/systemic-<id>`
+label. Maintainer approval is **never group-wide**: each sibling issue requires its own,
+independently recorded `Status.ApprovedByMaintainer` before it is treated as approved.
 
-When `spec.scm.maintainerLogins` is **non-empty**: only comments from accounts in
-that list satisfy the human-engagement requirement for bot-authored proposals, and
-only those accounts' comment intent is read by `clarify` as authoritative.
-
-When `spec.scm.maintainerLogins` is **empty**: any comment from any non-bot account
-satisfies the guard (historical behavior, preserved for migration compatibility).
-
-!!! note "Approval is conversational, not keyword-driven"
-    `clarify` reads natural language. "Looks good, ship it" and "approved -
-    implement this week" are both sufficient. There is no magic keyword or command
-    syntax required.
-
-### Human label override (while clarify is polling)
-
-While `clarify` is live and polling for input, the operator also watches the SCM
-issue for label changes on every reconcile. A human may bypass the conversational
-path entirely by directly applying a label:
-
-- Add `tatara-approved` - the operator immediately transitions the task toward
-  implementation, skipping a fresh `clarify` verdict.
-- Add `tatara-declined` - the operator parks the task with reason `human-declined`.
-
-This path is also the recovery mechanism for proposals whose clarify discussion
-has stalled: apply the label directly to unblock the queue.
+- An unapproved or explicitly declined sibling is **not force-closed** by the lead's PR.
+  The lead's implementation prompt only includes siblings that already carry a recorded
+  approval; siblings with no recorded approval are excluded from the combined-PR prompt
+  entirely.
+- If the lead PR body would otherwise auto-close an unapproved sibling (a `Closes #N`
+  directive for that sibling's issue number), the writeback step **downgrades it to
+  `refs #N`** before posting - the reference survives for traceability, but merging the
+  lead PR no longer closes that sibling's issue.
+- A sibling that is later approved co-resolves on a subsequent reconcile: the systemic
+  group carried on the lead Task is filtered fresh against currently-recorded approvals
+  every time, so a late maintainer approval is picked up without re-filing anything.
 
 ## Gate 3: Review approval + deploy-supervisor merge
 
@@ -157,6 +178,14 @@ an operator-only loop, not an agent kind - which merges once **both** hold: requ
 green, and `tatara-approved` is present on the PR (set only by `review`'s approve action, never
 by `implement`). `review` never calls a merge API itself; it only sets the label and posts a
 native SCM approval.
+
+!!! note "Same label name, different object, different check"
+    The PR-level `tatara-approved` label here is unrelated to the issue-level Gate 2 check:
+    `review` (a bot pod) sets this one itself as part of its approve action, and the deploy
+    supervisor trusts raw label presence on the **PR**. Gate 2's issue-level approval is never
+    self-set by a bot and is trusted only via the recorded `Status.ApprovedByMaintainer` fact,
+    never raw label presence on the **issue**. Do not conflate the two - Gate 2 exists precisely
+    because a bot-settable label cannot be trusted as a human-approval signal.
 
 If `review` finds any MR under the Task unmergeable (a conflict, a failed pipeline), it withholds
 approval and re-adds `tatara-implementation`, invoking `implement` again rather than leaving the
@@ -221,6 +250,11 @@ project-level `reporterLogins`. To close intake to only the bot and
 maintainers, set `reporterLogins` to a non-empty list containing only the
 trusted accounts.
 
+Setting `maintainerLogins` to an explicit empty list `[]` for a repository has the
+opposite effect from `reporterLogins`: it **closes** the approval gate for that
+repository (no maintainer, so nothing is ever approved there), even if the
+project-level list is non-empty.
+
 ## Label set reference
 
 The operator manages the following labels. Names are configurable via the
@@ -228,8 +262,8 @@ The operator manages the following labels. Names are configurable via the
 
 | Label | Default name | Color | Meaning |
 |-------|-------------|-------|-------|
-| Brainstorming | `tatara-brainstorming` | `#1d76db` (blue) | `clarify` conversing - proposal under discussion |
-| Approved | `tatara-approved` | `#0e8a16` (green) | Ready for implementation |
+| Brainstorming | `tatara-brainstorming` | `#1d76db` (blue) | `clarify` conversing - proposal under discussion, awaiting maintainer approval |
+| Approved | `tatara-approved` | `#0e8a16` (green) | A maintainer applied this label and the operator verified it - ready for implementation |
 | Implementation | `tatara-implementation` | `#fbca04` (yellow) | `implement` agent active |
 | Declined | `tatara-declined` | `#9e9e9e` (gray) | Rejected - no implementation |
 | Incident | `tatara-incident` | `#d73a4a` (red) | Additive; incident-originated proposal |
@@ -239,6 +273,14 @@ It adds the desired label and removes all other managed labels atomically.
 The `tatara-incident` label is additive and never swept by the phase reconciler -
 an incident proposal can carry both `tatara-incident` and `tatara-brainstorming`
 simultaneously.
+
+!!! warning "Label presence on the issue is not proof of approval"
+    The `tatara-approved` label being visibly present on an issue does not by itself mean
+    the operator has recorded an approval - a non-maintainer or a bot could have applied it
+    (the operator leaves a non-maintainer's label in place; it just never treats it as
+    approval) or the operator itself may not have finished reconciling the event yet. To
+    confirm approval was recorded, check the owning Task's
+    `status.approvedByMaintainer` field (non-empty = recorded; holds the approving login).
 
 !!! note "Legacy labels"
     `tatara-idea` and `tatara-rejected` are deprecated aliases kept for migration
@@ -255,21 +297,21 @@ flowchart TD
     B -- author allowed --> C[clarify agent reads\nfull comment thread]
     C -- outcome: close --> D[tatara-declined label\nIssue closed]
     C -- outcome: discuss --> E[tatara-brainstorming label\nclarify keeps polling]
-    C -- outcome: implement --> F{Bot-authored\nproposal?}
-    F -- no, third-party --> G[tatara-approved label\nimplement agent spawns]
-    F -- yes --> H{Human comment\nin thread?}
-    H -- no --> E
-    H -- yes --> G
-    E --> I{Human applies\nlabel manually?}
-    I -- tatara-approved --> G
-    I -- tatara-declined --> Z2([Parked - human-declined])
-    I -- no label change --> J{1h wall-clock\nelapsed?}
-    J -- yes --> Z3([Clarify pod killed - resumable])
-    J -- no --> I
-    G --> K[implement agent opens PR]
-    K --> L[review agent approves\nor requests changes]
-    L -- approve --> M{Required checks green?}
-    L -- request_changes --> G
-    M -- yes --> O([Deploy supervisor merges])
-    M -- no --> P([Hold - awaiting CI])
+    C -- outcome: implement --> F{Status.ApprovedByMaintainer\nrecorded?}
+    F -- no --> E
+    F -- yes --> G[implement agent spawns]
+    E --> I{Maintainer applies\ntatara-approved label?}
+    I -- yes, verified maintainer actor --> J[Status.ApprovedByMaintainer\nrecorded]
+    I -- yes, non-maintainer or bot actor --> K[Ignored - not recorded]
+    K --> E
+    J --> G
+    E --> L{1h wall-clock\nelapsed, no label event?}
+    L -- yes --> M([Clarify pod killed - resumable])
+    L -- no --> E
+    G --> N[implement agent opens PR]
+    N --> O[review agent approves\nor requests changes]
+    O -- approve --> P{Required checks green?}
+    O -- request_changes --> G
+    P -- yes --> Q([Deploy supervisor merges])
+    P -- no --> R([Hold - awaiting CI])
 ```

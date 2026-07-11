@@ -244,16 +244,16 @@ The dispatcher evaluates the queue on every reconcile cycle. `normal`-class even
 | Role | Applies to | Meaning |
 |------|-----------|---------|
 | `source` | issue or PR | The originating item that triggered this task |
-| `proposed` | issue | An agent-created proposal issue awaiting human approval |
+| `proposed` | issue | An agent-created proposal issue awaiting a maintainer to apply `tatara-approved` |
 | `closes` | issue | An issue this task's PR will close on merge |
 | `openedPR` | PR | A PR/MR the agent opened |
 | `reviewed` | PR | A human-authored PR the agent reviewed |
 
 | State | Meaning |
 |-------|---------|
-| `proposed` | Proposal issue created; awaiting human approval |
-| `approved` | Human approved the proposal |
-| `declined` | Human or triage agent declined the proposal |
+| `proposed` | Proposal issue created; awaiting a maintainer to apply `tatara-approved` directly (no other action approves it) |
+| `approved` | A verified maintainer applied the `tatara-approved` label directly to the proposal |
+| `declined` | A maintainer applied `tatara-declined`, or the triage agent declined the proposal |
 | `implemented` | Implementation merged; issue closed |
 | `open` | Issue or PR is open in the tracker |
 | `closed` | Issue closed without merge |

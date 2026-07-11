@@ -35,8 +35,8 @@ forgotten, and the docs drift from the code. Tatara inverts each of these becaus
 same agent loop that ships product work is pointed at the platform itself:
 
 - **Idle improvements get done.** The periodic [brainstorm](../workflows/brainstorm.md)
-  surveys the code graph and files concrete proposals; a human approves the good ones and
-  the loop implements them.
+  surveys the code graph and files concrete proposals; a maintainer applies `tatara-approved`
+  to the good ones and the loop implements them.
 - **Incidents close their own loops.** A firing alert spawns an
   [incident](../workflows/incident.md) investigation that produces an evidence-backed
   issue - which is then implemented, whether the fix is in code or in the alerting itself.
@@ -55,8 +55,9 @@ tatara's own repositories.
 
 The [brainstorm](../workflows/brainstorm.md) cron queries tatara's own knowledge graph,
 scores improvement candidates, and files them as proposal issues carrying the
-`tatara-brainstorming` label. **Brainstorm never implements** - a human approves a proposal
-(applying `tatara-approved` or the `triggerLabel`) before the loop writes any code. This is
+`tatara-brainstorming` label. **Brainstorm never implements** - a verified maintainer must
+apply `tatara-approved` directly to the proposal issue before the loop writes any code; a
+comment never releases it, and the bot cannot approve its own proposal. This is
 [Gate 3](agentic-model.md#gate-3-brainstorm-proposal-approval) and it is the load-bearing
 control on self-directed work.
 
@@ -67,7 +68,7 @@ flowchart LR
     A[brainstorm cron<br/>fires on tatara Project] --> B[Query code graph:<br/>find coupling / gaps]
     B --> C[propose_issue:<br/>tighten context guard]
     C --> D[Issue opened,<br/>tatara-brainstorming label]
-    D --> E[Human approves<br/>tatara-approved]
+    D --> E[Maintainer applies label<br/>tatara-approved]
     E --> F[clarify hands off:<br/>tatara-implementation label]
     F --> G[implement Task<br/>implements + opens PR]
     G --> H[review approves,<br/>merged on green CI]
@@ -76,7 +77,7 @@ flowchart LR
 **Example - a graph-discovered refactor.** A brainstorm pass reading the operator's code
 graph notices that a token-accounting helper is copy-pasted across three reconcilers. It
 files *"Deduplicate per-turn token accounting into a single helper"* with a problem
-statement, a proposed approach, and the expected benefit. A maintainer approves it; `clarify`
+statement, a proposed approach, and the expected benefit. A maintainer applies `tatara-approved`; `clarify`
 hands off to `implement`, which extracts the helper, adds a table-driven test, and opens a PR
 that squash-merges once CI is green. The improvement is one a human would have wanted and
 never scheduled.

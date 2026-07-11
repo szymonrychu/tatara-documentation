@@ -176,14 +176,14 @@ Binds the project to an SCM provider and configures the full set of operational 
 |---|---|---|---|---|
 | `provider` | `string` | - | **yes** | SCM provider. One of `github` or `gitlab`. |
 | `owner` | `string` | - | **yes** | GitHub organization or user name, or GitLab group/user path. All enrolled repositories must live under this owner. |
-| `botLogin` | `string` | - | **yes** | SCM username of the bot account. Used to distinguish bot comments from human comments and to gate autoapprove. |
+| `botLogin` | `string` | - | **yes** | SCM username of the bot account. Used to distinguish bot comments from human comments, and to exclude the bot from the maintainer-approval actor check (an `issues.labeled` event whose actor is `botLogin` is dropped before that check even runs, so the bot can never self-approve). |
 | `botEmail` | `string` | - | no | Git commit author email for agent commits. When empty the wrapper's default identity applies. |
 
 #### Approval gates
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `maintainerLogins` | `[]string` | `[]` | Trusted human maintainer accounts. Together with `botLogin` they form the "trusted insider" set for autoapprove. When non-empty, a thread comment is only treated as a human approval if its author appears in this list. When empty, any non-bot human reply releases the self-approve hold. Overridable per-repository via `RepositorySpec.maintainerLogins`. |
+| `maintainerLogins` | `[]string` | `[]` | Trusted human maintainer accounts. The **only** approval action the operator recognizes is a listed login applying `approvedLabel` (default `tatara-approved`) directly to the issue - the webhook verifies the label-event actor against this list before recording `Status.ApprovedByMaintainer`. A comment never approves, regardless of author. **Closed by default:** an empty list means no login is a maintainer, so nothing can ever be approved and no issue advances to `implement`. Overridable per-repository via `RepositorySpec.maintainerLogins`. |
 | `reporterLogins` | `[]string` | `[]` | Allowlist of accounts whose issues and issue comments the operator will act on. When non-empty, issues or comments from any account not in this list (and not a bot or maintainer) are silently dropped at intake. Prevents unknown third parties from driving the lifecycle via prompt injection. When empty, any author is accepted. Overridable per-repository via `RepositorySpec.reporterLogins`. |
 
 !!! warning "Prompt-injection defense"
@@ -289,7 +289,7 @@ The operator projects a set of SCM labels onto issues to communicate task phase.
 | Field (`scm.*`) | Default value | Semantics |
 |---|---|---|
 | `brainstormingLabel` | `tatara-brainstorming` | Issue is in triage or discussion (pre-approval). Applied by the triage agent. |
-| `approvedLabel` | `tatara-approved` | Issue is approved for implementation. Set when a maintainer approves the proposal thread. |
+| `approvedLabel` | `tatara-approved` | Issue is approved for implementation. Set only by a `maintainerLogins` member applying this exact label directly to the issue - the operator never applies it itself, and never treats a comment or a non-maintainer's/bot's label-apply as equivalent. |
 | `implementationLabel` | `tatara-implementation` | Implementation is in flight. Applied when the implement task starts. |
 | `declinedLabel` | `tatara-declined` | Issue was declined before implementation (triage reject). |
 | `incidentLabel` | `tatara-incident` | Issue originated from an incident investigation. Applied additively alongside `brainstormingLabel`; never swept by the phase-label reconciler. |
@@ -480,7 +480,7 @@ spec:
 5. Grafana integration provisions a `grafana-mcp` sidecar for incident-response tasks. The `secretRef` Secret must contain `serviceAccountToken` and `webhookSecret` keys.
 6. `capacity` overrides the `maxConcurrentTasks` default for queue admission. `alertCapacity` reserves dedicated slots so incident tasks are never starved by a backlog of normal tasks.
 7. `botLogin` must match the SCM account whose token is in `scmSecretRef`. Mismatches cause the operator to misidentify its own comments as human input.
-8. `maintainerLogins` + `reporterLogins` form the security perimeter. At minimum set `maintainerLogins` to restrict who can approve proposals.
+8. `maintainerLogins` + `reporterLogins` form the security perimeter. `maintainerLogins` is not optional hardening here - it is **required** for anything to ever be approved: empty means no login can ever satisfy the maintainer-approval check, so no issue advances to `implement`.
 9. MR scan every 15 minutes, issue scan hourly, brainstorm and documentation cron weekly on Monday morning.
 10. Deploy budgets bound how long a `Deploying`-phase Task can wait for its push-CD cascade to reach a `tatara-helmfile` apply before parking recoverable. `deployBudgetSeconds` covers the longest 2-hop path (e.g. cli -> wrapper -> helmfile); `deploySingleHopBudgetSeconds` is tighter for single-hop artifacts (operator, memory, ingester, chat).
 11. `maxTaskTokens` is a runaway backstop for the turn-uncapped `implement` kind, not a cost lever. `modelByKind`/`effortByKind` tier specific kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a SHA to avoid `main` drift.

@@ -92,7 +92,7 @@ graph LR
 | Role | Kind | Description |
 |---|---|---|
 | `source` | issue or pr | The SCM item that triggered this Task. Webhook-born Tasks have exactly one `source` entry seeded from `spec.source`. |
-| `proposed` | issue | A brainstorm-proposed issue that the agent filed on the tracker. Awaiting human approval before an implementation Task is spawned. |
+| `proposed` | issue | A brainstorm-proposed issue that the agent filed on the tracker. Awaiting a maintainer to apply `tatara-approved` directly to it - the only action that releases it - before an implementation Task is spawned. |
 | `closes` | issue | An issue that the agent's PR explicitly closes (via `Closes #N` in the PR body). The operator tracks this to detect when the work is complete. |
 | `openedPR` | pr | A pull request or merge request opened by the agent as the implementation output. A Task may have multiple `openedPR` entries when the work spans more than one repository. |
 | `reviewed` | pr | A PR/MR that a `review`-kind Task examined. The agent posts its verdict and the entry records the head SHA it reviewed. |
@@ -119,8 +119,8 @@ stateDiagram-v2
 
     state "Proposal lifecycle" as PL {
         [*] --> proposed : agent files proposal
-        proposed --> approved : human approves
-        proposed --> declined : human declines
+        proposed --> approved : maintainer applies tatara-approved label
+        proposed --> declined : maintainer applies tatara-declined label
         approved --> implemented : implementation PR merged
     }
 
@@ -135,7 +135,7 @@ stateDiagram-v2
 | State | Applies to roles | Description |
 |---|---|---|
 | `proposed` | `proposed` | Proposal issue has been created on the SCM tracker. No implementation Task exists yet. |
-| `approved` | `proposed` | A human (or maintainer) has signalled approval on the proposal issue. The operator will spawn an `implement` Task. |
+| `approved` | `proposed` | A verified maintainer applied the `tatara-approved` label directly to the proposal issue (a comment, a non-maintainer's label-apply, or the bot's own label-apply never sets this). The operator will spawn an `implement` Task. |
 | `declined` | `proposed` | A human has declined the proposal. The proposal issue is closed and no implementation Task is spawned. |
 | `implemented` | `proposed`, `closes` | The linked implementation PR has been merged. Used to avoid re-implementing an already-delivered proposal. |
 | `open` | `source`, `closes`, `openedPR`, `reviewed` | The issue or PR is open on the SCM provider. |

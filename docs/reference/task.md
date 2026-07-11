@@ -105,9 +105,9 @@ once - see [Subagent-only orchestration](../concepts/agentic-model.md) and
 | `kind` | enum | `implement` | no | Task kind (see table above) |
 | `source` | [TaskSource](#tasksource) | - | no | SCM work-item that originated this task |
 | `maxTurns` | int | from Project | no | Per-task override for `agent.maxTurnsPerTask` |
-| `proposedIssue` | [ProposedIssueSpec](#proposedissuespec) | - | no | Issue blueprint for brainstorm-created proposals awaiting human approval |
+| `proposedIssue` | [ProposedIssueSpec](#proposedissuespec) | - | no | Issue blueprint for brainstorm-created proposals awaiting a maintainer to apply `tatara-approved` |
 | `reposInScope` | `[]string` | - | no | Repository CR names this task is expected to change. Empty = single-repo (primary only). When set, the writeback step warns for any in-scope repo that produced no commits. |
-| `systemicGroup` | [SystemicGroup](#systemicgroup) | - | no | Marks this task as the systemic-improvement lead. The lead opens one combined PR that closes all `sameRepoSiblings`. |
+| `systemicGroup` | [SystemicGroup](#systemicgroup) | - | no | Marks this task as the systemic-improvement lead. The lead opens one combined PR that closes only the `sameRepoSiblings` that carry their own recorded maintainer approval - see [SystemicGroup](#systemicgroup). |
 | `alertRule` | string | - | no | Grafana alert rule name (`alertname` label) that triggered an incident task. Descriptive only; dedup key is the `tatara.dev/alert-group` label hash. |
 
 ### TaskSource
@@ -129,7 +129,7 @@ webhook payload when the operator creates the Task from a QueuedEvent.
 
 ### ProposedIssueSpec
 
-Carried by brainstorm tasks that propose a new issue awaiting human approval. The operator
+Carried by brainstorm tasks that propose a new issue awaiting a maintainer to apply `tatara-approved` directly to it. The operator
 creates a tracker issue from this spec when the task completes.
 
 | Field | Type | Description |
@@ -145,13 +145,24 @@ creates a tracker issue from this spec when the task completes.
 ### SystemicGroup
 
 Carried by the lead task of a systemic-improvement group. The lead opens a single PR that
-closes all same-repo siblings and is aware of cross-repo siblings as reference context.
+targets same-repo siblings and is aware of cross-repo siblings as reference context.
 
 | Field | Type | Description |
 |---|---|---|
 | `systemicId` | string | Group identifier. Matches the `tatara/systemic-<id>` SCM label applied by `createProposal`. |
-| `sameRepoSiblings` | `[]int` | Issue numbers in the same repository that the lead PR closes. |
+| `sameRepoSiblings` | `[]int` | Issue numbers in the same repository the lead PR is aware of. |
 | `crossRepo` | `[]string` | Cross-repo sibling references in `owner/repo#N - title` form. Informational only; not closed by this PR. |
+
+!!! warning "Approval is per-sibling, never group-wide"
+    A maintainer approving the lead issue does **not** approve its siblings. Each entry in
+    `sameRepoSiblings` needs its own independently recorded `Status.ApprovedByMaintainer` (on
+    that sibling's own Task) before the lead's implementation prompt includes it. An unapproved
+    or declined sibling is never force-closed: the writeback step downgrades any `Closes #N`
+    directive targeting it to `refs #N` before posting the PR body, so the reference survives
+    but merging the lead PR does not close that sibling's issue. A late approval co-resolves on
+    a later reconcile, since the group is filtered against currently-recorded approvals every
+    time, not snapshotted once. See
+    [Approval Gates](../operations/security/approval-gates.md#systemicgrouped-issue-sets-approval-is-per-issue-not-per-group).
 
 ---
 
@@ -162,6 +173,7 @@ closes all same-repo siblings and is aware of cross-repo siblings as reference c
 | Field | Type | Description |
 |---|---|---|
 | `phase` | enum | `Planning`, `Running`, `Succeeded`, `Failed`, `Deploying`. Populated for every kind's own run; `Deploying` is set only once a Task's PR has been review-approved and the deploy supervisor has taken it over, alongside `lifecycleState: Deploying` (see [Deploy-supervision status](#deploy-supervision-status-phasedeploying) and [Termination](#termination)). |
+| `approvedByMaintainer` | string | Empty until a verified maintainer approval is recorded; then holds the approving login. Set exclusively by the webhook when it observes an `issues.labeled` event for `tatara-approved` whose actor is a `maintainerLogins` member (never the bot). This is the **only** signal that releases a front-half Task into implementation - not raw label presence on the issue, not a comment, not `clarify`'s own verdict. See [Approval Gates](../operations/security/approval-gates.md#gate-2-maintainer-approval-label-who-can-approve-implementation). |
 | `podName` | string | Name of the currently running agent Pod |
 | `turnsCompleted` | int | Total turns completed across all runs |
 | `prURL` | string | URL of the opened PR or MR |
@@ -208,6 +220,11 @@ All other outcome fields are absent.
 | `action` | enum | `implement`, `close`, or `discuss` |
 | `comment` | string | Comment body. Required when `action` is `close` or `discuss`. |
 | `plan` | string | Short implementation plan. Posted as an implementation-start message when `action` is `implement`. |
+
+!!! warning "`action=implement` alone does not release the Task"
+    An `implement` verdict is necessary but not sufficient. The operator additionally requires
+    `status.approvedByMaintainer` to already be recorded; if it is empty, the verdict is
+    downgraded and the Task is parked back to `tatara-brainstorming` instead of advancing.
 
 #### ImplementOutcome
 

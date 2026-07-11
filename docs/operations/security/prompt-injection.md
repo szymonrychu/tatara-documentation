@@ -16,7 +16,8 @@ The most effective defense: control who can cause the agent to process any conte
 spec:
   scm:
     reporterLogins: [alice, bob, charlie]  # only these accounts trigger agent activity
-    maintainerLogins: [alice, bob]         # these accounts can also approve
+    maintainerLogins: [alice, bob]         # only these accounts can approve, and only by
+                                            # applying the tatara-approved label directly
 ```
 
 **Default:** empty `reporterLogins` means any account can trigger agent activity (open intake, backward-compatible). For production deployments on public repositories, always configure `reporterLogins`.
@@ -46,9 +47,11 @@ The operator sets `TATARA_TOOL_PROFILE` per task kind. The `tatara-cli` MCP serv
 
 A successful injection into a `review` agent gains no ability to push commits - the tool is simply absent.
 
-## Layer 5: Human approval before implementation
+## Layer 5: Maintainer approval before implementation
 
-Even if an injected issue body tricks the triage agent into a bad plan, a human maintainer must approve the plan in the issue thread before any code is written. See [Approval Gates](approval-gates.md).
+Even if an injected issue body tricks the triage agent into a bad plan, no code is written until a
+verified project maintainer applies the `tatara-approved` label directly to the issue - a comment
+in the thread, however convincing, never approves. See [Approval Gates](approval-gates.md).
 
 ## Layer 6: PR review before merge
 
@@ -68,7 +71,7 @@ All code changes are visible as a PR. A human reviewer can detect injected behav
 ## Recommendations for sensitive environments
 
 1. **Always set `reporterLogins`** - enumerate explicitly who can drive agent activity
-2. **Always set `maintainerLogins`** - enforce the gated approval chain
+2. **Always set `maintainerLogins`** - it is closed by default (empty means nothing can ever be approved), but populate it with the real accounts you trust to apply `tatara-approved`
 3. **Enable branch protection** - require an approving review (on top of `review`'s own native approval) before merge on enrolled repos, so the forge holds the merge for a human as well
 5. **Monitor intake rejections** - a reporter-allowlist drop is counted as `operator_webhook_events_total{result="ignored"}` (there is no `dropped` result value; querying `result="dropped"` returns nothing and any alert on it would silently never fire). Note `ignored` also covers other benign no-op events (bot-authored, non-actionable actions), so scope the query by `kind`/`action` when alerting.
 6. **Audit commits** - `git log --author=<botEmail>` to review all autonomous commits

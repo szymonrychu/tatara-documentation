@@ -63,7 +63,7 @@ The agent can read files, write code, run tests, call APIs (via MCP tools), and 
 
 Reacting to human-filed issues is only one of the agent kinds tatara runs. The platform also generates and maintains its own backlog, responds to alerts, and can deploy itself:
 
-- **brainstorm** proposes net-new work as fresh issues (capped per project). A bot-filed proposal will not auto-approve into implementation until a human engages with it.
+- **brainstorm** proposes net-new work as fresh issues (capped per project). A bot-filed proposal will not advance into implementation until a maintainer applies the `tatara-approved` label directly to it - the same gate every other issue goes through, not a lighter one.
 - **refine** grooms the existing backlog - tightening, de-duplicating, and closing stale proposals - without opening or implementing anything itself.
 - **incident** fires from Grafana alert webhooks: an alert at 3am spawns an investigation agent that gathers context and reports back for a human in the morning.
 - **push-CD** lets tatara ship its own components: a merged change with a declared significance rides a semver release cascade all the way to a `tatara-helmfile` apply (walked through in [From Issue to PR](issue-to-pr.md)).
@@ -74,10 +74,9 @@ So not every unit of work starts from a human-labeled issue. What stays with hum
 
 Tatara runs much of its own loop, but the load-bearing decisions stay with humans:
 
-1. **Which repositories are enrolled.** Tatara clarifies *every* open issue in an enrolled repo - no label is required. The optional trigger label only makes it skip the conversation and hand straight to implementation; it is not an act/no-act switch.
-2. **Whether to approve net-new work the agent proposes.** Brainstorm-generated proposals wait for a human before they are implemented.
-3. **Whether to approve the direction during `clarify`'s conversation**, by commenting in the issue thread.
-4. **Whether to add a human merge gate.** By default `review` (a separate bot pod that cannot approve its own diff) approves the PR and the deploy supervisor merges it on green CI with no human step; add a review-gated branch-protection rule if you want a human approval required on top. (See the approval-gates reference.)
+1. **Which repositories are enrolled.** Tatara clarifies *every* open issue in an enrolled repo - no label is required. The optional trigger label only affects intake (whether the operator engages immediately versus on the next scan); it does not skip the conversation and does not grant approval.
+2. **Whether to approve any work the agent should implement - proposed or human-filed alike.** The only approval action is a maintainer applying the `tatara-approved` label directly to the issue. Nothing else releases it: not a comment in `clarify`'s conversation, not the issue reporter applying the label, not the bot applying it.
+3. **Whether to add a human merge gate.** By default `review` (a separate bot pod that cannot approve its own diff) approves the PR and the deploy supervisor merges it on green CI with no human step; add a review-gated branch-protection rule if you want a human approval required on top. (See the approval-gates reference.)
 
 The agent proposes, grooms, implements, and reviews its own work, and can even ship its own components; humans set scope and can add a merge gate. This is the design intent, not a limitation.
 
@@ -85,7 +84,7 @@ The agent proposes, grooms, implements, and reviews its own work, and can even s
 
 A CI/CD script runs fixed commands. Tatara runs an AI agent that reasons about your specific codebase. The agent reads your code, understands your patterns, asks clarifying questions if the spec is ambiguous, and writes code in your style.
 
-The tradeoff is that agent behavior is probabilistic, not deterministic. The approval gates exist precisely because of this: the direction is agreed during `clarify`'s conversation before implementation, and a separate `review` pod reviews the code before the deploy supervisor merges it - with an optional human branch-protection gate on top.
+The tradeoff is that agent behavior is probabilistic, not deterministic. The approval gates exist precisely because of this: `clarify`'s conversation shapes the direction, but implementation itself waits on a maintainer applying `tatara-approved` before any code is written, and a separate `review` pod reviews the code before the deploy supervisor merges it - with an optional human branch-protection gate on top.
 
 ## What could go wrong (and how tatara handles it)
 

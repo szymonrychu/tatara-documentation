@@ -16,7 +16,7 @@ Tatara addresses both by running a continuous, autonomous loop: it reads your is
 
 **Autonomous implementation loop.** Issues labeled `tatara` are picked up automatically. The agent triages the issue (posting questions or a plan when it needs a human decision, and parking until you respond), implements once cleared, opens a PR, and babysits CI. Under the default merge policy the operator then squash-merges the PR on green CI on its own; add a review-gated branch-protection rule if you want to review each PR before it lands. You review code and the triage decision, not prompts.
 
-**Periodic brainstorm.** A cron-driven brainstorm agent queries the codebase knowledge graph and proposes improvements as GitHub/GitLab issues. Proposals are filed, not implemented - a human decides which ones to approve. The agent caps proposal volume (`maxOpenProposals`) so the tracker does not flood.
+**Periodic brainstorm.** A cron-driven brainstorm agent queries the codebase knowledge graph and proposes improvements as GitHub/GitLab issues. Proposals are filed, not implemented - a maintainer approves a proposal by applying the `tatara-approved` label directly to it; nothing else releases it. The agent caps proposal volume (`maxOpenProposals`) so the tracker does not flood.
 
 **Incident response.** A Grafana alert fires a webhook to the operator. An incident investigation agent starts within seconds, queries Grafana (metrics, logs, annotations), diagnoses the issue, and files a structured incident issue with findings and remediation proposals. Escalation and follow-up implementation happen through the normal clarify -> implement -> review handoff.
 
@@ -40,7 +40,10 @@ Tatara addresses both by running a continuous, autonomous loop: it reads your is
 
 **Not a monolith.** Eight independent component repos, each with its own packaging, CI pipeline, and release lifecycle. Packaging is per-component, not uniformly a Helm chart: the Go services (operator, memory, chat) ship Helm charts, but `tatara-cli` ships via a Homebrew tap and is baked into the wrapper image, `tatara-helmfile` is Helmfile plus YAML, and `tatara-observability` is Terraform plus YAML. You can adopt components incrementally.
 
-**Not autonomous with unchecked write access - but the write access is real.** A human decides whether an issue gets worked (clarify's conversation gate). After that, the default is autonomous: `review` approves the bot's own PR from a separate pod, and the deploy supervisor squash-merges once required checks are green and that approval is present, with no human merge step. The agent pod never runs `git merge` - the operator does - but "the agent cannot merge its own code" should not be read as "a human merges every PR." To require a human review before merge in addition to `review`'s own approval, configure an SCM branch-protection rule mandating an approving review; that gate is enforced by the forge, not by tatara's default. See [The Agentic Operating Model](agentic-model.md#gate-2-review-approval-approve-label-native-review-never-a-merge-call).
+**Not autonomous with unchecked write access - but the write access is real.** A maintainer
+decides whether an issue gets worked, and decides it in exactly one way: applying the
+`tatara-approved` label directly to the issue (a comment never approves, and neither the issue
+reporter nor the bot can grant it). After that, the default is autonomous: `review` approves the bot's own PR from a separate pod, and the deploy supervisor squash-merges once required checks are green and that approval is present, with no human merge step. The agent pod never runs `git merge` - the operator does - but "the agent cannot merge its own code" should not be read as "a human merges every PR." To require a human review before merge in addition to `review`'s own approval, configure an SCM branch-protection rule mandating an approving review; that gate is enforced by the forge, not by tatara's default. See [The Agentic Operating Model](agentic-model.md#gate-2-review-approval-approve-label-native-review-never-a-merge-call).
 
 ## Trade-offs to consider
 
