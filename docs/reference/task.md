@@ -5,13 +5,13 @@ title: Task CRD
 # Task
 
 A `Task` CR represents one discrete unit of agent work. The operator creates Tasks by admitting
-a `QueuedEvent` from the queue. Events are enqueued by SCM webhooks (issue and PR activity), by
-Grafana alert webhooks (`incident` tasks, enqueued as `alert`-class events), and by the
-project's cron scans (`mrScan` and `issueScan` sweeps produce review and lifecycle work;
-`brainstorm`, `healthCheck`, and `refine` are project-scoped runs). `incident` is not
-cron-driven - there is no incident schedule in `scm.cron`; the `cdScan` cron is a
-deploy-supervision backstop that sweeps existing `Deploying` Tasks rather than creating new
-ones.
+a `QueuedEvent` from the queue. Events are enqueued by SCM webhooks (issue and PR/comment
+activity spawn `clarify`/`review`), by Grafana alert webhooks (`incident` tasks, enqueued as
+`alert`-class events), and by the project's cron scans (`brainstorm`, `documentation`, and
+`refine` are schedule-driven; `mrScan`/`issueScan` remain the backstop sweep for webhook
+misses). `incident` is not cron-driven - there is no incident schedule in `scm.cron`; the
+`cdScan` cron is a deploy-supervision backstop that sweeps existing `Deploying` Tasks rather
+than creating new ones.
 
 One long-lived wrapper Pod (plus a Service) is created per Task **session** and reused across
 every turn. The operator submits each turn to the existing pod; it only re-creates the pod when
@@ -36,22 +36,62 @@ Task kinds are divided into two families based on scope. The `repositoryRef` fie
 **required** for repo-scoped kinds and **must be empty** for project-scoped kinds. The
 operator rejects Tasks that violate this contract at reconcile time.
 
-| Kind | Family | Default | Description |
-|---|---|:---:|---|
-| `implement` | repo-scoped | yes | Write code and open a PR for a labeled issue |
-| `review` | repo-scoped | | Review a human-authored PR with inline suggestions |
-| `selfImprove` | repo-scoped | | Self-directed improvement run on a repository |
-| `triageIssue` | repo-scoped | | Triage a single issue (standalone, outside lifecycle) |
-| `issueLifecycle` | repo-scoped | | Full issue lifecycle: triage -> conversation -> implement -> merge |
-| `brainstorm` | project-scoped | | Propose improvement issues across all enrolled repos |
-| `refine` | project-scoped | | Refine pending proposals before a brainstorm cycle |
-| `healthCheck` | project-scoped | | Platform health check with a generated report |
-| `incident` | project-scoped | | Investigate a Grafana alert and open an incident issue |
+| Kind | Scope | Description |
+|---|---|---|
+| `brainstorm` | project | Surveys all project repos + external research; proposes a linked issue set across affected repos |
+| `incident` | project | Investigates a Grafana alert; files an evidence-backed incident proposal |
+| `clarify` | project | Runs the triage/human conversation on a new or commented issue; hands off to `implement` |
+| `implement` | project | Picks up the whole Task CR (all issues+comments+open PRs/MRs); opens/updates PRs across every affected repo under the Task |
+| `review` | project | Reviews all PRs/MRs under a Task; approves (label + native review) or invokes `implement` again |
+| `documentation` | repo (docs repo) | Schedule-driven: updates docs when non-trivial changes have landed since the last run |
+| `refine` | project | Groom-only backlog peer: closes duplicates, dedups, recovers stalled `implement` runs |
+
+!!! note "Retired kinds: still valid enum values, no longer created"
+    `selfImprove`, `triageIssue`, `healthCheck`, and `issueLifecycle` remain in the
+    `Task.Spec.Kind` CRD enum so pre-existing stored Tasks can still be read, but no production
+    code path creates a new Task of any of these kinds. `triageIssue` and the front half of
+    `issueLifecycle` were absorbed into `clarify`; `healthCheck` was absorbed into `brainstorm`;
+    the back half of `issueLifecycle` (Merge/MainCI/Deploying) survives as the operator-only
+    [deploy supervisor](../workflows/deploy-supervisor.md), not an agent kind.
 
 !!! warning "Kind-conditional validation"
     The CRD schema cannot express conditional field requirements, so `repositoryRef`
     validation is enforced at reconcile time by the controller, not by the API server.
     A Task that fails validation is immediately terminated with a descriptive condition.
+
+---
+
+## Task umbrella and the WorkItem ledger
+
+A Task is no longer a single-repo, single-artifact object. One project-scoped Task is the
+umbrella for an entire implementation stream: every linked issue (across every affected repo)
+plus every MR/PR opened against that stream, with per-member state kept fresh by light operator
+SCM polls. `Task.Status.WorkItems` (`[]WorkItemRef`) is the structured member list - small enough
+to live on the CR status - carrying, per member: issue/PR identity (`provider`, `repo`, `number`,
+`kind`), state, labels, head branch/SHA, CI/pipeline status, mergeability, and a last-synced
+cursor.
+
+At pod spawn the operator renders the **full umbrella context into the turn-0 prompt**: every
+issue body + comment thread + state, every MR description + branch + comment thread + CI/
+mergeability state, the set of repos in scope, and explicit per-repo checkout instructions. The
+agent gets everything upfront and does not re-crawl SCM to rebuild history mid-run. There is no
+new durable context store behind this - `tatara-memory` is unchanged and untouched (it only
+ingests default branches, so it cannot hold MR/PR content); raw thread text comes live from SCM
+at pod-build time and is assembled by the operator, not read back out of a separate service.
+
+Because the umbrella can span many repos, heavy per-repo code exploration is delegated to
+`Agent`-tool **subagents** split by context boundary (per-repo, per-concern) so the surface pod's
+context holds the requirements bundle plus lean subagent results, not raw code from every repo at
+once - see [Subagent-only orchestration](../concepts/agentic-model.md) and
+[Implement](../workflows/implement.md#subagent-tiering).
+
+!!! note "WorkItemRef is fully shipped"
+    `WorkItemRef` (`tatara-operator`'s `api/v1alpha1/workitem_types.go`) carries: `provider`,
+    `repo`, `number`, `kind`, `role`, `state`, `title`, `headSHA`, `labels`, `headBranch`,
+    `ciStatus`, `mergeable`, `body`, and `lastRefreshedAt`. `role` records how the item relates to
+    the task (`source`, `closes`, `openedPR`, `proposed`, `reviewed`); `title` and `body` are the
+    item's title and issue/PR body captured at the last poll, rendered whole into the pod's
+    turn-0 context bundle so a fresh pod reconstructs full cross-repo state from the CR alone.
 
 ---
 
@@ -121,7 +161,7 @@ closes all same-repo siblings and is aware of cross-repo siblings as reference c
 
 | Field | Type | Description |
 |---|---|---|
-| `phase` | enum | `Planning`, `Running`, `Succeeded`, `Failed`, `Deploying`. Used by non-lifecycle tasks. Left empty for `issueLifecycle` tasks except during the post-merge push-CD cascade, where the operator sets `phase: Deploying` alongside `lifecycleState: Deploying` (see [Deploy-supervision status](#deploy-supervision-status-phasedeploying) and [Termination](#termination)). |
+| `phase` | enum | `Planning`, `Running`, `Succeeded`, `Failed`, `Deploying`. Populated for every kind's own run; `Deploying` is set only once a Task's PR has been review-approved and the deploy supervisor has taken it over, alongside `lifecycleState: Deploying` (see [Deploy-supervision status](#deploy-supervision-status-phasedeploying) and [Termination](#termination)). |
 | `podName` | string | Name of the currently running agent Pod |
 | `turnsCompleted` | int | Total turns completed across all runs |
 | `prURL` | string | URL of the opened PR or MR |
@@ -140,7 +180,7 @@ All other outcome fields are absent.
 |---|---|---|
 | `reviewVerdict` | [ReviewVerdict](#reviewverdict) | `review` tasks |
 | `prOutcome` | [PROutcome](#proutcome) | Post-merge or close of a tatara-authored PR |
-| `issueOutcome` | [IssueOutcome](#issueoutcome) | `triageIssue` tasks |
+| `issueOutcome` | [IssueOutcome](#issueoutcome) | `clarify` tasks |
 | `implementOutcome` | [ImplementOutcome](#implementoutcome) | `implement` tasks that open no PR |
 | `brainstormOutcome` | [BrainstormOutcome](#brainstormoutcome) | `brainstorm` tasks that file no proposals |
 | `changeSummary` | [ChangeSummary](#changesummary) | `implement` tasks via the `change_summary` MCP tool |
@@ -201,77 +241,13 @@ Submitted by the implement agent via the `change_summary` MCP tool at the end of
 
 ---
 
-## issueLifecycle-only status fields
+## Task-wide status fields (all kinds)
 
-The `issueLifecycle` kind operates a multi-phase state machine rather than a single-shot
-run. The fields below are only populated for `issueLifecycle` tasks; all other task kinds
-leave them empty.
-
-### State machine
-
-```mermaid
-stateDiagram-v2
-    [*] --> Triage
-    Triage --> Conversation : discuss action
-    Triage --> Implement : implement action
-    Triage --> Done : close action
-    Conversation --> Implement : human approves / agent decides
-    Conversation --> Parked : inactivity deadline
-    Conversation --> Done : resolved in conversation
-    Implement --> MRCI : PR opened
-    Implement --> Parked : implement-empty cap hit
-    MRCI --> Merge : CI passes
-    MRCI --> Implement : CI fails (re-implement)
-    Merge --> MainCI
-    MainCI --> Deploying : main CI passes (push-CD)
-    MainCI --> Done : main CI passes (no significance / legacy)
-    MainCI --> Implement : regression detected
-    Deploying --> Done : tatara-helmfile apply confirmed
-    Deploying --> Parked : deploy budget exceeded (reroll)
-    Done --> [*]
-    Stopped --> [*]
-    Parked --> Conversation : human re-engages
-    Parked --> Implement : human re-engages after implement-empty
-```
-
-!!! info "Dual termination design"
-    `issueLifecycle` tasks signal completion through `status.lifecycleState`, not
-    `status.phase`. Their `phase` is empty for the whole lifecycle **except** the post-merge
-    push-CD window, where the operator sets `phase: Deploying` (paired with
-    `lifecycleState: Deploying`); neither is a terminal value. Any code that checks whether a
-    Task is finished **must** call the `TaskTerminal` helper (or replicate its logic), not test
-    `phase` alone. See [Termination](#termination).
-
-### State and timing
-
-| Field | Type | Description |
-|---|---|---|
-| `lifecycleState` | enum | Current state: `Triage`, `Conversation`, `Implement`, `MRCI`, `Merge`, `MainCI`, `Deploying`, `Done`, `Stopped`, `Parked` |
-| `lastActivityAt` | time | Timestamp of the last meaningful activity (comment, state transition, agent turn). Used to enforce inactivity deadlines. |
-| `deadlineAt` | time | When the current deadline expires. Set on each state transition that has a timeout. |
-| `lifecycleIterations` | int | Total state-machine loop count. The operator parks the task if this exceeds `agent.maxLifecycleIterations`. |
-
-### Branch and PR tracking
-
-| Field | Type | Description |
-|---|---|---|
-| `headBranch` | string | Deterministic agent branch name. Reused across Implement re-entries for the same task. |
-| `prNumber` | int | SCM PR/MR number of the current open change |
-| `mergeCommitSHA` | string | SHA of the most recent merge commit on the target branch |
-| `mergedHeadSHA` | string | Source-branch head SHA at the time of the most recent merge. Retained across `clearMergedChangeState` so a re-opened PR that re-proposes already-merged commits is detected as a duplicate. |
-
-### Conversation persistence
-
-| Field | Type | Description |
-|---|---|---|
-| `conversationObjectKey` | string | S3 object key for the Claude conversation transcript. Stable across state transitions. Empty until the first turn that reports it. |
-| `sessionID` | string | Claude session ID. Passed back to the next Pod as `CONVERSATION_SESSION_ID` so each turn resumes the conversation with `claude --resume` rather than starting cold. |
-| `handover` | string | Compacted handover text injected when the context window exceeds `agent.handoverThresholdPercent`. |
+These fields apply across the whole Task's conversation/implementation history, not to one
+retired lifecycle phase - they now span the `clarify` -> `implement` -> `review` handoff under
+the umbrella Task rather than one phase-scoped `issueLifecycle` object.
 
 ### Token accounting
-
-These fields are written for every task kind (not just `issueLifecycle`); they are the status
-surface behind the per-task token and cost metrics.
 
 | Field | Type | Description |
 |---|---|---|
@@ -283,38 +259,100 @@ surface behind the per-task token and cost metrics.
 | `cumulativeCacheRead` | int64 | Running total of cache-read input tokens across all turns |
 | `cumulativeCacheCreation` | int64 | Running total of cache-creation input tokens across all turns |
 
-### Re-entry context
+### Conversation-resume fields (all kinds) {: #conversation-resume-fields-all-kinds }
+
+Propagated across kind handoff (e.g. `clarify` -> `implement` warm resume) to avoid a full
+cold-rehydrate of context on every new pod.
 
 | Field | Type | Description |
 |---|---|---|
-| `implementContext` | string | Optional re-entry prompt injected at the start of the next Implement turn (e.g. CI failure details, conflict notice). Cleared after the turn is submitted. |
-| `parkReason` | string | Reason string from the last `Parked` transition. Cleared when the task leaves `Parked`. Carried for observability; does not gate re-activation. |
+| `conversationObjectKey` | string | S3 object key for the Claude conversation transcript. Stable across kind handoffs. Empty until the first turn that reports it. |
+| `sessionID` | string | Claude session ID. Passed back to the next Pod as `CONVERSATION_SESSION_ID` so each turn resumes the conversation with `claude --resume` rather than starting cold. |
+| `handover` | string | Compacted handover text injected when the context window exceeds `agent.handoverThresholdPercent`. |
 
-### Loop-breaker counters
+### Re-entry context and loop-breaker counters
 
-Three counters bound retry loops. `implementEmptyRetries` and `writebackSkip4xxAttempts` reset
-to zero when a PR is successfully opened; `implementGiveUps` accumulates across the durable
-lifecycle Task to bound the auto-reroll backstop.
-
-| Field | Type | Cap behavior |
+| Field | Type | Description |
 |---|---|---|
-| `implementEmptyRetries` | int | Counts consecutive Implement runs that completed with zero commits. After the cap, the task is commented and parked with reason `implement-empty` instead of silently re-entering. |
+| `implementContext` | string | Optional re-entry prompt injected at the start of the next `implement` turn (e.g. CI failure details, conflict notice, review feedback). Cleared after the turn is submitted. |
+| `parkReason` | string | Reason string from the last `Parked` transition. Cleared when the task leaves `Parked`. Carried for observability; does not gate re-activation. |
+| `implementEmptyRetries` | int | Counts consecutive `implement` runs that completed with zero commits. After the cap, the task is commented and parked with reason `implement-empty` instead of silently re-entering. |
 | `writebackSkip4xxAttempts` | int | Counts consecutive writeback sweeps where every repo returned a permanent 4xx from `OpenChange`. After the cap, the writeback gate stops re-sweeping and records a `WritebackFailed` condition. |
-| `implementGiveUps` | int | Counts implementation attempts that gave up for this issue's durable lifecycle Task (an `Implement` -> `Parked` transition with a recoverable reason). Bounds the auto-reroll backstop that re-enters give-ups; not reset on PR open. |
+| `implementGiveUps` | int | Counts `implement` attempts that gave up for this Task (an `Implement` -> `Parked` transition with a recoverable reason). Bounds the auto-reroll backstop that re-enters give-ups; not reset on PR open. |
 
 ### Async communication queues
 
 | Field | Type | Description |
 |---|---|---|
-| `pendingComments` | `[]string` | Free-form comment bodies queued by the agent via the `comment` MCP tool. Posted to the linked SCM issue on the next reconcile, then cleared. Does not change lifecycle state. |
-| `pendingInterjections` | `[]string` | Comment bodies queued by the webhook when a new issue or MR comment arrives while an agent turn is in flight. The reconciler delivers each to the live wrapper session as mid-session user input, then clears the list. |
+| `pendingComments` | `[]string` | Free-form comment bodies queued by the agent via the `comment` MCP tool. Posted to the linked SCM issue on the next reconcile, then cleared. |
+| `pendingInterjections` | `[]string` | Comment bodies queued by the webhook when a new issue or MR comment arrives while an agent turn is in flight (this is how `clarify`'s live-polling pod receives replies). The reconciler delivers each to the live wrapper session as mid-session user input, then clears the list. |
+
+---
+
+## Deploy-supervision-only status fields
+
+The deploy supervisor operates a multi-phase state machine, distinct from any agent kind's
+turn loop. The fields below are only populated once a Task's PR has been review-approved and
+the deploy supervisor has taken it over; all kinds still in agent-driven flow (`clarify`,
+`implement`, `review`, `brainstorm`, `incident`, `refine`) leave them empty.
+
+!!! note "Wire key vs. Go name"
+    The status field's YAML/JSON/CRD key is unchanged: `lifecycleState`. Only the Go struct
+    field was renamed, to `DeployState` (`api/v1alpha1/task_types.go`). `kubectl -o jsonpath`
+    queries and Grafana panels must read `.status.lifecycleState`, not `.status.deployState` -
+    the latter is agent/controller-internal only and does not exist on the wire. The kubectl
+    `Lifecycle` printcolumn reflects this same field.
+
+### Deploy state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Merge : review approved AND CI green
+    Merge --> MainCI : PR merged
+    Merge --> Implement : merge conflict (invoke implement)
+    MainCI --> Deploying : main CI green + significance declared
+    MainCI --> Done : main CI green (no significance / legacy)
+    MainCI --> Implement : main CI failed (invoke implement)
+    Deploying --> Done : tatara-helmfile apply confirmed
+    Deploying --> Parked : deploy budget exceeded (reroll)
+    Done --> [*]
+    Parked --> [*]
+```
+
+`Implement` here is not a phase of this state machine - it is the operator re-adding
+`tatara-implementation` and letting the label-driven handoff spawn a fresh `implement` Task,
+exactly as `review` does on an unmergeable MR.
+
+!!! info "Dual termination design"
+    A Task signals completion through `status.lifecycleState`, not `status.phase`, once it has
+    entered deploy supervision. Its `phase` is `Deploying` in parallel with
+    `lifecycleState: Deploying`; neither alone is a terminal value. Any code that checks whether
+    a Task is finished **must** call the `TaskTerminal` helper (or replicate its logic), not test
+    `phase` alone. See [Termination](#termination).
+
+### State and timing
+
+| Field | Type | Description |
+|---|---|---|
+| `lifecycleState` | enum | Current deploy-supervision phase (Go field: `DeployState`): `Triage`, `Conversation`, `Implement`, `MRCI`, `Merge`, `MainCI`, `Deploying`, `Done`, `Stopped`, `Parked`. The front four (`Triage`/`Conversation`/`Implement`/`MRCI`) are legacy-drain-only - stamped only by in-flight pre-redesign `issueLifecycle` Tasks; no new-model kind (`clarify`/`implement`/`review`/`brainstorm`/`incident`/`documentation`/`refine`) ever sets them. |
+| `lastActivityAt` | time | Timestamp of the last meaningful activity (comment, state transition, agent turn). Used to enforce inactivity deadlines. |
+| `deadlineAt` | time | When the current deadline expires. Set on each state transition that has a timeout. |
+
+### Branch and PR tracking
+
+| Field | Type | Description |
+|---|---|---|
+| `headBranch` | string | Deterministic agent branch name. Reused across `implement` re-entries for the same task. |
+| `prNumber` | int | SCM PR/MR number of the current open change |
+| `mergeCommitSHA` | string | SHA of the most recent merge commit on the target branch |
+| `mergedHeadSHA` | string | Source-branch head SHA at the time of the most recent merge. Retained across `clearMergedChangeState` so a re-opened PR that re-proposes already-merged commits is detected as a duplicate. |
 
 ### Deploy-supervision status (PhaseDeploying)
 
-When an `issueLifecycle` PR auto-merges and main CI (including the release tag-cut and version
-propagation) goes green, the Task does **not** terminate at merge. It enters the pod-less
-`Deploying` phase (`phase: Deploying`, `lifecycleState: Deploying`, both non-terminal): the agent
-pod is torn down and the **operator** - not an agent - drives the push-CD cascade to a
+When a Task's PR is review-approved, auto-merges, and main CI (including the release tag-cut
+and version propagation) goes green, the Task does **not** terminate at merge. It enters the
+pod-less `Deploying` phase (`phase: Deploying`, `lifecycleState: Deploying`, both non-terminal):
+no agent pod runs and the **operator** - not an agent - drives the push-CD cascade to a
 `tatara-helmfile` apply, then resolves the Task `Done` and closes the originating issue. This is
 the only status surface for inspecting a stalled deploy cascade, so it is worth knowing when a
 `kubectl get task` shows `Deploying`.
@@ -357,6 +395,11 @@ determination via `TaskReposInScope`.
 | `state` | string | `proposed`, `approved`, `declined`, `implemented`, `open`, `closed`, `merged` | Current item state |
 | `title` | string | | Item title (for prompt context) |
 | `headSHA` | string | | Head commit SHA of a PR/MR at last refresh |
+| `labels` | `[]string` | | Current SCM labels on this member |
+| `headBranch` | string | | PR/MR source branch |
+| `ciStatus` | string | ``, `pending`, `success`, `failure` | Member's CI/pipeline status |
+| `mergeable` | string | `unknown`, `clean`, `dirty`, `blocked`, `behind` | Member's mergeability |
+| `body` | string | | Issue/PR body captured at the last poll (turn-0 context bundle source) |
 | `lastRefreshedAt` | time | | When the operator last synced this item's state from the SCM API |
 
 ---
@@ -369,19 +412,19 @@ A Task is considered terminal when **either** of the following is true:
 - `status.lifecycleState` is `Done`, `Stopped`, or `Parked`
 
 !!! warning "Do not test `phase` alone"
-    `issueLifecycle` tasks leave `status.phase` empty for their whole lifecycle except the
-    post-merge `Deploying` window (where it is `Deploying`, a non-terminal value); they signal
-    completion only through `status.lifecycleState`. Code that tests `phase == Succeeded` will
-    treat an active or finished lifecycle task identically. Always use the `TaskTerminal` helper
-    (or its equivalent logic) for termination checks.
+    A Task under deploy supervision carries `phase: Deploying` (a non-terminal value) in
+    parallel with `lifecycleState`, and signals completion only through `status.lifecycleState`
+    once it has entered that phase. Code that tests `phase == Succeeded` alone will treat an active
+    or finished deploy-supervised task identically. Always use the `TaskTerminal` helper (or its
+    equivalent logic) for termination checks.
 
 | Terminal state | Meaning |
 |---|---|
-| `Succeeded` | Non-lifecycle task completed successfully |
-| `Failed` | Non-lifecycle task failed (turn timeout, max-turns hit, agent error) |
-| `Done` | Lifecycle task completed (issue merged and main CI passed, or closed/declined) |
-| `Stopped` | Lifecycle task administratively stopped |
-| `Parked` | Lifecycle task stalled awaiting human input. Re-activated when the human comments on the linked issue. |
+| `Succeeded` | Agent-kind task completed successfully |
+| `Failed` | Agent-kind task failed (turn timeout, max-turns hit, agent error) |
+| `Done` | Deploy-supervised task completed (PR merged and main CI passed, or closed/declined) |
+| `Stopped` | Task administratively stopped (e.g. clarify's idle timeout) |
+| `Parked` | Deploy-supervised task stalled awaiting human input. Re-activated when the human comments on the linked issue. |
 
 ---
 

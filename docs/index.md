@@ -20,9 +20,9 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     ---
 
-    Issues become pull requests without human intervention. Agents triage, plan, implement, and open PRs. Humans approve; the agent merges.
+    Issues move through triage, implementation, and review agents in sequence, each handing off automatically. Humans approve; tatara merges once required checks are green.
 
-    [:octicons-arrow-right-24: Workflows](workflows/index.md)
+    [:octicons-arrow-right-24: The agentic operating model](concepts/agentic-model.md)
 
 -   :material-brain: **Durable Knowledge Graph**
 
@@ -118,7 +118,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 | Autonomous implementation | Writes code, commits to a branch, opens a PR |
 | PR review | Reviews human-authored PRs with inline suggestions |
 | Incident response | Grafana alert fires an investigation agent with Grafana MCP access |
-| Brainstorm | Periodic health-check generates improvement proposals |
+| Brainstorm | Periodic scan of the codebase and knowledge graph proposes improvements, from new features to tech-debt and CI health fixes |
 | Conversation persistence | S3-backed transcripts resume across pod restarts |
 | Multi-repo tasks | Single task can span and open PRs across multiple repositories |
 | Systemic improvements | Groups related issues into one agent run with a combined PR |

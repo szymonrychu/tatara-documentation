@@ -439,11 +439,11 @@ renders the same Secret.
     | Permission | Access | Reason |
     |---|---|---|
     | Contents | Read and write | Clone, branch, and push agent commits |
-    | Issues | Read and write | Triage, comment, label |
-    | Pull requests | Read and write | Open, review, and merge agent PRs |
+    | Issues | Read and write | Clarify conversation, comment, label |
+    | Pull requests | Read and write | Open, review (approve), and merge agent PRs (merge performed by the deploy supervisor) |
     | Metadata | Read | Baseline repo access (mandatory for fine-grained PATs) |
     | Members (Organization) | Read | Org-membership checks for the maintainer/reporter allowlists |
-    | Commit statuses / Checks | Read | Only if `mergePolicy: autoMergeOnGreenCI` is used |
+    | Commit statuses / Checks | Read | Required for the deploy supervisor's green-CI merge gate |
 
     A classic `repo` token also works but is broader than necessary. No `admin:repo_hook`.
 

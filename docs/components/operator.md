@@ -53,7 +53,7 @@ charts/tatara-operator/            # cluster-agnostic Helm chart + CRDs
 
 ## Reconciliation model
 
-Each controller reconciles its resource type independently. The most complex is the **Task reconciler**, which drives a state machine across the full lifecycle of an agent session. Two orthogonal state fields are in play and it is important not to conflate them (see [Dual Phase / LifecycleState](#dual-phase-lifecyclestate) below).
+Each controller reconciles its resource type independently. The most complex is the **Task reconciler**, which drives every kind's own `Status.Phase` machine and, for a Task whose PR clears review, a separate operator-only deploy-supervision machine (Go field `Status.DeployState`, JSON/CRD key `lifecycleState`) that takes over after merge (see [Phase vs. lifecycleState](#phase-vs-lifecyclestate) below).
 
 Admission happens first, on the `QueuedEvent`:
 
@@ -64,7 +64,7 @@ stateDiagram-v2
     Admitted --> [*]: Task created
 ```
 
-A single-shot task kind (`implement`, `review`, `brainstorm`, `incident`, `triageIssue`, `selfImprove`, `refine`) then runs a pod-backed `Status.Phase` machine:
+Every task kind (`brainstorm`, `incident`, `clarify`, `implement`, `review`, `documentation`, `refine`) then runs a pod-backed `Status.Phase` machine:
 
 ```mermaid
 stateDiagram-v2
@@ -77,16 +77,32 @@ stateDiagram-v2
     Deploying --> Failed: deploy-timeout (parks recoverable)
 ```
 
-`issueLifecycle` tasks are the exception: one durable long-lived Task spans the whole issue-to-deploy arc (Triage, Conversation, Implement, MRCI, Merge, Deploy). These Tasks leave `Status.Phase` **empty** for their whole life and signal progress and completion through `Status.LifecycleState`.
+Retired kinds (`selfImprove`, `triageIssue`, `healthCheck`, `issueLifecycle`) remain valid `Task.Spec.Kind` enum values so pre-existing stored Tasks can still be read, but no production code path creates a new Task of any of these kinds any more: `triageIssue` and the front half of `issueLifecycle` were absorbed into `clarify`, `healthCheck` was absorbed into `brainstorm`, and the back half of `issueLifecycle` (`Merge`/`MainCI`/`Deploying`) survives as the operator-only deploy supervisor described below - not an agent kind.
 
-## Dual Phase / LifecycleState
+## Phase vs. lifecycleState
 
-`Task.Status.Phase` and `Task.Status.LifecycleState` are two distinct fields with different owners:
+Every Task carries a generic `Status.Phase` (`Planning`, `Running`, `Succeeded`, `Failed`,
+`Deploying`) tracking the current pod's run - or, for `Deploying`, the pod-less deploy
+supervisor's run. Once a Task's PR has been review-approved, auto-merged, and main CI has gone
+green, the operator additionally starts populating the deploy-supervision status field - a
+10-value enum: `Triage`, `Conversation`, `Implement`, `MRCI`, `Merge`, `MainCI`, `Deploying`,
+`Done`, `Stopped`, `Parked` (the front four are legacy-drain-only, stamped only by in-flight
+pre-redesign `issueLifecycle` Tasks) - as the deploy supervisor takes over: `Phase` and this
+field both read `Deploying` at that point, in parallel, and neither alone is terminal.
 
-- `Status.Phase` (bare strings `Planning` / `Running` / `Succeeded` / `Failed` / `Deploying`) is the pod-backed execution phase used by single-shot kinds. `Deploying` is the pod-less post-merge deploy-supervision phase and is deliberately **not** terminal.
-- `Status.LifecycleState` (`Triage` / `Conversation` / `Implement` / `MRCI` / `Merge` / `Deploying` / `Done` / `Stopped` / `Parked`) is the issue-level state carried by `issueLifecycle` Tasks, which keep `Status.Phase` empty by design.
+!!! note "Wire key vs. Go name"
+    The Go struct field is `DeployState` (`api/v1alpha1/task_types.go`), but its JSON/CRD key is
+    unchanged: `lifecycleState`. `kubectl get task -o jsonpath='{.status.lifecycleState}'` and any
+    Grafana panel or automation reading this field must use `lifecycleState`, not `deployState` -
+    the Go name is controller-internal only and never appears on the wire.
 
-Terminality is therefore a function of both fields: a Task is terminal when `Phase` is `Succeeded`/`Failed` **or** `LifecycleState` is `Done`/`Stopped`/`Parked`. Auditing `issueLifecycle` Tasks by `Phase` alone reports every one of them as non-terminal churn, which is wrong. The `TaskTerminal` helper is the source of truth; controller code and any external audit must use it rather than testing `Phase` directly.
+Most kinds (`clarify`/`implement`/`review`/`brainstorm`/`incident`/`refine`) never populate this
+field at all - only a Task whose PR gets review-approved enters deploy supervision, and even
+then it is the operator, not an agent kind, driving it.
+
+A Task is terminal when `Phase` is `Succeeded`/`Failed`, or once deploy supervision has begun,
+when `lifecycleState` is `Done`/`Stopped`/`Parked`. The `TaskTerminal` helper is the source of
+truth; controller code and any external audit must use it rather than testing `Phase` alone.
 
 ## Queue admission and concurrency
 
@@ -122,7 +138,7 @@ The gate has two modes, selected by the `TOKEN_BUDGET_MODE` operator env (defaul
 
 ## Deploy supervision (push-CD)
 
-An `implement` Task does not go terminal when its PR merges. It enters `Deploying` and the operator drives the post-merge push-CD cascade: it tracks the artifact through `CascadeStage` (`tagged` -> `parent-pr-open` -> `parent-merged` -> `helmfile-applied`) toward a terminal `tatara-helmfile` apply, then resolves the Task `Succeeded` (or `Done` for `issueLifecycle`) and closes the originating issue. A wall-clock deadline of `now + spec.deployBudgetSeconds` (with a `spec.deploySingleHopBudgetSeconds` per-artifact override) bounds the wait; on exceed the Task parks recoverable with reason `deploy-timeout`. This is how a merged change is followed all the way to running in the cluster rather than being assumed deployed at merge.
+An `implement` Task does not go terminal when its PR merges. It enters `Deploying` and the operator drives the post-merge push-CD cascade: it tracks the artifact through `CascadeStage` (`tagged` -> `parent-pr-open` -> `parent-merged` -> `helmfile-applied`) toward a terminal `tatara-helmfile` apply, then resolves the Task's `lifecycleState` (Go field `DeployState`) to `Done` and closes the originating issue. A wall-clock deadline of `now + spec.deployBudgetSeconds` (with a `spec.deploySingleHopBudgetSeconds` per-artifact override) bounds the wait; on exceed the Task parks recoverable with reason `deploy-timeout`. This is how a merged change is followed all the way to running in the cluster rather than being assumed deployed at merge.
 
 ## Reaper and GC
 

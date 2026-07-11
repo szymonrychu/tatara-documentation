@@ -1,6 +1,6 @@
 ---
 title: Approval Gates
-description: How humans stay in control of tatara agents - intake allowlisting, triage-driven label approval, and merge policy.
+description: How humans stay in control of tatara agents - intake allowlisting, clarify-driven label approval, and the deploy-supervisor merge gate.
 ---
 
 # Approval Gates
@@ -8,9 +8,10 @@ description: How humans stay in control of tatara agents - intake allowlisting, 
 Tatara is designed to be useful without being autonomous. Two independent gates
 prevent an agent from writing or merging code without explicit human intent: an
 intake gate that controls which issues the operator acts on, and an approval gate
-that controls whether a triage verdict leads to implementation. A third gate -
-the merge policy - governs whether the operator merges the resulting PR
-automatically or waits for a human to do it.
+that controls whether a clarify verdict leads to implementation. A third gate -
+review approval plus the deploy supervisor - governs whether the resulting PR is
+merged automatically once a `review` pod approves it and required checks are
+green.
 
 ```mermaid
 sequenceDiagram
@@ -22,14 +23,15 @@ sequenceDiagram
     OP->>SCM: brainstorm: open proposal issue<br/>(tatara-brainstorming label)
     OP->>SCM: @mention maintainerLogins for review
     H->>SCM: reply in issue thread
-    OP->>AG: spawn Triage agent (reads full thread)
+    OP->>AG: spawn clarify agent (reads full thread)
     AG->>OP: issue_outcome(action=implement)
     OP->>OP: self-approve guard:<br/>human comment present?
     OP->>SCM: add tatara-approved label
-    OP->>AG: spawn Implement agent
+    OP->>AG: spawn implement agent
     AG->>SCM: open PR
-    H->>SCM: review PR
-    OP->>SCM: merge (per mergePolicy)
+    OP->>AG: spawn review agent
+    AG->>SCM: approve-label + native review
+    OP->>SCM: deploy supervisor merges (per mergePolicy)
 ```
 
 ## Gate 1: Intake - who can drive the lifecycle
@@ -74,107 +76,105 @@ spec:
       - bob
 ```
 
-## Gate 2: Triage approval - who can approve implementation
+## Gate 2: Clarify approval - who can approve implementation
 
 Before an agent writes any code the operator must see evidence of human approval.
 Approval happens through the normal SCM comment thread on the issue, not through
-a separate UI or label click. The triage agent reads the full thread (title, body,
-all comments) and calls an `issue_outcome` MCP tool with one of three verdicts:
+a separate UI or label click. The `clarify` agent reads the full thread (title,
+body, all comments) and calls an `issue_outcome` MCP tool with one of three
+verdicts:
 
 | Verdict | Meaning |
 |---------|---------|
-| `implement` | Triage agent judges the issue ready for implementation |
+| `implement` | `clarify` judges the issue ready for implementation |
 | `discuss` | More information or human input is needed |
 | `close` | Issue should be rejected and closed |
 
 ### Self-approve guard
 
 Tatara never approves its own brainstorm proposals without human engagement. When
-the triage agent returns `implement` for a bot-authored issue:
+`clarify` returns `implement` for a bot-authored issue:
 
 1. The operator checks the comment thread for at least one comment whose author
    is **not** the bot.
 2. If no such comment exists, the verdict is downgraded to `discuss` - the issue
-   stays in brainstorming (`tatara-brainstorming` label) and the operator enters
-   Conversation phase, waiting for human input. No Implement agent is spawned.
+   stays in brainstorming (`tatara-brainstorming` label) and `clarify` keeps
+   polling (1-hour wall-clock, `PendingInterjections`), waiting for human input.
+   No `implement` pod is spawned.
 3. If a human comment is present, the verdict is honored: the `tatara-approved`
-   label is applied and the Implement agent is dispatched.
+   label is applied and an `implement` pod is dispatched.
 
 This guard is fail-closed: if the authorship check fails for any reason (SCM
 error, token issue), the operator treats the issue as bot-authored and withholds
 approval.
 
+!!! note "Guard enforcement moved to the permission layer"
+    This guard used to live in triage-agent skill prose. It is now enforced structurally: the
+    MCP comment action itself refuses to post when the last comment on the thread is
+    bot-authored, and the webhook actor-check refuses to (re)spawn `clarify` off a bot's own
+    comment - not something the clarify agent has to remember to check.
+
 ### Third-party fast path
 
 Issues filed by a known third-party contributor (an author who is neither the bot
 nor a maintainer, but is in the `reporterLogins` allowlist) bypass the self-approve
-guard and proceed directly to implementation when the triage verdict is `implement`.
-The reasoning: a human already filed the work request; no additional approval signal
-is needed.
+guard and proceed directly to implementation when the `clarify` verdict is
+`implement`. The reasoning: a human already filed the work request; no additional
+approval signal is needed.
 
 ### Who counts as a "human" for the approval check
 
 When `spec.scm.maintainerLogins` is **non-empty**: only comments from accounts in
 that list satisfy the human-engagement requirement for bot-authored proposals, and
-only those accounts' comment intent is read by the triage agent as authoritative.
+only those accounts' comment intent is read by `clarify` as authoritative.
 
 When `spec.scm.maintainerLogins` is **empty**: any comment from any non-bot account
 satisfies the guard (historical behavior, preserved for migration compatibility).
 
 !!! note "Approval is conversational, not keyword-driven"
-    The triage agent reads natural language. "Looks good, ship it" and "approved -
+    `clarify` reads natural language. "Looks good, ship it" and "approved -
     implement this week" are both sufficient. There is no magic keyword or command
     syntax required.
 
-### Human label override (Conversation phase)
+### Human label override (while clarify is polling)
 
-While the task is in Conversation (awaiting human input), the operator polls the
-SCM issue for label changes on every reconcile. A human may bypass the triage
-conversation entirely by directly applying a label:
+While `clarify` is live and polling for input, the operator also watches the SCM
+issue for label changes on every reconcile. A human may bypass the conversational
+path entirely by directly applying a label:
 
-- Add `tatara-approved` - the operator immediately transitions the task to
-  Implement, skipping a fresh Triage agent run.
+- Add `tatara-approved` - the operator immediately transitions the task toward
+  implementation, skipping a fresh `clarify` verdict.
 - Add `tatara-declined` - the operator parks the task with reason `human-declined`.
 
-This path is also the recovery mechanism for proposals whose triage discussion
+This path is also the recovery mechanism for proposals whose clarify discussion
 has stalled: apply the label directly to unblock the queue.
 
-## Gate 3: Merge policy
+## Gate 3: Review approval + deploy-supervisor merge
 
-The `spec.scm.mergePolicy` field controls whether the operator merges the
-agent's PR automatically or defers to human action.
+Merge is no longer gated by an agent-declared `pr_outcome=merge` signal read against
+`mergePolicy`. It is gated by the [deploy supervisor](../../workflows/deploy-supervisor.md) -
+an operator-only loop, not an agent kind - which merges once **both** hold: required checks are
+green, and `tatara-approved` is present on the PR (set only by `review`'s approve action, never
+by `implement`). `review` never calls a merge API itself; it only sets the label and posts a
+native SCM approval.
 
-| Value | Behavior |
-|-------|---------|
-| `afterApproval` (default) | Operator merges when the agent signals `pr_outcome=merge`. CI state is not checked. |
-| `autoMergeOnGreenCI` | Operator merges only when all CI checks report `success`. If CI is absent, falls back to `afterApproval`. |
+If `review` finds any MR under the Task unmergeable (a conflict, a failed pipeline), it withholds
+approval and re-adds `tatara-implementation`, invoking `implement` again rather than leaving the
+PR in a stuck state for a human to unblock.
 
-```yaml
-spec:
-  scm:
-    mergePolicy: autoMergeOnGreenCI   # recommended for production services
-```
-
-!!! warning "afterApproval does not require a live PR review"
-    Under `afterApproval`, the operator trusts `pr_outcome=merge` as the agent
-    relaying an approving signal from outside (e.g., a human reviewed the PR in
-    GitHub and left a comment for the agent to proceed). It does **not**
-    independently verify the GitHub review state. If you need a hard merge gate
-    that requires a human approving review, use `autoMergeOnGreenCI` combined
-    with a branch protection rule requiring an approved review before CI can pass.
-    The CI gate then acts as a proxy for both code correctness and human review.
+!!! note "review structurally cannot approve its own diff"
+    Because `implement` and `review` are separate pods spawned on separate turns, the merge gate
+    is enforced by pod-boundary separation, not by a policy flag a misconfigured project could
+    silently disable. There is no `mergePolicy: afterApproval` equivalent that skips review.
 
 ### Recommended branch protection (GitHub)
 
-For production repositories enrolled in tatara with `afterApproval`:
+For production repositories enrolled in tatara:
 
-- Require at least 1 approving review from a code owner.
+- Require at least 1 approving review (satisfied by `review`'s native PR approval).
 - Dismiss stale reviews on push.
 - Require status checks to pass before merging.
 - Restrict who can push to the protected branch to the bot account and maintainers.
-
-With these rules in place, a human review is a prerequisite for CI to be mergeable,
-giving `autoMergeOnGreenCI` an effective human gate.
 
 ## Per-repository overrides
 
@@ -216,15 +216,15 @@ trusted accounts.
 The operator manages the following labels. Names are configurable via the
 `spec.scm.*Label` fields on the Project; defaults are shown.
 
-| Label | Default name | Color | Phase |
+| Label | Default name | Color | Meaning |
 |-------|-------------|-------|-------|
-| Brainstorming | `tatara-brainstorming` | `#1d76db` (blue) | Triage/Conversation - proposal under discussion |
+| Brainstorming | `tatara-brainstorming` | `#1d76db` (blue) | `clarify` conversing - proposal under discussion |
 | Approved | `tatara-approved` | `#0e8a16` (green) | Ready for implementation |
-| Implementation | `tatara-implementation` | `#fbca04` (yellow) | Implement agent active |
+| Implementation | `tatara-implementation` | `#fbca04` (yellow) | `implement` agent active |
 | Declined | `tatara-declined` | `#9e9e9e` (gray) | Rejected - no implementation |
 | Incident | `tatara-incident` | `#d73a4a` (red) | Additive; incident-originated proposal |
 
-The operator enforces exactly one phase label per managed issue at any time.
+The operator enforces exactly one of the four managed labels per issue at any time.
 It adds the desired label and removes all other managed labels atomically.
 The `tatara-incident` label is additive and never swept by the phase reconciler -
 an incident proposal can carry both `tatara-incident` and `tatara-brainstorming`
@@ -242,25 +242,24 @@ simultaneously.
 flowchart TD
     A([Issue filed or brainstorm proposal]) --> B{Intake gate\nreporterLogins}
     B -- author not allowed --> Z1([Dropped - no action])
-    B -- author allowed --> C[Triage agent reads\nfull comment thread]
+    B -- author allowed --> C[clarify agent reads\nfull comment thread]
     C -- outcome: close --> D[tatara-declined label\nIssue closed]
-    C -- outcome: discuss --> E[tatara-brainstorming label\nConversation phase]
+    C -- outcome: discuss --> E[tatara-brainstorming label\nclarify keeps polling]
     C -- outcome: implement --> F{Bot-authored\nproposal?}
-    F -- no, third-party --> G[tatara-approved label\nImplement agent]
+    F -- no, third-party --> G[tatara-approved label\nimplement agent spawns]
     F -- yes --> H{Human comment\nin thread?}
     H -- no --> E
     H -- yes --> G
     E --> I{Human applies\nlabel manually?}
     I -- tatara-approved --> G
     I -- tatara-declined --> Z2([Parked - human-declined])
-    I -- no label change --> J{ConversationIdleMinutes\nelapsed?}
-    J -- yes --> Z3([Stopped - resumable])
+    I -- no label change --> J{1h wall-clock\nelapsed?}
+    J -- yes --> Z3([Clarify pod killed - resumable])
     J -- no --> I
-    G --> K[Agent opens PR]
-    K --> L{mergePolicy}
-    L -- afterApproval --> M{pr_outcome=merge\nfrom agent}
-    L -- autoMergeOnGreenCI --> N{CI green?}
-    N -- yes --> O([Operator merges PR])
-    N -- no --> P([Hold - awaiting CI])
-    M -- yes --> O
+    G --> K[implement agent opens PR]
+    K --> L[review agent approves\nor requests changes]
+    L -- approve --> M{Required checks green?}
+    L -- request_changes --> G
+    M -- yes --> O([Deploy supervisor merges])
+    M -- no --> P([Hold - awaiting CI])
 ```

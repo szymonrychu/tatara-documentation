@@ -103,7 +103,7 @@ When S3 is configured (`spec.s3Bucket` on the Project), the wrapper stores the f
 
 The two paths are mutually exclusive - the context window never overflows regardless of session length.
 
-**Forked conversations:** brainstorm-derived issues get a forked S3 copy of the brainstorm conversation, so sibling implementation tasks start from the same context but diverge independently.
+**Forked conversations:** brainstorm-derived issues get a forked S3 copy of the brainstorm conversation, so each sibling `clarify` task starts from the same context but diverges independently.
 
 **GC:** the reaper deletes S3 objects for a brainstorm batch once all sibling issues are closed (grace period: `s3ConversationRetentionHours`, default 72h).
 

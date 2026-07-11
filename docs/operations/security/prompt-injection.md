@@ -61,7 +61,7 @@ All code changes are visible as a PR. A human reviewer can detect injected behav
 | Malicious issue body tricks agent into exfiltrating secrets | `reporterLogins` allowlist drops non-allowlisted issues before processing; agent pod egress is constrained by the managed NetworkPolicy (DNS + allowlisted in-cluster services + `443` for SCM/Anthropic/Keycloak); the Anthropic credential (`CLAUDE_CODE_OAUTH_TOKEN`) is mounted from an in-pod Secret only |
 | Issue body instructs agent to push to unrelated branch | Bot PAT only has `repo` scope on enrolled repos; no cross-org access |
 | Issue body instructs agent to open PR to a different repo | Agent clones only repos in `reposInScope`; push is gated to the task branch on enrolled repos |
-| Issue body sets up a loop (agent reopens closed issue) | Dedup by issue ref; a closed issue's lifecycle task is terminal and not re-queued |
+| Issue body sets up a loop (agent reopens closed issue) | Dedup by issue ref; a closed issue's Task is terminal and not re-queued |
 | Webhook replay attack | HMAC-SHA256 signature with rotating secret; validated on every webhook delivery |
 | Bot self-loop (bot's own PR comments triggering new tasks) | `botLogin` excluded from intake; bot-authored issue events are dropped |
 
@@ -69,7 +69,6 @@ All code changes are visible as a PR. A human reviewer can detect injected behav
 
 1. **Always set `reporterLogins`** - enumerate explicitly who can drive agent activity
 2. **Always set `maintainerLogins`** - enforce the gated approval chain
-3. **Use `mergePolicy: afterApproval`** - require human merge
-4. **Enable branch protection** - require PR review before merge on enrolled repos
+3. **Enable branch protection** - require an approving review (on top of `review`'s own native approval) before merge on enrolled repos, so the forge holds the merge for a human as well
 5. **Monitor intake rejections** - a reporter-allowlist drop is counted as `operator_webhook_events_total{result="ignored"}` (there is no `dropped` result value; querying `result="dropped"` returns nothing and any alert on it would silently never fire). Note `ignored` also covers other benign no-op events (bot-authored, non-actionable actions), so scope the query by `kind`/`action` when alerting.
 6. **Audit commits** - `git log --author=<botEmail>` to review all autonomous commits

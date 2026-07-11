@@ -2,14 +2,19 @@
 title: Semver Push-CD
 ---
 
-# Semver Push-CD
+# Deploy Supervisor & Semver Push-CD
 
-Push-CD replaces hand-edited short-SHA deploy pins with a fully autonomous push model: an
-implementation agent declares a change's significance, the operator auto-merges the PR once
-required checks are green, CI cuts a semver tag from that significance, the tag cascades up
-through parent-repo pins, and the cascade terminates at `tatara-helmfile`, which auto-applies to
-the cluster. On a successful apply, the operator closes the originating issue. No human gate sits
-in the merge/deploy path - only the significance declaration and the required CI checks.
+Push-CD replaces hand-edited short-SHA deploy pins with a fully autonomous push model. It is
+**not an agent kind** - it is an operator-only supervisor loop that takes over once `review` has
+approved a PR and required checks are green. No agent pod runs during any of this: `implement`
+declares a change's significance, `review` approves it, the deploy supervisor auto-merges once
+required checks are green, CI cuts a semver tag from the declared significance, the tag cascades
+up through parent-repo pins, and the cascade terminates at `tatara-helmfile`, which auto-applies
+to the cluster. On a successful apply, the operator closes the originating issue. The only
+per-Task state this touches is the umbrella Task's `lifecycleState` field (Go struct field
+renamed to `DeployState`; the JSON/CRD wire key itself is unchanged - see
+[Task reference](../reference/task.md#deploy-supervision-only-status-fields)),
+not a new object.
 
 Design: `docs/superpowers/specs/2026-06-28-semver-push-cd-design.md`. Cutover runbook:
 `docs/superpowers/plans/2026-06-28-semver-push-cd-cutover-runbook.md`.
@@ -67,7 +72,7 @@ Because the field is required, an agent cannot record a change summary without d
 missing or invalid value is rejected (HTTP 400) at the operator's REST handler. The value maps
 `changeSignificance` -> `Task.Status.ChangeSummary.Significance`. Declaring significance is what
 makes a merged change **push-CD-eligible** (`pushCDEligible`); it does **not** gate PR opening. An
-implement/issueLifecycle PR whose agent never recorded a significance still opens - the operator
+`implement` PR whose agent never recorded a significance still opens - the operator
 logs a WARN (`writeback_no_significance`) and routes the merged change down the legacy
 close-and-Done path with no `semver:*` label and no auto-merge. This is the **only** change to the
 agent-facing surface; all tag/merge/propagation logic lives in CI and the operator, not in any
@@ -86,11 +91,12 @@ After the PR opens, the operator (`writeback.go`, `applySemverAutoMerge`):
    the merged change takes the legacy close-and-Done path (`pushCDEligible=false`). There is no
    writeback-layer re-prompt.
 
-Post-rollout, implement/issueLifecycle agents never self-merge. `pr_outcome` is now a
-selfImprove-only MCP tool, and even there `pr_outcome=merge` no longer merges directly - it
-defers to native auto-merge (the bot PR had auto-merge enabled at open time, so the forge
-squash-merges once required checks pass). Auto-merge owns merging; `pr_outcome=close` is retained
-for declines.
+Post-rollout, `implement` agents never self-merge. `pr_outcome` remains profiled as a
+`selfImprove`-only MCP tool (a kind now retired), so it plays no part in the live merge path;
+even where it is reachable, `pr_outcome=merge` no longer merges directly - it defers to native
+auto-merge (the bot PR had auto-merge enabled at open time, so the forge squash-merges once
+required checks pass). Auto-merge owns merging, gated additionally on `review`'s `tatara-approved`
+label; `pr_outcome=close` is retained for declines.
 
 Tag-cut and propagation are **author-agnostic** - they key on the `semver:*` label, not on who
 merged. A human merging a labeled PR by hand still triggers the full downstream cascade; only the
@@ -124,8 +130,9 @@ called by every repo's `release.yml`:
 
 ## Component 5 - deploy-supervision and the `Deploying` phase
 
-The implement Task does **not** go terminal at PR merge. It enters a new **`Deploying`** phase,
-driven by the operator reconcile loop, not by an agent pod:
+The Task's `lifecycleState` (not `phase`) tracks the cascade after PR merge; the Task does not go
+terminal at merge. It enters a new **`Deploying`** phase, driven by the operator reconcile loop,
+not by an agent pod:
 
 - **Pod-less:** no agent pod runs while `Deploying`. Because there is no pod, `Deploying` must be
   excluded from per-repo lane occupancy (it would otherwise starve recovery); a lane is only

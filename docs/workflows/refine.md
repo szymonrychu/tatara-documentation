@@ -60,7 +60,7 @@ Refine acts as a **hard gate** on brainstorm, not merely a preceding step:
    stamps `Status.LastRefine = now` and releases brainstorm in the same reconcile. A failed
    refine still releases the gate - a broken refine never wedges brainstorm indefinitely.
 
-Only brainstorm waits on this barrier. `mrScan`, `issueScan`, and `healthCheck` fire on their own
+Only brainstorm waits on this barrier. `mrScan`, `issueScan`, and `documentation` fire on their own
 schedules unaffected by refine's state.
 
 ```mermaid
@@ -95,9 +95,9 @@ across `Implement` reroll cycles. A Parked Task with `0 < implementGiveUps <= ma
 also exempted from time-based garbage collection by the reaper, so the counter survives while
 the issue stays open.
 
-The same `maxImplGiveUps` cap and counter are reused independently by [push-CD](push-cd.md)
-deploy-supervision for its `Deploying -> Implement` reroll path - one shared bounded-retry
-primitive, two consumers.
+The same `maxImplGiveUps` cap and counter are reused independently by
+[deploy supervisor](deploy-supervisor.md) deploy-supervision for its `Deploying -> Implement`
+reroll path - one shared bounded-retry primitive, two consumers.
 
 ## Relationship to brainstorm and incident
 

@@ -26,10 +26,13 @@ repositories for one issue, each opened PR is written back into the ledger.
 slice that the operator uses to decide which repositories to clone and which
 branches to watch for CI.
 
-**Stall detection and recovery.** The `issueLifecycle` controller reads `state`
-fields to detect when a proposed issue is stuck in `proposed` (never approved
-or declined), when an `openedPR` has been `merged` but the issue has not been
-closed, or when a task should be re-activated after human feedback.
+**Stall detection and recovery.** There is no single controller reading the ledger over a
+Task's whole life. Whichever kind is currently active - `clarify`, `implement`, `review`, and
+the deploy supervisor once a change reaches merge/CI - reads `state` fields to detect when a
+proposed issue is stuck in `proposed` (never approved or declined), when an `openedPR` has been
+`merged` but the issue has not been closed, or when a task should be re-activated after human
+feedback. See [Task umbrella and the WorkItem ledger](task.md#task-umbrella-and-the-workitem-ledger)
+for how the ledger persists across that kind handoff.
 
 **Agent prompt context.** On every agent pod launch the operator serialises the
 full ledger into the `TATARA_WORK_ITEMS` environment variable via

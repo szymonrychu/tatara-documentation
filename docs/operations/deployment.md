@@ -55,8 +55,8 @@ capacity accordingly.
 
 The wrapper binary itself is minimal; the `claude` process is the memory consumer,
 and peak memory is driven by the working-tree size and turn transcript, not the
-model. The reference fleet default model is `claude-opus-4-8`, with `triageIssue`
-and `review` tiered down to `claude-sonnet-5` via `modelByKind` (see
+model. The reference fleet default model is `claude-opus-4-8`, with `documentation`
+and `refine` tiered down to `claude-sonnet-5` via `modelByKind` (see
 [Tuning](tuning.md#cap-spend)); `claude-sonnet-4-6` is no longer the running model.
 
 | Workload | Typical peak memory |
@@ -118,7 +118,7 @@ GitHub/GitLab retry webhook deliveries on 5xx. If the operator is briefly unavai
 Tatara components should run under tight NetworkPolicies:
 
 - **Operator ingress:** 443 (webhook/REST) from ingress controller
-- **Agent pods (implement/review/triage):** in-cluster only (port 443 to operator REST, MCP, memory)
+- **Agent pods (clarify/implement/review):** in-cluster only (port 443 to operator REST, MCP, memory)
 - **Agent pods (brainstorm with internet source):** `ipBlock: 0.0.0.0/0` egress, scoped by pod label `tatara.io/egress: internet`
 - **tatara-memory:** ingress from operator and agent pods only
 - **Neo4j:** ingress from tatara-memory only

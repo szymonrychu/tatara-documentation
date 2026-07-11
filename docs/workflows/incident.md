@@ -133,6 +133,11 @@ call `report_internal_issue` (platform-failure self-report channel) rather than 
 normal incident issue. The distinction is: tool failure should surface as a platform alert,
 not get misrouted as an application incident.
 
+For an investigation spanning multiple repos or datasources, the incident agent fans out
+`Agent`-tool subagents per repo/per signal source rather than holding all evidence in one
+context - same principle as brainstorm's fan-out, same retirement of the `Workflow` tool and
+`ultracode` effort tier.
+
 ---
 
 ## 5. Agent output
@@ -259,7 +264,7 @@ sequenceDiagram
     SCM-->>Agent: Issue URL
     Agent->>Task: Task Succeeded
     SCM->>Operator: Webhook: issue labeled tatara-brainstorming
-    Operator->>Task: Create issueLifecycle Task<br/>(label=tatara-incident persists)
+    Operator->>Task: Create clarify Task<br/>(label=tatara-incident persists)
 ```
 
 ---

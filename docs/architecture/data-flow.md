@@ -67,7 +67,7 @@ The operator exposes two webhook routes on a shared HTTP listener:
 Before a webhook event can create a Task the operator applies two security checks:
 
 - **Provider mismatch guard** - rejects deliveries routed to the wrong SCM provider.
-- **Reporter allowlist** - `issueLifecycle` tasks and issue comments are only
+- **Reporter allowlist** - `clarify` tasks and issue comments are only
   processed when the event author is the bot, a maintainer (`spec.scm.maintainerLogins`),
   or an account in `spec.scm.reporterLogins` (Project-level, overridable per-Repository
   via `RepositorySpec.reporterLogins`). An empty allowlist is open (default). This is
@@ -109,12 +109,12 @@ the Task controller. The webhook handler calls `queue.EnqueueEvent` which:
 spec:
   seq: 42                     # monotonic, Project-scoped
   class: normal               # or "alert" for incidents
-  kind: issueLifecycle        # same as the resulting Task kind
+  kind: clarify                # same as the resulting Task kind
   projectRef: my-project
   repositoryRef: tatara-cli   # empty for project-scoped kinds
   dedupKey: "owner/repo#17"   # raw; stored as sha256-truncated label value
   payload:
-    kind: issueLifecycle
+    kind: clarify
     goal: "..."
     source:
       provider: github
@@ -129,11 +129,12 @@ status:
 
 | Task kind | Dedup key |
 |---|---|
-| `issueLifecycle` (issue) | `SHA256(projectName + issueRef + "0")[:16]`, used as deterministic Task name (`lc-<hex16>`) |
-| `issueLifecycle` (bot PR closing #N) | Same hash for issue #N, not the PR, so a bot MR and its linked issue share one slot |
+| `clarify` (issue) | `SHA256(projectName + issueRef + "0")[:16]`, used as deterministic Task name (`lc-<hex16>`) |
+| `clarify` (bot PR closing #N) | Same hash for issue #N, not the PR, so a bot MR and its linked issue share one slot |
+| `implement` | No separate QueuedEvent - the handoff mutates `Spec.Kind` in place on the same umbrella Task the `clarify` dedup key already admitted |
 | `review` | None - multiple review Tasks per PR are intentional |
 | `incident` | `sha256(Grafana groupKey)[:16]` |
-| `brainstorm`, cron kinds | Caller-supplied key (e.g. `brainstorm-<project>`) |
+| `brainstorm`, `documentation`, cron kinds | Caller-supplied key (e.g. `brainstorm-<project>`, `documentation-<project>`) |
 
 ### Queue classes and capacity gating
 
@@ -163,10 +164,16 @@ transitioned to `Done` - the reconciler deletes it directly).
 The Task reconciler spawns a `tatara-claude-code-wrapper` Pod on the first reconcile,
 while `Phase` is still empty (`ensurePodAndService`), and only then stamps
 `Phase=Planning`. `Phase=Running` is set later, after the first turn-complete
-callback - it is never the spawn trigger. The primary kind, `issueLifecycle`, leaves
-`Phase` empty for its entire life and is driven by `Status.LifecycleState` (terminality
-keys on `LifecycleState`, not `Phase`); `Phase` is only populated for the legacy
-single-shot kinds. The Pod:
+callback - it is never the spawn trigger. Every live kind (`clarify`, `implement`,
+`review`, `brainstorm`, `incident`, `documentation`, `refine`) is driven by `Phase`
+this way for its own agent-pod run. Once a Task's PR is review-approved, the
+operator-only [deploy supervisor](../workflows/deploy-supervisor.md) takes over with
+no agent pod involved; that pod-less merge/CI/apply loop is tracked separately via the
+status field whose JSON/CRD key is `lifecycleState` (Go struct field `DeployState`; 10-value
+enum `Triage`/`Conversation`/`Implement`/`MRCI`/`Merge`/`MainCI`/`Deploying`/`Done`/`Stopped`/
+`Parked`, with the front four legacy-drain-only), with `Phase` set to `Deploying` in lockstep - see
+[Deploy-supervision-only status fields](../reference/task.md#deploy-supervision-only-status-fields).
+Terminality keys on both fields, not `Phase` alone. The Pod:
 
 - Receives Task identity and context via environment variables: `TATARA_KIND`
   (the Task kind), `TATARA_TASK`, `TATARA_PROJECT`, `TATARA_REPO`, `TASK_BRANCH`
@@ -219,24 +226,25 @@ What the profile does and does not gate matters more than tool counts:
   `pr_outcome`, `review_verdict`, `propose_issue`, `submit_handover`) plus two boolean
   flags - `chat` and `handoff`.
 
-There are eight named profiles, mapped from `Task.Spec.Kind` by `toolProfileForKind`:
+Under the 7-kind model there are seven named profiles, mapped from `Task.Spec.Kind` by
+`toolProfileForKind` - one profile per live kind, matching its kind name (see
+[mcp-tools.md's Per-kind profile table](../reference/mcp-tools.md#per-kind-profile-table) for
+the authoritative, source-derived version of this table; `clarify` and `documentation`'s exact
+tool grants are not yet shipped as of this writing, so do not treat their counts here as final):
 
 | Profile (TATARA_TOOL_PROFILE) | Task kind |
 |---|---|
-| `brainstorm` | brainstorm (healthCheck shares Kind=brainstorm) |
-| `lifecycle` | issueLifecycle - always, for every lifecycle state |
-| `implement` | legacy `implement` kind only |
+| `brainstorm` | brainstorm |
+| `clarify` | clarify |
+| `implement` | implement |
 | `review` | review |
-| `triage` | triageIssue |
 | `incident` | incident |
-| `selfImprove` | selfImprove |
+| `documentation` | documentation |
 | `refine` | refine (the only profile with `handoffDelete`) |
 
-`issueLifecycle` always resolves to the single `lifecycle` profile - a deliberate union
-of every lifecycle state's tools. One long-lived pod spans Triage through Merge, and
-per-state gating would require restarting the in-pod MCP server mid-task, so the union
-is granted up front. The `implement` profile is for the legacy standalone `implement`
-kind, not the Implement phase of an `issueLifecycle` task.
+`clarify` absorbs the tool surface the retired `triageIssue`/`issueLifecycle` profiles used to
+carry - one profile spans the whole triage/human-conversation window rather than gating
+per-phase, since restarting the in-pod MCP server mid-task to change profile is not supported.
 
 `resolveProfile` fails open (returns all tools) only when `TATARA_TOOL_PROFILE` is
 empty or unset (local dev). An unrecognized non-empty profile fails **closed** to the
@@ -272,7 +280,17 @@ When `s3Bucket` is unset the feature is entirely inactive; no S3 env vars are in
 Writeback is triggered when the agent completes a turn and the Task reconciler
 observes `Condition[WritebackPending]=True`. The behavior is kind-specific:
 
-### Implement / issueLifecycle writeback
+| Task kind | Writeback behavior |
+|---|---|
+| `clarify` | No PR. Removes `tatara-brainstorming`, adds `tatara-implementation` to hand the umbrella Task off to `implement`. |
+| `implement` | Opens PR(s) via `OpenChange` across every repo in scope; comments on the originating issue; upserts the WorkItems ledger (`role=openedPR`). |
+| `review` | Posts a `ReviewVerdict` (`approve`, `request_changes`, or `comment`) as a single atomic verb; never merges. |
+| `brainstorm` | Project-scoped, never opens a PR. Calls `propose_issue`; the operator records `Status.DiscoveredIssues`. |
+| `incident` | Project-scoped, never opens a PR. Calls `propose_issue` the same way brainstorm does, tagged to the alert rule. |
+| `documentation` | Opens a PR to the project's docs repo via the same `OpenChange` path as `implement`, scoped to that one repo, only when accumulated change is non-trivial. |
+| `refine` | No PR, no `propose_issue`. Grooms the backlog directly (`close_issue`, `edit_issue`, `comment_on_issue`) and comments recovery guidance on `Parked` implementations. |
+
+### Implement writeback
 
 ```mermaid
 sequenceDiagram
@@ -288,7 +306,7 @@ sequenceDiagram
     OP->>OP: Clear WritebackPending condition
 ```
 
-For `issueLifecycle` tasks whose source is a plain issue (not a PR), the writeback
+For `implement` tasks whose source is a plain issue (not a PR), the writeback
 appends `Closes #N` to the MR body on the primary repo so the issue auto-closes on
 merge.
 

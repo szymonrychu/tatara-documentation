@@ -24,7 +24,7 @@ Both paths apply the same scope check via `spec.scm.prReactionScope`:
 !!! warning "Default is permissive, not `labeledOrMentioned`"
     The default `prReactionScope` is empty, which reviews every open PR/MR. This is intentional: a defaulted value would be indistinguishable from an explicit `labeledOrMentioned`, so the field is opt-in rather than kubebuilder-defaulted to the narrower scope. Set `prReactionScope: labeledOrMentioned` explicitly to restrict review to labeled/mentioned PRs.
 
-The PR author must not be the bot itself (bot-authored PRs go through the issueLifecycle/push-CD auto-merge path, not review).
+The PR author must not be the bot itself (bot-authored PRs go through the `implement`/deploy-supervisor auto-merge path, not review).
 
 ## Workflow
 
@@ -61,10 +61,15 @@ flowchart TD
 
 ## Read-only constraint
 
-The review agent **never pushes and never merges**. The PR head is checked out in `/workspace` but the agent's git identity does not have push access for this flow, and the review writeback path only ever posts an SCM review (approve/request-changes/comment) - it never calls the open-change or merge APIs.
+The review agent **never pushes and never merges, and never calls a merge API**. The PR head is
+checked out in `/workspace` read-only. Review's only two writeback actions are (a) a native
+SCM review (approve / request-changes / comment) and (b) re-adding `tatara-implementation` to
+invoke `implement` again on an unmergeable MR.
 
-!!! note "Auto-merge is unrelated to review"
-    Native auto-merge (the [push-CD](push-cd.md) `semver:*`-gated mechanism) only ever applies to bot-authored `implement`/`issueLifecycle` PRs. It is a completely separate code path from `review` - a bot review verdict never triggers or blocks it.
+!!! note "Auto-merge is unrelated to review's writeback path"
+    Native auto-merge (the [deploy supervisor](deploy-supervisor.md) `semver:*`-gated mechanism)
+    is a completely separate code path - review's approval is what makes the deploy supervisor
+    willing to merge, but review itself never touches the merge API.
 
 ## Review output
 
@@ -92,6 +97,12 @@ type Suggestion struct {
 
 Each PR gets its own conversation, distinct from any related issue's conversation. If the PR is synchronized (new commits pushed), the next review turn resumes from the prior conversation, giving the agent context about what it already reviewed.
 
-## Bot approval gate
+## Approve-label + native review is the whole merge signal
 
-The review agent is the bot identity. A bot `approve` alone is not sufficient to merge under the `afterApproval` merge policy - a human maintainer approval is still required. The bot review is advisory; the merge gate requires a human, except where [push-CD](push-cd.md) auto-merge independently applies to a bot-authored PR.
+On `approve`, review applies `tatara-approved` to the PR/MR **and** posts a native PR approval -
+that is the entire approval signal the deploy supervisor consults. There is no separate human
+maintainer sign-off step in the shipped default flow; review's approval, from a pod that
+structurally never wrote the diff it is reviewing, is the merge gate. If review instead finds
+any MR under the Task unmergeable (conflict, failed pipeline), it withholds approval and
+re-adds `tatara-implementation` to invoke `implement` again - see
+[Deploy Supervisor](deploy-supervisor.md) for what happens once approval + green CI both hold.

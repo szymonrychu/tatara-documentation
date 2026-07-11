@@ -30,7 +30,7 @@ serves both roles; the mode is determined by the subcommand.
       `tools/list` is byte-identical for every agent kind (so all pods share one
       Anthropic prompt-cache prefix); the operator-set `TATARA_TOOL_PROFILE` is
       checked per call, not by filtering the list. See
-      [Per-phase tool gating](#per-phase-tool-gating).
+      [Per-kind tool gating](#per-kind-tool-gating).
     - **Fail-open vs fail-closed:** an empty/unset profile is fail-**open** (every
       registered tool callable, local-dev path, logged WARN); a non-empty but
       unrecognized profile is fail-**closed** (only the 4 `alwaysOn` tools). A typo
@@ -220,7 +220,7 @@ timeout) on an existing `tatara` entry. Only `command` and `args` are updated.
 The server registers **all** tools from every group at startup, unconditionally
 - the `tools/list` response is byte-identical for every agent kind so all pods
 share one Anthropic prompt-cache prefix. Profile gating happens later, at
-call time (see [Per-phase tool gating](#per-phase-tool-gating)). For the
+call time (see [Per-kind tool gating](#per-kind-tool-gating)). For the
 authoritative per-kind allow-sets, counts, and where the gating code lives, see
 the [MCP Tool Profiles reference](../reference/mcp-tools.md); the tables below
 are a high-level tour of the groups.
@@ -340,7 +340,7 @@ profiles; `delete_handoff` is `refine`-only, since refine is the handoff groomer
 | `list_handoffs` | `handoff` profiles |
 | `delete_handoff` | `refine` only |
 
-### Per-phase tool gating
+### Per-kind tool gating
 
 The operator sets `TATARA_TOOL_PROFILE` in the agent pod env. The CLI does
 **not** filter `tools/list` - every tool is registered for every profile so the
@@ -359,18 +359,33 @@ coordination or session continuity is expected.
 
 The per-kind allow-sets and exact counts are in the
 [MCP Tool Profiles reference](../reference/mcp-tools.md) (source of truth).
-A high-level orientation:
+See [MCP Tool Profiles](../reference/mcp-tools.md) for the authoritative version
+of this table if the two ever disagree.
 
-| Profile | Task kind(s) | Chat | Handoff | Notable operator tools |
-|---|---|---|---|---|
-| `refine` | `refine` | No | r/w + **delete** | groom-only: `task_list`, `list_issues`, `list_commits`, `close_issue`, `edit_issue` (title/body), `comment_on_issue`. **No `create_issue`, no label edits** |
-| `brainstorm` | `brainstorm`, `healthCheck` | Yes | r/w | `task_list`, subtask tools, `propose_issue`, `comment_on_issue`, `skip_research` |
-| `implement` | `implement` | No | r/w | `task_update`, subtask tools, `change_summary`, `decline_implementation`, `already_done`, `submit_handover` |
-| `review` | `review` | No | No | `task_update`, `subtask_list`, `review_verdict`, `submit_handover` |
-| `triage` | `triageIssue` | No | No | `task_list`, `task_update`, subtask tools, `issue_outcome`, `comment`, `comment_on_issue` |
-| `lifecycle` | `issueLifecycle` | Yes | r/w | largest profile (63 tools) - one long-lived pod spans Triage -> Implement -> Merge. **Not** a union of every other profile: its 14 operator tools omit `refine`'s `list_issues`/`list_commits`/`close_issue`/`edit_issue`, `brainstorm`/`incident`'s `propose_issue`, `brainstorm`'s `skip_research`, and `create_issue`/`project_list` |
-| `incident` | `incident` | Yes | r/w | `task_list`, `task_update`, subtask tools, `propose_issue`, `comment_on_issue`, `change_summary`, `decline_implementation`, `submit_handover` |
-| `selfImprove` | `selfImprove` | No | No | `task_update`, subtask tools, `change_summary`, `pr_outcome`, `decline_implementation`, `already_done`, `submit_handover` |
+`toolProfileForKind` maps a Task `kind` to a profile name; under the 7-kind model the profile
+name matches the kind name for all seven live kinds.
+
+| Profile | Task kind(s) | Chat | Handoff (r/w) | Handoff delete | Operator tools | Total allowed |
+|---|---|:---:|:---:|:---:|---:|---:|
+| `refine` | `refine` | no | yes | **yes** | 6 | 46 |
+| `brainstorm` | `brainstorm` | yes | yes | no | 7 | 56 |
+| `implement` | `implement` | no | yes | no | 8 | 47 |
+| `review` | `review` | no | no | no | 4 | 40 |
+| `clarify` | `clarify` | ? | ? | no | ? | ? |
+| `incident` | `incident` | yes | yes | no | 10 | 59 |
+| `documentation` | `documentation` | no | ? | no | ? | ? |
+| *(empty)* | fail-open, local dev | - | - | - | all 22 (+`project_list`) | 72 |
+| *(unrecognized string)* | fail-closed | no | no | no | 0 | 4 |
+
+!!! warning "Do not invent tool counts"
+    `clarify` and `documentation` are new profiles with no shipped tool-set yet as of this
+    plan. The spec names a new `clarify` profile "from old lifecycle/triage" (implying it
+    inherits most of the retired `triage`/`lifecycle` profiles' operator-tool surface) and
+    leaves `documentation`'s tool set unspecified. **Re-derive both from
+    `tatara-cli/internal/mcp/profiles.go` once that change merges** - do not publish a
+    fabricated tool count. `brainstorm` also drops its `healthCheck` dual-kind row since
+    `healthCheck` no longer exists as a kind sharing the profile, and the `selfImprove` profile
+    is removed outright (the kind was already dead before this redesign).
 
 !!! note "Security intent"
     Call-time profile gating limits the blast radius of a prompt-injection

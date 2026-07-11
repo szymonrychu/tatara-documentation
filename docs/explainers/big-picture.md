@@ -74,26 +74,26 @@ So not every unit of work starts from a human-labeled issue. What stays with hum
 
 Tatara runs much of its own loop, but the load-bearing decisions stay with humans:
 
-1. **Which repositories are enrolled.** Tatara triages *every* open issue in an enrolled repo via the periodic issue scan - no label is required. The optional trigger label only makes it skip triage and start implementing immediately; it is not an act/no-act switch.
+1. **Which repositories are enrolled.** Tatara clarifies *every* open issue in an enrolled repo - no label is required. The optional trigger label only makes it skip the conversation and hand straight to implementation; it is not an act/no-act switch.
 2. **Whether to approve net-new work the agent proposes.** Brainstorm-generated proposals wait for a human before they are implemented.
-3. **Whether to approve the agent's triage plan**, by commenting in the issue thread.
-4. **Whether to merge the PR**, by reviewing and approving in your SCM. (Under the default `afterApproval` policy the operator merges on the agent's own read of the thread rather than verifying SCM review state directly; see the approval-gates reference for how to make that a hard gate with branch protection.)
+3. **Whether to approve the direction during `clarify`'s conversation**, by commenting in the issue thread.
+4. **Whether to add a human merge gate.** By default `review` (a separate bot pod that cannot approve its own diff) approves the PR and the deploy supervisor merges it on green CI with no human step; add a review-gated branch-protection rule if you want a human approval required on top. (See the approval-gates reference.)
 
-The agent proposes, grooms, implements, and can even ship its own components; humans set scope and hold the merge gate. This is the design intent, not a limitation.
+The agent proposes, grooms, implements, and reviews its own work, and can even ship its own components; humans set scope and can add a merge gate. This is the design intent, not a limitation.
 
 ## What makes tatara different from a CI/CD script
 
 A CI/CD script runs fixed commands. Tatara runs an AI agent that reasons about your specific codebase. The agent reads your code, understands your patterns, asks clarifying questions if the spec is ambiguous, and writes code in your style.
 
-The tradeoff is that agent behavior is probabilistic, not deterministic. The human approval gates exist precisely because of this: you review the plan before implementation, and you review the code before merge.
+The tradeoff is that agent behavior is probabilistic, not deterministic. The approval gates exist precisely because of this: the direction is agreed during `clarify`'s conversation before implementation, and a separate `review` pod reviews the code before the deploy supervisor merges it - with an optional human branch-protection gate on top.
 
 ## What could go wrong (and how tatara handles it)
 
 | Problem | How tatara handles it |
 |---|---|
-| Agent writes bad code | Human reviews the PR before merge |
-| Agent misunderstands the issue | Triage plan is posted for approval before any code is written |
+| Agent writes bad code | A separate `review` pod reviews the PR before the deploy supervisor merges it; add branch protection for a human review too |
+| Agent misunderstands the issue | `clarify` runs the conversation and agrees direction before any code is written |
 | Pod crashes mid-task | The agent writes a compact chat-backed handoff summary; the next pod reads it via `get_handoff` and continues. In-pod crash relaunch resumes locally via `--continue` |
 | Queue overloaded | QueuedEvent admission queue bounds concurrency |
-| CI breaks | Agent investigates and retries in the MRCI phase |
+| CI breaks | `implement` investigates and retries; a failed pipeline routes back through `implement` |
 | Incident fires at 3am | Alert webhook spawns investigation agent; human reviews in the morning |
