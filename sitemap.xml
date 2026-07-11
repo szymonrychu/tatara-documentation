@@ -2,866 +2,874 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-05-24-phase-0-tatara-docs-repo/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-05-24-tatara-phases-0-1-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-05-27-argo-workflows-ci-migration-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-05-27-argo-workflows-ci-migration/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-05-27-tatara-cli-mvp-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-05-27-tatara-cli-mvp/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-05-27-tatara-consolidation-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-05-27-tatara-consolidation/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-04-tatara-claude-code-wrapper-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-04-tatara-claude-code-wrapper/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-05-tatara-chat-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-05-tatara-chat/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-05-tatara-code-ingestion-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-agentic-dev-sota-improvements/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-code-graph-full-scope-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-code-graph-memory/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-code-graph-production-readiness/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-codegraph-mcp-tools-C/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-go-treesitter-fallback/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-m2a-cross-repo-memory/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-m2b-symbols-ingester/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-m5-scip-ingester/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-research-grounded-improvements-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-memory-repo-ingester-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-memory-repo-ingester/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-operator-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-operator-m0-scaffold/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-operator-m1-project-repository-ingest/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-operator-m2-webhook-push/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-operator-m3-restapi-cli-tools/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-operator-m4-task-turn-loop/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-operator-m5-scm-writeback-workitem/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-06-tatara-operator-m6-chart-deploy/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-07-enroll-tatara-dogfood-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-07-enroll-tatara-dogfood/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-07-per-project-memory-n1-builders/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-07-per-project-memory-n2-provisioning/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-07-per-project-memory-n3-wiring/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-07-per-project-memory-n4-retire-deploy/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-07-per-project-memory-provisioning-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-08-operator-sops-managed-secrets-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-08-operator-sops-managed-secrets/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-agent-native-tatara-tools-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-agent-native-tatara-tools/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-build1-cc-wrapper/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-build1-repo-ingester/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-build1-tatara-memory/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-build1-tatara-operator/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-cross-repo-agent-tasks-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-cross-repo-agent-tasks/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-incremental-reingest-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-namespace-clone-layout-notes/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-phase0-contract-lock/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-phase1-structural-parity-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-phase2-repo-ingester/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-phase2-semantic-ceiling-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-phase2-tatara-cli/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-phase2-tatara-memory/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-phase2-tatara-operator/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-scm-projects-cli/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-scm-projects-contract-lock/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-scm-projects-infra/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-scm-projects-operator/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-scm-projects-pr-reactions-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-scm-projects-wrapper/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-09-server-graphify-roadmap/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-11-autonomous-cron-cli/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-11-autonomous-cron-contract-lock/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-11-autonomous-cron-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-11-autonomous-cron-infra/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-11-autonomous-cron-operator/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-11-autonomous-cron-wrapper/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-11-wrapper-transcript-streaming-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-bot-mr-auto-merge-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-bot-mr-auto-merge/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-ci-pipelines-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-ci-pipelines/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-issue-lifecycle-agent-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-issue-lifecycle-m0-model/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-issue-lifecycle-m1-babysit/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-issue-lifecycle-m2-conversation/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-issue-lifecycle-m3-context-guard/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-issue-lifecycle-m4-scope/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-per-project-ingress-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-per-project-ingress/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-per-repo-fanout-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-12-per-repo-fanout/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-brainstorm-backpressure-approval-backstop-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-brainstorm-backpressure-approval-backstop/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-discovery-research-harness-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-discovery-research-harness/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-infra-deploy-runner-and-tatara-removal/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-tatara-helmfile-deploy-harness-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-tatara-helmfile-repo/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-tatara-label-lifecycle-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-tatara-label-lifecycle/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-tatara-phase-label-dedup-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-tatara-phase-label-dedup/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-13-wrapper-deploy-harness-skill/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-14-buildkit-on-ceph/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-14-issue34-empty-implement-retry/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-14-mise-toolchain/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-14-precommit-gate/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-14-wrapper-claude-death-resume/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-15-auto-close-recovery-exhausted-prs/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-15-brainstorm-dedup-comment-on-issue-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-15-deep-audit-report/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-15-implement-refusal-codification-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-15-revive-bot-pr-merge-recovery-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-15-revive-bot-pr-merge-recovery/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-16-deep-audit-report-round2/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-16-project-level-brainstorm-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-19-brainstorm-no-repeat-comment-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-19-brainstorm-no-repeat-comment/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-19-grafana-incident-response-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-19-grafana-incident-response/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-20-agent-work-queue-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-20-agent-work-queue/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-20-brainstorm-systemic-and-agent-ultracode-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-20-brainstorm-systemic-cli/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-20-brainstorm-systemic-operator/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-20-brainstorm-systemic-wrapper/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-22-brainstorm-throughput-queue-concurrency-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-22-brainstorm-throughput-queue-concurrency/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-22-project-guidance-infra-awareness-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-22-project-guidance-infra-awareness/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-23-agent-tool-surface-and-internal-issue-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-23-deeper-research-engine/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-23-impl-false-refusal-wt1-operator-dedup/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-23-impl-false-refusal-wt2-operator-cli-decline/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-23-impl-false-refusal-wt3-wrapper/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-23-impl-false-refusal-wt4-operator-reposinscope/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-23-implement-false-refusal-rootcause-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-24-task-work-item-ledger-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-24-task-work-item-ledger/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-24-tatara-grafana-alerting-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-24-tatara-grafana-alerting/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-25-tatara-observability-migration-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-28-semver-push-cd-cutover-runbook/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-06-28-semver-push-cd-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-cheap-adjacents/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-claude-subscription-usage-gate-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-claude-subscription-usage-gate/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-durable-measurement-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-durable-measurement/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-handoff-continuation-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-handoff-continuation/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-per-kind-model-effort-tiering/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-quality-feedback-loop-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-quality-feedback-loop/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-token-conservation-design/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-token-conservation-p0-review-gaps/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-token-conservation-reenable-runbook/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-04-token-measurement-observability/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/2026-07-05-decoupling-gitops-and-agent/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/_per-project-memory-shared-contracts/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/appendix/design-docs/_tatara-operator-shared-contracts/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/architecture/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/architecture/agent-execution/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/architecture/ci-cd/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/architecture/data-flow/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/architecture/identity-and-oidc/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/architecture/memory-architecture/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/components/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/components/chat/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/components/claude-code-wrapper/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/components/cli/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/components/helmfile/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/components/memory/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/components/observability/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/components/operator/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/components/repo-ingester/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/concepts/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/concepts/agentic-model/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/concepts/portability/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/concepts/self-improvement/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/concepts/why-tatara/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/explainers/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/explainers/agent-sessions/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/explainers/big-picture/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/explainers/issue-to-pr/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/explainers/memory-graph/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/getting-started/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/getting-started/enrollment/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/getting-started/first-project/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/getting-started/installation/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/getting-started/prerequisites/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/deployment/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/observability/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/runbooks/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/tuning/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/security/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/security/approval-gates/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/security/bot-identity/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/security/prompt-injection/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/operations/security/webhooks/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/reference/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/reference/mcp-tools/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/reference/project/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/reference/queued-event/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/reference/repository/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/reference/subtask/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/reference/task/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/reference/work-item/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/workflows/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/workflows/brainstorm/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
+    </url>
+    <url>
+         <loc>https://szymonrychu.github.io/tatara-documentation/workflows/clarify/</loc>
+         <lastmod>2026-07-11</lastmod>
+    </url>
+    <url>
+         <loc>https://szymonrychu.github.io/tatara-documentation/workflows/deploy-supervisor/</loc>
+         <lastmod>2026-07-11</lastmod>
+    </url>
+    <url>
+         <loc>https://szymonrychu.github.io/tatara-documentation/workflows/documentation/</loc>
+         <lastmod>2026-07-11</lastmod>
+    </url>
+    <url>
+         <loc>https://szymonrychu.github.io/tatara-documentation/workflows/implement/</loc>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/workflows/incident/</loc>
-         <lastmod>2026-07-08</lastmod>
-    </url>
-    <url>
-         <loc>https://szymonrychu.github.io/tatara-documentation/workflows/issue-lifecycle/</loc>
-         <lastmod>2026-07-08</lastmod>
-    </url>
-    <url>
-         <loc>https://szymonrychu.github.io/tatara-documentation/workflows/push-cd/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/workflows/refine/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/workflows/research/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
     <url>
          <loc>https://szymonrychu.github.io/tatara-documentation/workflows/review/</loc>
-         <lastmod>2026-07-08</lastmod>
+         <lastmod>2026-07-11</lastmod>
     </url>
 </urlset>
