@@ -4,12 +4,12 @@ title: Project
 
 # Project
 
-The `Project` custom resource is the top-level grouping unit in tatara. One Project maps to a single SCM owner (a GitHub organization, a GitLab group, or a personal account), owns the per-project memory stack, and drives all scheduled activity: issue scans, MR reviews, brainstorm cycles, health checks, and incident handling.
+The `Project` custom resource is the top-level grouping unit in tatara. One Project maps to a single SCM owner (a GitHub organization, a GitLab group, or a personal account), owns the per-project memory stack, and drives all scheduled activity: issue scans, MR reviews, brainstorm cycles, and incident handling.
 
-Every `Repository` CR must reference a Project. Every `Task` is born inside a Project.
+Every `Repository` CR must reference a Project. Every `Task`, `QueuedEvent`, `Issue`, and `MergeRequest` is born inside a Project.
 
-**API group / version:** `tatara.dev/v1alpha1`  
-**Kind:** `Project`  
+**API group / version:** `tatara.dev/v1alpha1`
+**Kind:** `Project`
 **Scope:** Namespaced
 
 ---
@@ -22,22 +22,23 @@ Every `Repository` CR must reference a Project. Every `Task` is born inside a Pr
 |---|---|---|---|---|
 | `scmSecretRef` | `string` | - | **yes** | Name of the `Secret` in the same namespace holding the SCM token. Key `token` is the bot PAT or GitLab project access token. |
 | `triggerLabel` | `string` | `tatara` | no | Issue label that causes the operator to react. An issue must carry this label (or be authored by the bot) to enter the tatara lifecycle. |
-| `maxConcurrentTasks` | `int` | `3` | no | Maximum number of simultaneously running Task pods for this project. Also sets the default `queue.capacity` when `queue` is omitted. |
-| `agent` | [`AgentSpec`](#agentspec) | see below | no | Configuration for the claude-code-wrapper agent session that every Task runs. |
+| `maxConcurrentAgents` | `int` | `3` | no | Maximum number of simultaneously admitted **agent pods** for this project. The admission unit is the pod-spawn, not the Task - a Task advancing from one pod-spawning stage to the next consumes a fresh slot. `0` is the full-project pause kill switch: `admit()` short-circuits and no `QueuedEvent` is ever admitted, so no pod (and, for a mint, no Task) is ever created. There is no `Minimum=1`. |
+| `agentPodTTLSeconds` | `int` | `3600` | no | Bounds **one pod's** life; the Task persists. On expiry the operator stops admitting new turns, waits for the in-flight turn (bounded by `agent.turnTimeoutSeconds`), submits one final handoff turn, and force-deletes the pod. `Task.status.notes` is never empty after a TTL stop: either the agent wrote a handoff note, or the operator wrote one for it. Minimum `300`. |
+| `maxNewTasksPerSweep` | `int` | `5` | no | Caps how many Tasks **one sweep pass** may mint. Minimum `1`. |
+| `maxOpenTasks` | `int` | `6` | no | Caps **active** Tasks: every Task whose stage is pod-eligible (not `parked`/`delivered`/`rejected`/`failed`). This is a Task **creation** budget, not the same lever as `maxConcurrentAgents` (a concurrency budget) - a sweep that would exceed it mints nothing that pass. `parked(backlog-sweep)` Tasks do not count: they hold ownership, not work. Minimum `1`. |
+| `maxBundleBytes` | `int` | `400000` | no | Hard byte budget for a rendered [context bundle](context-bundle.md#the-byte-budget) (~100k tokens). Oldest comments elide first, behind an explicit marker; no summarization, no model call. Minimum `50000`. |
+| `agent` | [`AgentSpec`](#agentspec) | see below | no | Configuration for the claude-code-wrapper agent pods this project spawns. |
 | `memory` | [`MemorySpec`](#memoryspec) | see below | no | Size of the per-project memory stack (Postgres + Neo4j). |
-| `scm` | [`ScmSpec`](#scmspec) | - | no | SCM provider binding, labels, cron schedules, and merge policy. |
+| `scm` | [`ScmSpec`](#scmspec) | - | no | SCM provider binding, approval phrases, labels, and cron schedules. |
 | `grafana` | [`GrafanaSpec`](#grafanaspec) | disabled | no | Optional Grafana integration for incident-response tasks. |
-| `documentation` | [`DocumentationSpec`](#documentationspec) | disabled | no | On-switch and docs-target repo for the post-merge documentation agent. Requires `scm.cron.documentation.schedule` to also be set - see [`scm.cron.documentation`](#scmcrondocumentation). |
+| `documentation` | [`DocumentationSpec`](#documentationspec) | disabled | no | On-switch and docs-target repo for the nightly documentation agent. Requires `scm.cron.documentation.schedule` to also be set - see [`scm.cron.documentation`](#scmcrondocumentation). |
 | `queue` | [`QueueSpec`](#queuespec) | derived | no | Fine-grained admission queue tuning. |
 | `tokenBudget` | [`TokenBudgetSpec`](#tokenbudgetspec) | nil (inherits operator default, off) | no | Token-budget admission gate: pauses proactive and/or incident work once usage crosses a percentage threshold. |
-| `deployBudgetSeconds` | `int` | `3300` | no | Deploying-phase deadline (seconds) for a push-CD cascade along the longest path to a `tatara-helmfile` apply (2 tag-cut hops, e.g. cli -> wrapper -> helmfile). Exceeding it parks the Task recoverable with reason `deploy-timeout`. |
-| `deploySingleHopBudgetSeconds` | `int` | `2100` | no | Tighter Deploying-phase deadline for artifacts one hop from `tatara-helmfile` (operator, memory, ingester, chat) with no intermediate parent rebuild. Deploy-supervision picks this over `deployBudgetSeconds` for single-hop artifacts. |
 
-!!! warning "Deprecated: `maxOpenTasks`"
-    `maxOpenTasks` is no longer enforced. The queue bounds concurrency, not event creation; events above capacity wait in `Queued` phase. The field is retained for backward compatibility and silently ignored.
+!!! note "`maxConcurrentAgents: 0` fully pauses a project"
+    The pause is **not** routed through `QueueCapacity()` (which floors at `3` and would silently un-pause). It is a direct `spec.maxConcurrentAgents == 0` check at the top of `admit()`: every scan, brainstorm, and webhook-triggered event queues but nothing is ever admitted - not even a Task already in flight that needs its next pod. See [Tuning](../operations/tuning.md).
 
-!!! note "maxConcurrentTasks: 0 fully pauses a project"
-    Setting `maxConcurrentTasks` to `0` admits no new Tasks: every scan, brainstorm, and webhook-triggered event queues but nothing spawns. This is the pause lever for a project (see [Tuning](../operations/tuning.md)).
+The per-stage deadlines that used to live here as `deployBudgetSeconds` / `deploySingleHopBudgetSeconds` are gone: every stage's exit deadline is a fixed budget measured from `status.stageEnteredAt` (or `podStartedAt`, or `stageWorkStartedAt` for a live pod stage), not a Project-configurable field. See the one clock, one table model on the [Task stage machine](task-stages.md). <!-- stale-ok: deployBudgetSeconds, deploySingleHopBudgetSeconds -->
 
 ---
 
@@ -47,18 +48,18 @@ Controls every agent pod spawned by this project.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `model` | `string` | operator default | Claude model ID (e.g. `claude-opus-4-8` project-wide, tiered down per kind to `claude-sonnet-5`). When empty the wrapper's own default applies. |
+| `model` | `string` | operator default | Claude model ID (e.g. `claude-opus-4-8` project-wide, tiered down per agent kind to `claude-sonnet-5`). When empty the wrapper's own default applies. |
 | `image` | `string` | operator default | Fully-qualified container image for the claude-code-wrapper pod. When empty the operator's compiled-in default is used. |
 | `permissionMode` | `string` | `bypassPermissions` | Claude Code permission mode. `bypassPermissions` disables interactive approval prompts inside the agent. |
-| `maxTurnsPerTask` | `int` | `50` | Hard ceiling on the number of agent turns per task. The task is failed when this limit is reached. |
+| `maxTurnsPerPod` | `int` | `40` | Ceiling on agent turns within **one pod run**. The `implement` agent kind is **exempt** - a long healthy coding run must not be cut off mid-way. |
+| `maxTurnsPerTask` | `int` | `300` | **Lifetime** ceiling across every pod of the Task, every kind included (`implement` included). This is what bounds the `maxTurnsPerPod` exemption: the Task fails once it is reached. |
+| `maxReviewRounds` | `int` | `3` | Accepted `request_changes` verdicts before the `reviewing` <-> `implementing` cycle parks the Task at `review-loop-exhausted`. |
+| `maxHumanReviewRounds` | `int` | `5` | Un-parks of a `review`-kind Task back to `reviewing` on a human PR comment. At the cap it stays parked at `awaiting-human` - a human's PR is fixed by the human. This is a **separate** counter from `maxReviewRounds`, which only moves on `request_changes` and so never advances on the human-approve path at all. |
+| `maxPodRecreations` | `int` | `3` | Pod respawns within the **current stage** before the Task fails at `pod-recreation-exhausted`. Reset to `0` on every stage transition. A pod that never becomes Ready within the fixed 5-minute readiness window is a respawn, not an immediate failure - it burns one of these. |
 | `turnTimeoutSeconds` | `int` | `1800` | Inactivity window per turn in seconds. A turn is killed only after this many seconds of **no streaming output** -- a turn actively producing output is never killed mid-work regardless of wall-clock age. |
-| `contextWindowTokens` | `int` | `200000` | Context window budget passed to the wrapper. Controls when the agent initiates a handover. |
-| `handoverThresholdPercent` | `int` | `25` | When the last-turn input token count exceeds this percentage of `contextWindowTokens`, the next pod receives a compacted handover text instead of the full conversation replay. Below the threshold the full transcript is replayed. |
-| `maxLifecycleIterations` | `int` | `10` (min `3`) | Maximum times a lifecycle task can restart (crash-resume cycles) before the operator marks it terminal. |
 | `effort` | `string` | `xhigh` | Reasoning-effort level forwarded to the wrapper as the `EFFORT` env var. Maps to Claude's extended thinking intensity. One of: `low`, `medium`, `high`, `xhigh`, `max`. |
-| `maxTaskTokens` | `int64` | `0` (disabled) | Per-Task cumulative output-token ceiling for the otherwise turn-uncapped `implement` kind: a runaway backstop, not a cost lever. `0` disables it. When `status.cumulativeTokens` crosses it the Task fails with reason `TokenBudgetExceeded`. |
-| `modelByKind` | `map[string]string` | `{}` | Per-`Task.Spec.Kind` override of `model`. The CRD schema allows up to 11 entries (`MaxProperties=11`), gated by an `XValidation` allow-list covering all 11 keys: `implement`, `review`, `clarify`, `triageIssue`, `brainstorm`, `issueLifecycle`, `incident`, `selfImprove`, `refine`, `healthCheck`, `documentation`. All 11 are schema-valid on new writes, not merely retained for old CRs; the retired kinds (`triageIssue`/`issueLifecycle`/`healthCheck`/`selfImprove`) are simply functionally inert since no new Task ever carries those kinds. Locked defaults: `brainstorm`/`incident`/`clarify`/`implement`/`review` = `claude-opus-*`; `documentation`/`refine` = `claude-sonnet-*`. Values must start with `claude-` (max 64 chars). A missing/empty entry falls back to `model`. |
-| `effortByKind` | `map[string]string` | `{}` | Per-kind override of `effort`. Same 11-key allow-list and `MaxProperties=11` as `modelByKind`. Values must be one of `low`, `medium`, `high`, `xhigh`, `max`. A missing/empty entry falls back to `effort`. |
+| `modelByKind` | `map[string]string` | `{}` | Per-**agent-kind** override of `model`, keyed on `Task.status.agentKind` (not the Task origin kind). Valid keys: `brainstorm`, `incident`, `clarify`, `implement`, `review`, `refine`, `documentation`. Locked defaults: `brainstorm`/`incident`/`clarify`/`implement`/`review` = `claude-opus-*`; `documentation`/`refine` = `claude-sonnet-*`. Values must start with `claude-` (max 64 chars). A missing/empty entry falls back to `model`. |
+| `effortByKind` | `map[string]string` | `{}` | Per-agent-kind override of `effort`. Same 7-key set as `modelByKind`. Values must be one of `low`, `medium`, `high`, `xhigh`, `max`. A missing/empty entry falls back to `effort`. |
 | `skillsRef` | `string` | `main` | Git ref (branch, tag, or SHA) of the `tatara-agent-skills` repo the wrapper clones at boot. Pin to a SHA to avoid drift from `main`. |
 | `hooks` | [`LifecycleHooks`](#lifecyclehooks) | - | Optional shell commands run at fixed points in the session. |
 | `extraEnvs` | `[]EnvVar` | - | Additional environment variables appended to the wrapper container after the operator's required variables. A stray extra cannot shadow an operator-required variable. |
@@ -67,6 +68,9 @@ Controls every agent pod spawned by this project.
 | `extraVolumes` | `[]Volume` | - | Additional volumes appended to the agent pod's volume list. |
 | `extraSidecarContainers` | `[]Container` | - | Additional containers appended after the wrapper in the agent pod. Useful for MCP servers or local proxies. |
 | `extraInitContainers` | `[]Container` | - | Init containers added to the agent pod. Run to completion before the wrapper starts. |
+
+!!! danger "There is no resume mode"
+    `contextWindowTokens` and the old compacted-handover threshold field are gone. <!-- stale-ok: handover --> Every pod's turn-0 gets the identical [context bundle](context-bundle.md) render, bounded by `Project.spec.maxBundleBytes` - there is no partial-resume calculation and nothing carries a Claude session id across a pod boundary. What carries forward between pods is [`Task.status.notes`](task-notes.md).
 
 #### LifecycleHooks
 
@@ -77,7 +81,7 @@ Each field is a shell command string passed to `sh -c`. An empty field is skippe
 | `preClone` | Before each repository clone | Repo URL as positional arg `$1` |
 | `postClone` | After each successful clone and checkout | Clone destination directory as `$1` |
 | `conversationStart` | Once, after the agent session boots | Task context from pod env (`TATARA_TASK`, `TATARA_PROJECT`) |
-| `conversationRestart` | Each time the session is relaunched after a crash (`--continue` path) | Same as `conversationStart` |
+| `conversationRestart` | Each time the wrapper process is relaunched after a pod recreation | Same as `conversationStart` |
 | `agentTurnFinished` | After each agent turn (after work is committed and pushed) | Same as `conversationStart` |
 | `conversationFinished` | Once, during session teardown | Same as `conversationStart` |
 
@@ -123,7 +127,7 @@ Enables an operator-provisioned `grafana-mcp` sidecar and an alert-webhook recei
 
 ### DocumentationSpec
 
-The real on/off switch for the post-merge documentation agent, and its docs-target repo. `scm.cron.documentation.schedule` (below) is a separate, required gate - both must be set for the cron to actually fire.
+The real on/off switch for the nightly documentation agent, and its docs-target repo. `scm.cron.documentation.schedule` (below) is a separate, required gate - both must be set for the cron to actually fire.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
@@ -134,16 +138,15 @@ The real on/off switch for the post-merge documentation agent, and its docs-targ
 
 ### QueueSpec
 
-Fine-grained control over the in-operator admission queue. Omit this section entirely if the defaults derived from `maxConcurrentTasks` are sufficient.
+Fine-grained control over the in-operator admission queue. Omit this section entirely if the defaults derived from `maxConcurrentAgents` are sufficient.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `capacity` | `int` | value of `maxConcurrentTasks`, else `3` | Maximum concurrently admitted normal-class events. Events above this limit wait in `Queued` phase until a slot frees. |
-| `alertCapacity` | `int` | `1` | Reserved concurrent slots for alert-class events (incident webhooks from Grafana). Kept separate so a burst of normal tasks cannot starve incident response. |
-| `queuedAutonomousCap` | `int` | value of `maxOpenTasks`, else `3` | **Deprecated**, no longer enforced. Retained for CRD backward-compatibility; ignored. |
+| `capacity` | `int` | value of `maxConcurrentAgents`, else `3` | Maximum concurrently admitted normal-class pod-spawns. Events above this limit wait in `Queued` state until a slot frees. |
+| `alertCapacity` | `int` | `1` | Reserved concurrent slots for alert-class events (incident-agent spawns). Kept separate so a burst of normal-priority work cannot starve incident response. |
 
 !!! note "Queue vs concurrency"
-    The queue bounds running concurrency, not the total number of events. Any number of events can be created; they accumulate in `Queued` state and are admitted FIFO as capacity frees.
+    The queue bounds running concurrency, not the total number of events. Any number of events can be created; they accumulate in `Queued` state and are admitted in `(priority, seq)` order as capacity frees - see the [QueuedEvent lifecycle](index.md#queuedevent-lifecycle).
 
 ---
 
@@ -162,13 +165,13 @@ Configures the per-Project token-budget admission gate: pauses proactive work (b
 | `tokenLimit` | `int64` | - | Absolute total-token budget per window. `customWindow` mode only. |
 
 !!! info "claudeSubscription mode: present in the API, not yet load-bearing"
-    `mode: claudeSubscription` and the corresponding `status.tokenBudget.fiveHourPercent` / `weeklyPercent` fields exist in the current CRD but are inert until a wrapper snapshot with a future reset time is reported (an unknown or past reset is ignored so the gate can never wedge on a stale snapshot). Neither live Project (`tatara`, `infrastructure`) currently sets a `tokenBudget` block, so the gate is fully disabled fleet-wide today. A follow-on per-kind admission gate (fleet-wide account-usage poller + per-kind spawn-ceiling ladder, superseding this per-project snapshot mechanism) is in development on a feature branch and has not merged to `main`; it is not part of this reference until it lands.
+    `mode: claudeSubscription` and the corresponding `status.tokenBudget.fiveHourPercent` / `weeklyPercent` fields exist in the current CRD but are inert until a wrapper snapshot with a future reset time is reported (an unknown or past reset is ignored so the gate can never wedge on a stale snapshot). Neither live Project (`tatara`, `infrastructure`) currently sets a `tokenBudget` block, so the gate is fully disabled fleet-wide today.
 
 ---
 
 ### ScmSpec
 
-Binds the project to an SCM provider and configures the full set of operational knobs: bot identity, approval gates, merge policy, labels, and cron schedules.
+Binds the project to an SCM provider and configures the full set of operational knobs: bot identity, the approval grammar, labels, and cron schedules.
 
 #### Identity
 
@@ -176,15 +179,16 @@ Binds the project to an SCM provider and configures the full set of operational 
 |---|---|---|---|---|
 | `provider` | `string` | - | **yes** | SCM provider. One of `github` or `gitlab`. |
 | `owner` | `string` | - | **yes** | GitHub organization or user name, or GitLab group/user path. All enrolled repositories must live under this owner. |
-| `botLogin` | `string` | - | **yes** | SCM username of the bot account. Used to distinguish bot comments from human comments, and to exclude the bot from the maintainer-approval actor check (an `issues.labeled` event whose actor is `botLogin` is dropped before that check even runs, so the bot can never self-approve). |
+| `botLogin` | `string` | - | **yes** | SCM username of the bot account. Used to distinguish bot comments from human comments: a comment authored by `botLogin` can never satisfy the approval grammar's maintainer check (C.6), and it is dropped at intake before it can re-trigger the Task the bot just acted on (the [mid-flight events](context-bundle.md#mid-flight-events) enqueue filter). |
 | `botEmail` | `string` | - | no | Git commit author email for agent commits. When empty the wrapper's default identity applies. |
 
 #### Approval gates
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `maintainerLogins` | `[]string` | `[]` | Trusted human maintainer accounts. The **only** approval action the operator recognizes is a listed login applying `approvedLabel` (default `tatara-approved`) directly to the issue - the webhook verifies the label-event actor against this list before recording `Status.ApprovedByMaintainer`. A comment never approves, regardless of author. **Closed by default:** an empty list means no login is a maintainer, so nothing can ever be approved and no issue advances to `implement`. Overridable per-repository via `RepositorySpec.maintainerLogins`. |
+| `maintainerLogins` | `[]string` | `[]` | Trusted human maintainer accounts. The operator's **only** approval path is a maintainer's comment whose text matches `approvalPhrases` - see [Approval gates](../operations/security/approval-gates.md#the-approval-grammar) for the full grammar. **Closed by default:** an empty list means no login is a maintainer, so nothing can ever be approved and no issue advances out of `clarifying`. Overridable per-repository via `RepositorySpec.maintainerLogins`. |
 | `reporterLogins` | `[]string` | `[]` | Allowlist of accounts whose issues and issue comments the operator will act on. When non-empty, issues or comments from any account not in this list (and not a bot or maintainer) are silently dropped at intake. Prevents unknown third parties from driving the lifecycle via prompt injection. When empty, any author is accepted. Overridable per-repository via `RepositorySpec.reporterLogins`. |
+| `approvalPhrases` | `[]string` | `lgtm`, `approve`, `approved`, `ship it`, `go ahead`, `go`, `implement it` | The closed wordlist an approving maintainer comment must match. The match is **anchored whole-line**, not a substring: some line of the normalised comment body must consist of the phrase (`^\s*(<phrase>)[\s.!]*$`), not merely mention it - "I can't approve this until tests pass" does not match `approve`. Empty means the default list; it can **never** mean "any text approves". Max 20 entries, min length 2. |
 
 !!! warning "Prompt-injection defense"
     Set `reporterLogins` in any project exposed to untrusted contributors. Without it, anyone who can open an issue can drive agent behavior.
@@ -193,8 +197,9 @@ Binds the project to an SCM provider and configures the full set of operational 
 
 | Field | Type | Default | Enum | Description |
 |---|---|---|---|---|
-| `mergePolicy` | `string` | `afterApproval` | `afterApproval`, `autoMergeOnGreenCI` | Merge is performed by the operator-only [deploy supervisor](../workflows/deploy-supervisor.md) - never by an agent - once `review` has applied `tatara-approved` (from a separate pod that cannot approve its own diff) and required checks are green. No agent signals `pr_outcome=merge` in the live kind set. **`mergePolicy` itself has zero effect on this discrete `implement`/`review`/deploy-supervisor flow**: the merge gate (`superviseApprovedPRs`) checks `tatara-approved` + green CI + mergeable state directly and never consults `MergePolicy`. The field is read only by the legacy `issueLifecycle` drain's `handleMerge` path (in-flight pre-redesign Tasks); a new-model Project can leave it at either value with no behavioral difference. |
 | `prReactionScope` | `string` | *(empty)* | `labeledOrMentioned`, `all` | Controls which PRs/MRs trigger bot review. Empty (the default) is the historical open behavior: reviews every open human PR/MR. `labeledOrMentioned` restricts reviews to PRs carrying `triggerLabel` or @-mentioning the bot, so unlabeled/un-mentioned MRs are not re-reviewed every scan cycle. `all` is an explicit synonym for the empty/open default. The default is deliberately not `labeledOrMentioned`: a defaulted value would be indistinguishable from an explicit opt-in, silently gating every project. |
+
+Merging itself has no policy field to set: it is always an operator action, triggered only by an accepted `submit_outcome(verdict=approve)` from a review pod, and no tatara-opened PR ever carries an auto-merge setting. <!-- stale-ok: auto-merge --> See [Merge and deploy](../workflows/merge-and-deploy.md#the-merge-sequence) for the full sequence.
 
 !!! tip "Enable `labeledOrMentioned` to stop repeat re-reviews"
     Both live projects (`tatara`, `infrastructure`) set `prReactionScope: labeledOrMentioned` explicitly. Leaving it empty means every `mrScan` cycle re-reviews every open PR/MR regardless of prior review state.
@@ -204,8 +209,8 @@ Binds the project to an SCM provider and configures the full set of operational 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `guidance` | `string` | - | Free-form project charter text appended verbatim to the brainstorm goal context. Use to steer agent proposals toward project-specific priorities. |
-| `babysitDeadlineMinutes` | `int` | `60` | Minutes after task creation that the babysit controller starts checking for stuck tasks. |
-| `conversationIdleMinutes` | `int` | `60` | Minutes of inactivity after which the operator considers a conversation stale and triggers recovery. |
+
+Per-stage stall detection is no longer a Project-configurable minute count. Every stage runs a fixed budget from `status.stageEnteredAt` / `status.podStartedAt` / `status.stageWorkStartedAt` - see the [Task stage machine](task-stages.md) for the full table.
 
 #### Board integration
 
@@ -223,16 +228,14 @@ Configure `board` to enable project-board synchronization.
 
 All cron fields use standard 5-field cron syntax (`minute hour dom month dow`). An empty `schedule` disables that activity.
 
-### `scm.cron.mrScan`, `scm.cron.issueScan`, and `scm.cron.cdScan`
+### `scm.cron.mrScan` and `scm.cron.issueScan`
 
-All three activities share the `CronActivity` shape.
+Both activities share the `CronActivity` shape.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `schedule` | `string` | - | 5-field cron expression. Empty disables the activity. |
 | `maxPerRepo` | `int` | `1` | Maximum in-progress tasks of this type per repository (per-repo lane throttle). A repository whose lane is full is skipped until the in-flight task completes. |
-
-`cdScan` is the push-CD deploy-supervision backstop: it sweeps `Deploying` Tasks whose cascade has stalled past 1.5x the applicable deploy budget (`deployBudgetSeconds` / `deploySingleHopBudgetSeconds`) with no live watcher, and rerolls them - parks recoverable Tasks, re-implements orphans. It is a peer of `mrScan`/`issueScan`, project-scoped. Empty `schedule` disables it.
 
 ### `scm.cron.brainstorm`
 
@@ -249,28 +252,17 @@ Opt-in self-driven issue-proposal cycle. Disabled unless `enabled: true`.
 !!! note "One brainstorm per project per cycle"
     `maxPerCycle` is deprecated and ignored. The controller hard-caps brainstorm at one task per project per cycle.
 
-!!! note "`scm.cron.healthCheck` retired"
-    `healthCheck` had its own cron block (`scm.cron.healthCheck`); it is retired along with the
-    kind. The `HealthCheckActivity` cron is dropped. See the retirement note on
-    [the kind taxonomy](index.md#task-kinds-and-scoping).
+!!! note "`scm.cron.healthCheck` retired" <!-- stale-ok: healthCheck -->
+    The retired origin kind's own cron block (`scm.cron.healthCheck`) is dropped along with it; there is no independent health-check schedule any more. <!-- stale-ok: healthCheck --> `maxOpenProposals` and the `BrainstormActivity`/`HealthCheckActivity` shapes it is declared on both remain live in the API - only the cron trigger and the origin kind are gone. <!-- stale-ok: healthCheck -->
 
 ### `scm.cron.documentation`
 
-Schedule-driven documentation-repo updates. Replaces the previous push-webhook trigger
-(`maybeEnqueueDocumentation`, now removed) entirely - `documentation` only ever fires on this
-cron, never on a push event. This `CronActivity` has no `enabled` field of its own; the real
-on-switch is the top-level [`spec.documentation`](#documentationspec) block (`enabled` + `repo`).
-Both `spec.documentation.enabled` and a non-empty `schedule` here are required for the cron to
-fire.
+Schedule-driven. **One nightly batch Task per project**, covering everything delivered in the last 24 hours - not a per-delivery spawn, and not a "did anything meaningful change?" judgment call. This `CronActivity` has no `enabled` field of its own; the real on-switch is the top-level [`spec.documentation`](#documentationspec) block (`enabled` + `repo`). Both `spec.documentation.enabled` and a non-empty `schedule` here are required for the cron to fire.
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `schedule` | `string` | - | 5-field cron expression. Empty disables the activity. |
 | `maxPerRepo` | `int` | `1` | Maximum in-progress documentation tasks per repo (per-repo lane throttle). |
-
-On each tick the agent determines when docs were last updated and what changed since (a
-diff-since-last-run across the enrolled repos), and updates the docs repo only if the delta is
-non-trivial.
 
 ### `scm.cron.refine`
 
@@ -284,19 +276,19 @@ Pre-step that fires automatically before each scan and brainstorm cycle. No inde
 
 ## Label set
 
-The operator projects a set of SCM labels onto issues to communicate task phase. All labels are configurable; the table shows the defaults.
+The operator projects a set of SCM labels onto issues to communicate the platform's decision state. **Every label here is a write-only projection**: the operator writes it when the underlying `Issue.status.status` (or the parked/reaped state) changes, and no label is ever read to derive that status - the sole exception is the internal `tatara-parked` marker, which is read to decide re-mint *cost*, never *authority* (see [Ownership, GC, and admission](../architecture/ownership.md)).
 
 | Field (`scm.*`) | Default value | Semantics |
 |---|---|---|
-| `brainstormingLabel` | `tatara-brainstorming` | Issue is in triage or discussion (pre-approval). Applied by the triage agent. |
-| `approvedLabel` | `tatara-approved` | Issue is approved for implementation. Set only by a `maintainerLogins` member applying this exact label directly to the issue - the operator never applies it itself, and never treats a comment or a non-maintainer's/bot's label-apply as equivalent. |
-| `implementationLabel` | `tatara-implementation` | Implementation is in flight. Applied when the implement task starts. |
-| `declinedLabel` | `tatara-declined` | Issue was declined before implementation (triage reject). |
+| `brainstormingLabel` | `tatara-brainstorming` | Written while an issue is in `clarifying` (pre-approval triage/discussion). |
+| `approvedLabel` | `tatara-approved` | Written when `Issue.status.status` becomes `approved` - i.e. after the [approval grammar](../operations/security/approval-gates.md#the-approval-grammar) accepts a maintainer comment. Never itself read to grant approval. <!-- stale-ok: approvedLabel, tatara-approved --> |
+| `implementationLabel` | `tatara-implementation` | Written when the Task's running agent becomes `implement`. |
+| `declinedLabel` | `tatara-declined` | Written when `Issue.status.status` becomes `rejected`. |
 | `incidentLabel` | `tatara-incident` | Issue originated from an incident investigation. Applied additively alongside `brainstormingLabel`; never swept by the phase-label reconciler. |
 | `priorityLabel` | *(empty)* | Optional priority tag. When set, the operator applies it to high-priority tasks. |
 
-!!! warning "Deprecated label fields"
-    `approvalLabel`, `ideaLabel`, and `rejectedLabel` are deprecated aliases retained for migration tooling only. Do not set them in new projects; they have no effect on operator behavior.
+!!! note "Removed: `approvalLabel`, `ideaLabel`, `rejectedLabel`" <!-- stale-ok: approvalLabel, ideaLabel, rejectedLabel -->
+    These three fields are removed from the CRD outright - they configured the old label-applies-approval trigger, and approval is comment-text-only now (see [Approval gates](#approval-gates)). <!-- stale-ok: approvalLabel, ideaLabel, rejectedLabel -->
 
 ---
 
@@ -327,9 +319,9 @@ All timestamps are RFC 3339 and reflect the last time the corresponding activity
 | `lastIssueScan` | Issue scan |
 | `lastBrainstorm` | Brainstorm cycle |
 | `lastDocumentation` | Documentation cron cycle |
-| `lastCDScan` | Push-CD deploy-supervision backstop scan |
 | `lastRefine` | Refine pre-step |
-| `lastHealthCheck` | RETIRED - `healthCheck` no longer fires. Read-only, kept only for back-compat round-trip of stored Projects; no writer sets it any more. |
+| `lastCDScan` | RETIRED - there is no independent deploy-supervision backstop cron any more; every stage's stall detection is the fixed per-stage clock on the [Task stage machine](task-stages.md). Read-only, kept only for back-compat round-trip of stored Projects; no writer sets it any more. |
+| `lastHealthCheck` | RETIRED - `healthCheck` no longer fires. <!-- stale-ok: healthCheck --> Read-only, kept only for back-compat round-trip of stored Projects; no writer sets it any more. |
 
 ### TokenBudgetStatus
 
@@ -356,23 +348,25 @@ spec:
   # (1)!
   scmSecretRef: my-platform-scm-token
   triggerLabel: tatara
-  maxConcurrentTasks: 5
+  maxConcurrentAgents: 5
   # (10)!
-  deployBudgetSeconds: 3300
-  deploySingleHopBudgetSeconds: 2100
+  agentPodTTLSeconds: 3600
+  maxNewTasksPerSweep: 5
+  maxOpenTasks: 6
+  maxBundleBytes: 400000
 
   agent:
     # (2)!
     model: claude-opus-4-8
     permissionMode: bypassPermissions
-    maxTurnsPerTask: 60
     turnTimeoutSeconds: 1800
-    contextWindowTokens: 200000
-    handoverThresholdPercent: 25
-    maxLifecycleIterations: 10
     effort: high
     # (11)!
-    maxTaskTokens: 3000000
+    maxTurnsPerPod: 40
+    maxTurnsPerTask: 300
+    maxReviewRounds: 3
+    maxHumanReviewRounds: 5
+    maxPodRecreations: 3
     modelByKind:
       documentation: claude-sonnet-5
       refine: claude-sonnet-5
@@ -435,7 +429,11 @@ spec:
       - alice
       - bob
       - charlie
-    mergePolicy: afterApproval
+    # (13)!
+    approvalPhrases:
+      - lgtm
+      - approved
+      - ship it
     prReactionScope: labeledOrMentioned
     guidance: |
       This project runs the platform team's infrastructure repos.
@@ -453,10 +451,6 @@ spec:
       issueScan:
         schedule: "0 * * * *"
         maxPerRepo: 1
-      # (13)!
-      cdScan:
-        schedule: "*/30 * * * *"
-        maxPerRepo: 1
       brainstorm:
         enabled: true
         schedule: "0 9 * * 1"
@@ -467,7 +461,7 @@ spec:
           - memory
           - docs
       documentation:
-        schedule: "0 10 * * 1"
+        schedule: "0 2 * * *"
         maxPerRepo: 1
       refine:
         closedLookbackDays: 14
@@ -478,13 +472,13 @@ spec:
 3. Hooks run via `sh -c`. A non-zero exit is logged and counted but never aborts the session.
 4. Set `pgInstances: 3` for HA. A single instance is acceptable for non-critical projects but is vulnerable to crash-recovery wedges on CephFS-backed storage.
 5. Grafana integration provisions a `grafana-mcp` sidecar for incident-response tasks. The `secretRef` Secret must contain `serviceAccountToken` and `webhookSecret` keys.
-6. `capacity` overrides the `maxConcurrentTasks` default for queue admission. `alertCapacity` reserves dedicated slots so incident tasks are never starved by a backlog of normal tasks.
+6. `capacity` overrides the `maxConcurrentAgents` default for queue admission. `alertCapacity` reserves dedicated slots so incident tasks are never starved by a backlog of normal-priority work.
 7. `botLogin` must match the SCM account whose token is in `scmSecretRef`. Mismatches cause the operator to misidentify its own comments as human input.
-8. `maintainerLogins` + `reporterLogins` form the security perimeter. `maintainerLogins` is not optional hardening here - it is **required** for anything to ever be approved: empty means no login can ever satisfy the maintainer-approval check, so no issue advances to `implement`.
-9. MR scan every 15 minutes, issue scan hourly, brainstorm and documentation cron weekly on Monday morning.
-10. Deploy budgets bound how long a `Deploying`-phase Task can wait for its push-CD cascade to reach a `tatara-helmfile` apply before parking recoverable. `deployBudgetSeconds` covers the longest 2-hop path (e.g. cli -> wrapper -> helmfile); `deploySingleHopBudgetSeconds` is tighter for single-hop artifacts (operator, memory, ingester, chat).
-11. `maxTaskTokens` is a runaway backstop for the turn-uncapped `implement` kind, not a cost lever. `modelByKind`/`effortByKind` tier specific kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a SHA to avoid `main` drift.
+8. `maintainerLogins` + `reporterLogins` form the security perimeter. `maintainerLogins` is not optional hardening here - it is **required** for anything to ever be approved: empty means no login can ever satisfy the approval-grammar check, so no issue advances out of `clarifying`.
+9. MR scan every 15 minutes, issue scan hourly, brainstorm weekly on Monday morning, documentation nightly.
+10. `agentPodTTLSeconds` bounds one pod's life, not the Task. `maxNewTasksPerSweep` and `maxOpenTasks` are separate Task-minting budgets from the pod-concurrency budget (`maxConcurrentAgents`) above. `maxBundleBytes` is the hard byte cap on every rendered context bundle.
+11. `maxTurnsPerPod` bounds one pod run (the `implement` agent kind is exempt); `maxTurnsPerTask` is the lifetime backstop across every pod, all kinds included. `maxReviewRounds`/`maxHumanReviewRounds` bound the two distinct review re-entry cycles; `maxPodRecreations` bounds respawns within one stage. `modelByKind`/`effortByKind` tier specific **agent** kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a SHA to avoid `main` drift.
 12. `tokenBudget` is off unless this block is present with `enabled: true`. `customWindow` mode meters absolute tokens against `tokenLimit` inside the cron-anchored `resetSchedule`/`windowDuration` window; `claudeSubscription` mode gates on wrapper-reported Claude usage percentages instead (see [TokenBudgetSpec](#tokenbudgetspec)).
-13. `cdScan` is the push-CD deploy-supervision backstop: it sweeps stalled `Deploying` Tasks past 1.5x the deploy budget and rerolls them. Empty `schedule` disables it.
+13. `approvalPhrases` is the closed wordlist an approving maintainer comment must anchor-match. Omit to use the built-in default list.
 14. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `maxOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
-15. `documentation.enabled` + `documentation.repo` is the real on-switch and docs-target repo for the post-merge documentation agent; `scm.cron.documentation.schedule` (below) is a separate, also-required gate - the cron `CronActivity` has no `enabled` field of its own.
+15. `documentation.enabled` + `documentation.repo` is the real on-switch and docs-target repo for the nightly documentation agent; `scm.cron.documentation.schedule` (above) is a separate, also-required gate - the cron `CronActivity` has no `enabled` field of its own.

@@ -4,11 +4,18 @@ title: Agent Execution
 
 # Agent Execution
 
-Each Task in tatara runs as a dedicated Kubernetes Pod. The pod hosts a single
-Go service (`tatara-claude-code-wrapper`) that wraps one persistent, interactive
-`claude` process and exposes it to the operator as a turn-based HTTP API. This
-page describes the anatomy of that pod, how it boots, how turns flow through it,
-and how conversation state is preserved across pod restarts.
+Every pod-spawning stage of a `Task` runs a dedicated Kubernetes Pod named
+`<task-name>-<agent-kind>` (`status.agentKind`: `brainstorm`, `incident`, `clarify`,
+`refine`, `implement`, `review`, or `documentation`). The pod hosts a single Go
+service (`tatara-claude-code-wrapper`) that wraps one persistent, interactive
+`claude` process and exposes it to the operator as a turn-based HTTP API.
+
+**The Task persists; the pod does not.** A pod's life is bounded by a TTL
+(`Project.spec.agentPodTTLSeconds`), and when it stops - on TTL, on a
+`maxTurnsPerPod` cap, or on a crash - the Task simply gets a new pod for the same
+stage, continuing from `Task.status.notes`, not from a resumed conversation. This
+page describes the pod's anatomy, how it boots, how turns flow through it, and how
+that handoff-and-continuity mechanism works.
 
 ---
 
@@ -63,6 +70,25 @@ the pod and carries no authentication - it is the Stop hook's private channel.
 |------|-----------|---------|
 | `:8080` | pod ClusterIP | `/v1/*` public API (OIDC-gated) + `/healthz` `/readyz` `/metrics` |
 | `:8090` | `127.0.0.1` only | `POST /internal/turn-complete` (Stop hook target) |
+
+The operator is the only client of the public API. The full endpoint surface:
+
+| Method + path | Request | Response |
+|---|---|---|
+| `POST /v1/messages` | `{"text":"...","callbackUrl":"...","handoff":false}` | `202 {"turnId":"..."}`; `409` turn in flight; `410 Gone` past the pod's TTL deadline |
+| `GET /v1/messages/{turnID}` | - | `200 turn.Record` |
+| `GET /v1/messages` | - | `200 [turn.Summary]` |
+| `GET /v1/session` | - | `200` - the six existing fields, plus `contractVersion` |
+| `DELETE /v1/session` | - | `204` (the TTL stop path) |
+| `GET /v1/transcript` | - | `200` |
+
+`POST /v1/interject` is **deleted**, not merely deprecated - it was live in the
+pre-redesign wrapper. It let the operator inject text into a turn that was already
+running (`busy` state). It is gone because it raced the Stop hook and the transcript
+tailer: mid-turn PTY injection is exactly the kind of concurrent write into a live
+`claude` session the redesign forbids. There is no replacement mid-turn channel;
+guidance for the next turn goes in the next `POST /v1/messages`, or - past the pod's
+TTL - in the one `handoff:true` turn described below.
 
 ---
 
@@ -182,10 +208,15 @@ stateDiagram-v2
 
 ### Turn submission (ready -> busy)
 
-The operator calls `POST /v1/messages` with a `text` body and an optional
-`callbackUrl`. The wrapper's `session.Submit`:
+The operator calls `POST /v1/messages` with a `text` body, an optional
+`callbackUrl`, and a `handoff` bool. `handoff` matters only past the pod's TTL
+deadline `t0` (see [Pod TTL](#pod-ttl-the-stop-sequence) below): before `t0` it is
+treated as an ordinary turn, and past `t0` it admits exactly one further turn -
+the handoff-note turn - after which every further normal turn 410s. The wrapper's
+`session.Submit`:
 
-1. Verifies state is `ready`; returns `409` if busy, booting, or dead.
+1. Verifies state is `ready`; returns `409` if busy, booting, or dead. Past `t0`,
+   a non-handoff turn returns `410 Gone` instead.
 2. Creates a turn record with a unique ID (`turn-<base36 nanos>`) and state
    `running`.
 3. Writes the message into the PTY using bracketed paste:
@@ -242,105 +273,127 @@ If the Stop hook callback does not arrive within `TURN_TIMEOUT_SECONDS`
 (delivering the failure to `callbackUrl`), and the session returns to `ready`.
 The timer/complete race is guarded: the first to fire wins.
 
-!!! note "Interject during a running turn"
-    `POST /v1/interject {text}` injects additional text into a turn that is
-    already running (`busy` state). It is used by the operator to supply
-    mid-turn guidance. It returns `409` if no turn is in flight.
-
 ---
 
-## Conversation persistence
+## Pod TTL: the stop sequence
 
-By default, each pod starts with an empty claude context. When an S3 bucket is
-configured (`s3Bucket` Helm value and `s3SecretName` credentials), conversation
-transcripts are persisted and resumed across pod restarts so a follow-up agent
-turn continues the prior conversation.
+There is no session-resume mode: `--resume`, a stored session ID
+(`CONVERSATION_SESSION_ID`), a stored S3 transcript object key
+(`CONVERSATION_OBJECT_KEY`), and a fork-from-conversation key
+(`HANDOFF_KEY`) are all deleted. <!-- stale-ok: CONVERSATION_SESSION_ID, CONVERSATION_OBJECT_KEY, HANDOFF_KEY -->
+Every pod's turn-0 gets an identical context bundle, rendered fresh by the
+operator from current CR state (the Issue, the MergeRequest, comments, events,
+notes - escaped and XML-ish, delivered as the `text` of the first
+`POST /v1/messages`). The bundle **is** the continuation state; there is nothing
+else to resume.
 
-!!! note "Off by default"
-    The entire feature is gated on `S3_BUCKET` being set. With no bucket, the
-    wrapper behaves identically to the unmodified path: no upload, no restore.
-    Every S3 operation is best-effort - a failure logs and falls back to a fresh
-    session.
-
-### Transcript upload
-
-After each turn completes (before the operator callback), the wrapper uploads
-the current session transcript to `CONVERSATION_OBJECT_KEY` in the configured
-S3 bucket. The `SessionID` is included in the callback payload so the operator
-can record it on `Task.Status.SessionID`.
-
-### Resume vs. compaction
-
-The operator decides, at the start of each new pod for a given Task, whether to
-resume the full transcript or deliver a compacted handover:
-
-- **Full resume** (transcript replay): the operator downloads the transcript to
-  `~/.claude/projects/<cwd>/<sessionID>.jsonl` and launches claude with
-  `--resume <sessionID>`. The prior conversation is fully in context.
-- **Compacted handover**: when the transcript has grown past
-  `handoverThresholdPercent` (default 25%) of `contextWindowTokens`, replaying
-  the full transcript would crowd out space for the new work. Instead, the pod
-  receives the compacted handover text as the first message in an empty session.
-
-These two modes are mutually exclusive: a given pod either resumes or starts
-fresh from a handover. This ensures the context window never overflows.
-
-### Fork isolation for brainstorm siblings
-
-When a brainstorm Task generates multiple implementation proposals, each
-proposed issue gets its own independent `clarify` pod. Rather than starting cold, each
-sibling pod begins from the brainstorm conversation. The operator uses S3's
-copy-object API to fork the brainstorm transcript onto the sibling's own object
-key (`CONVERSATION_FORK_FROM_KEY`), and the wrapper resumes from that fork. This
-means brainstorm siblings diverge cleanly from the shared starting point without
-sharing a live session.
-
-### MR review pods
-
-Every MR - including human-authored MRs - spawns a dedicated review/test agent
-pod. The review pod sets `CHECKOUT_BRANCH` (the PR head) and does not set
-`TASK_BRANCH`, so it works on the PR code read-only and never pushes commits.
-
----
-
-## Context guard and handover
-
-For a Task whose kind spans multiple turns - `implement` in particular, iterating through
-multiple implement-test-fix cycles, and `clarify` during its live-polling window - context
-exhaustion is a risk. The operator implements a context guard to detect when the agent's
-context is filling and orchestrate a clean handover before it overflows.
-
-### Detection
-
-After each turn, the operator reads `lastTurnInputTokens` from the callback
-payload. After an iteration that ends with a CI failure routing back to
-Implement, the operator computes:
+A pod's own lifetime is bounded by a TTL, independent of the Task's stage
+deadline (see [Task Stages](../reference/task-stages.md#the-deadline-invariant)
+for the stage-level clocks). Both a wall-clock TTL and a per-pod turn cap
+(`maxTurnsPerPod`, default 40, the `implement` agent kind exempt) drive the same
+stop sequence, anchored at:
 
 ```
-pct = (lastTurnInputTokens * 100) / contextWindowTokens
+t0 = podStartedAt + agentPodTTLSeconds
 ```
 
-If `pct >= handoverThresholdPercent` (default 25%), the context guard trips.
+1. **Stop admitting normal turns.** Past `t0` the wrapper refuses any
+   `POST /v1/messages` with `handoff:false` with `410 Gone`. It still accepts
+   exactly one turn with `handoff:true`.
+2. **Wait for the in-flight turn.** A pod is mid-turn at TTL expiry essentially
+   always, and `POST /v1/messages` already 409s while a turn is running - so the
+   handoff turn cannot simply be submitted immediately. The operator waits for
+   the in-flight turn's callback, bounded by `turnTimeoutSeconds`.
+3. **Submit the one handoff turn:**
+   ```
+   POST /v1/messages {"text": "Your pod is being stopped. Call
+        task_note(kind=handoff) with everything the next pod needs, then
+        stop.", "callbackUrl": ..., "handoff": true}
+   ```
+   bounded by `turnTimeoutSeconds`.
+4. **Hard cap at `t0 + 2*turnTimeoutSeconds + 60s` grace.** On that cap, or on
+   any `410`/`409`/5xx from the handoff turn, the operator writes a synthetic
+   note in-process instead - `agent: "operator"`, `kind: "handoff"`,
+   summarizing the last turn's final text and which repos were pushed - and
+   force-deletes the pod (`DELETE /v1/session` is the same stop path when the
+   pod is still reachable).
 
-As a defense-in-depth backstop, `lifecycleIterations >= maxLifecycleIterations`
-(default 10) forces a terminal `Parked` state regardless of context level.
+`Task.status.notes` is therefore **never** empty after a TTL stop: either the
+agent wrote its own handoff note, or the operator wrote a synthetic one. The pod
+slot frees, `stats.podRecreations` increments if the stage did not change, and
+the Task's next pod for that stage picks up the journal at turn 0.
 
-### Handover procedure
+## Task continuity: the notes journal
 
-When the context guard trips:
+`Task.status.notes` is an append-only journal every pod reads at turn 0 - Go-side
+capped at 50 entries, oldest entries spilled to `tatara-memory` beyond that (see
+[Memory Architecture](memory-architecture.md#task-continuity-spill)) and readable
+back through the `task_context(notes=all)` MCP tool. It is the only thing that
+carries forward between pods of the same Task; there is no live session to
+reconnect to.
 
-1. **Handover turn**: the operator submits a final "write a handover document"
-   turn to the current agent. The `handoff` skill is baked into the wrapper
-   image. The agent calls `submit_handover(handover=...)`, which the operator
-   stores on `Task.Status.handover`.
-2. **Session reset**: the operator calls `DELETE /v1/session`, the pod exits,
-   and Kubernetes restarts it.
-3. **Resume from handover**: the next Implement turn for the fresh pod injects
-   `Status.handover` as the first message in the new session. The fresh agent
-   has the distilled context from its predecessor, not a cold start.
+One consequence: a brainstorm Task's proposals each become their own new
+`clarify` Task (one per proposal), each starting cold at its own turn 0 with its
+own context bundle - not a forked live conversation. Continuity for a sibling
+comes from what the operator renders into its bundle from the originating
+Issue/Task state, not from a shared session.
 
-This design means a long-running implementation task can span multiple pod
-lifetimes without losing the thread of what was accomplished and what remains.
+## Agent-pod environment contract
+
+The operator injects a fixed set of env vars into every agent pod. `TATARA_KIND`,
+`TATARA_TOOL_PROFILE`, and `TATARA_SKILL_PROFILE` all carry the **agent kind**
+(`status.agentKind`) - the pod that is running right now, not the Task's origin
+`spec.kind`. This is a deliberate, load-bearing change from the pre-redesign
+contract, where these carried the Task's origin kind.
+
+| env | value | change |
+|---|---|---|
+| `TATARA_TASK` | Task CR name | unchanged |
+| `TATARA_PROJECT` | Project CR name | unchanged |
+| `TATARA_KIND` | agent kind (`status.agentKind`) | changed semantics |
+| `TATARA_TOOL_PROFILE` | agent kind (7 values) | changed key |
+| `TATARA_SKILL_PROFILE` | agent kind (7 values) | changed key |
+| `TATARA_REPO` | Repository CR name; empty except on `documentation` Tasks | narrowed |
+| `TASK_BRANCH` | `task/<task-name>` | unchanged form |
+| `TATARA_OPERATOR_URL` / `TATARA_MEMORY_URL` | operator / memory service endpoints | unchanged |
+| `AGENT_POD_TTL_SECONDS` | `Project.spec.agentPodTTLSeconds` | new |
+| `TATARA_CONTRACT_VERSION` | `2` | new |
+
+!!! warning "The tool-profile rekey is a day-one fleet wedge if missed"
+    Both the operator's and `tatara-cli`'s `kindProfiles` maps are keyed on the
+    agent kind now, not the old Task-origin kind. The map fails **closed** on an
+    unknown key: a pod whose kind is absent from the map gets only the always-on
+    tool set and no `submit_outcome` registered. A `clarify` pod mapped under its
+    old key, for example, would wedge on day one with no terminal tool at all.
+
+Two env vars are removed outright, not merely deprecated: `TATARA_CHAT_URL` (the chat service is archived/decommissioned; the inter-agent chat room that used to exist is gone, and continuity is the notes journal above, not a chat room) and the whole resume-mode triplet `HANDOFF_KEY` / `CONVERSATION_SESSION_ID` / `CONVERSATION_OBJECT_KEY`. <!-- stale-ok: TATARA_CHAT_URL, tatara-chat, chat room, HANDOFF_KEY, CONVERSATION_SESSION_ID, CONVERSATION_OBJECT_KEY -->
+
+## The contract-version handshake
+
+The wrapper image and the operator image ship in **different** Helm releases
+(`tatara-claude-code-wrapper` vs `tatara-operator`), applied concurrently by
+`tatara-helmfile`. A moment where a new operator pairs with an old agent image -
+old `tatara-cli`, no `submit_outcome`, every new endpoint 404ing - is therefore
+reachable, and would otherwise silently burn a pod's entire turn budget producing
+nothing, repeated across every Task in flight. Three defenses, all mandatory:
+
+1. The operator injects `TATARA_CONTRACT_VERSION=2` into every agent pod (above).
+2. `tatara-cli`'s MCP server refuses to start if `TATARA_CONTRACT_VERSION` is set
+   and does not match its own compiled contract version - a fatal exit. An
+   *unset* value (a workstation, a test) is allowed through, which then simply
+   has no MCP server at all - loud, not silent.
+3. The operator reads `GET /v1/session`'s `contractVersion` field at pod-ready
+   and asserts it **before** submitting turn-0. On a mismatch, or on a response
+   with no `contractVersion` field at all (an old wrapper):
+
+   ```
+   Task.status.stage       = failed
+   Task.status.stageReason = agent-contract-mismatch
+   metric:                   operator_agent_contract_mismatch_total{expected,got,image}
+   ```
+
+   The Task fails instantly, before a single turn is submitted - zero tokens
+   burned. Any nonzero rate of this metric is a critical alert.
 
 ---
 

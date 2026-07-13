@@ -4,22 +4,22 @@ title: tatara-operator
 
 # tatara-operator
 
-The central component of the tatara platform. A controller-runtime Kubernetes operator that reconciles the platform CRDs, drives the agentic development lifecycle, receives SCM and Grafana webhooks, provisions per-project memory stacks, gates spend, supervises deploys, and enforces the security model.
+The central component of the tatara platform. A controller-runtime Kubernetes operator that reconciles the platform CRDs, drives every Task through its 15-stage lifecycle, receives SCM and Grafana webhooks, provisions per-project memory stacks, gates agent-pod concurrency, walks the post-review merge sequence, and enforces the security model.
 
 **Repository:** [`github.com/szymonrychu/tatara-operator`](https://github.com/szymonrychu/tatara-operator)
 
 ## What it does
 
-- Reconciles four CRDs with a controller-runtime manager: `Project`, `Repository`, `Task`, and `QueuedEvent`. A fifth CRD, `Subtask`, is a data-only object written and read over the REST API (the agent self-planning ledger); it has no reconciler. `WorkItem` is **not** a CRD - it is a plain Go struct that backs the `Task.Status.WorkItems` project-level work-item ledger.
-- Receives HMAC-verified GitHub and GitLab webhooks and bearer-verified Grafana alert webhooks on a shared HTTP listener
-- Provisions per-project memory stacks (CNPG Postgres + Neo4j + LightRAG + tatara-memory service)
-- Schedules repo-ingest jobs (`tatara-memory-repo-ingester`) on push and on cron
-- Admits queued work against per-project concurrency and token-budget gates, then spawns `tatara-claude-code-wrapper` pods for agent turns
-- Drives the turn loop: submits prompts, receives callbacks, transitions task states
-- Writes results back to the SCM: opens PRs, posts comments, applies labels, merges on approval
-- Supervises the post-merge push-CD cascade to a `tatara-helmfile` apply
-- Reaps orphaned pods and GCs terminal Tasks and stale conversation transcripts
-- Exposes an OIDC-gated REST API (used by tatara-cli and agent pods)
+- Reconciles **six** CRDs, all `tatara.dev/v1alpha1`, namespaced: `Project`, `Repository`, `Task`, `QueuedEvent`, `Issue` (short name `iss`), `MergeRequest` (short name `mr`). `Subtask` is deleted. `WorkItem` was never a CRD - it was an embedded Go slice on `Task.Status` - and it is gone entirely along with the field. <!-- stale-ok: Subtask, WorkItem -->
+- Receives HMAC-verified GitHub and GitLab webhooks and bearer-verified Grafana alert webhooks on a shared HTTP listener.
+- Provisions per-project memory stacks (CNPG Postgres + Neo4j + LightRAG + tatara-memory service).
+- Schedules repo-ingest jobs (`tatara-memory-repo-ingester`) on push and on cron.
+- Admits queued work against per-project agent-pod concurrency (`maxConcurrentAgents`), then spawns `tatara-claude-code-wrapper` pods for agent turns.
+- Drives the Task stage machine end to end: `triaging` classifies the origin and mints `Issue` CRs, a kind-specific agent stage runs a pod, `approved` gates admission, `implementing` -> `reviewing` -> `merging` -> `deploying` -> `delivered`, with a nightly batch `documenting` stage.
+- Writes results back to the SCM through a mirror-first REST layer: opens MRs, posts comments, posts review verdicts as `COMMENT`-type reviews (never a forge-native approve), and merges directly once a review approves and CI is green.
+- Walks the sequential per-repo merge order (`spec.mergeOrder`) after review, re-verifying the live head SHA and CI status immediately before each merge.
+- Reaps orphaned agent pods and GCs terminal Tasks and stale-labelled Issues/MergeRequests per a fixed retention table.
+- Exposes an OIDC-gated REST API (used by tatara-cli and agent pods).
 
 ## Listener ports
 
@@ -36,12 +36,11 @@ The manager binds four separate addresses. Only the public HTTP listener is rout
 
 ```
 cmd/manager/                       # controller-runtime entrypoint + wiring
-api/v1alpha1/                      # CRD types: Project/Repository/Task/QueuedEvent/Subtask (+ WorkItem struct)
-internal/controller/               # reconcilers + turn loop + writeback + queue dispatcher + reaper
+api/v1alpha1/                      # CRD types: Project/Repository/Task/QueuedEvent/Issue/MergeRequest
+internal/controller/               # the sweep, admission dispatcher, stage machine, merge walker, reaper
 internal/agent/                    # agent Pod/Service builder + turn session/callback
 internal/ingest/                   # repo-ingest Job builder
 internal/memory/                   # per-project memory stack builders
-internal/budget/                   # token-budget admission gate
 internal/scm/                      # GitHub/GitLab clients + provider registry
 internal/restapi/                  # OIDC-gated CRUD REST API
 internal/webhook/                  # HMAC-verified SCM + bearer-verified Grafana webhook server
@@ -51,98 +50,77 @@ internal/obs/                      # JSON slog + Prometheus metrics
 charts/tatara-operator/            # cluster-agnostic Helm chart + CRDs
 ```
 
-## Reconciliation model
+## The Task stage machine
 
-Each controller reconciles its resource type independently. The most complex is the **Task reconciler**, which drives every kind's own `Status.Phase` machine and, for a Task whose PR clears review, a separate operator-only deploy-supervision machine (Go field `Status.DeployState`, JSON/CRD key `lifecycleState`) that takes over after merge (see [Phase vs. lifecycleState](#phase-vs-lifecyclestate) below).
+Every `Task` carries `status.stage`, one of 15 values: `triaging`, `brainstorming`, `clarifying`, `investigating`, `refining`, `approved`, `implementing`, `reviewing`, `merging`, `deploying`, `delivered`, `documenting`, `rejected`, `failed`, `parked`. Only the operator writes `status.stage` - an agent never does. A transition outside the fixed table is rejected and counted (`operator_illegal_stage_transition_total`).
 
-Admission happens first, on the `QueuedEvent`:
+`Task.spec.kind` is the **origin**, immutable, one of `brainstorm`, `incident`, `clarify`, `refine`, `review`, `documentation`. `Task.status.agentKind` is the **currently running agent**, one of those six plus `implement` - `implement` exists only as an agent kind, never as a Task origin. Most pod-spawning stages map 1:1 to an agent kind and a pod named `<task-name>-<agent-kind>` (e.g. `<task>-implement`, `<task>-review`); `triaging`, `approved`, `merging`, and `deploying` run no pod at all - they are pure operator logic.
+
+For full details on the transition table, the three-clock deadline model (admission / readiness / work), and the per-stage retention windows, see [Architecture: the stage machine](../architecture/ownership.md) and [Approval gates](../operations/security/approval-gates.md#the-approval-grammar).
+
+Admission is a separate concern from the stage machine: a producer stashes a `QueuedEvent` (class `normal` or `alert`), and the dispatcher admits it against the project's agent-pod pool before any pod is spawned.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Queued: QueuedEvent created
-    Queued --> Admitted: pool slot free + budget gates pass
-    Admitted --> [*]: Task created
+    Queued --> Admitted: pod slot free
+    Admitted --> [*]: pod spawned for the current stage
 ```
-
-Every task kind (`brainstorm`, `incident`, `clarify`, `implement`, `review`, `documentation`, `refine`) then runs a pod-backed `Status.Phase` machine:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Planning
-    Planning --> Running
-    Running --> Succeeded
-    Running --> Failed
-    Running --> Deploying: implement PR merged
-    Deploying --> Succeeded: helmfile applied
-    Deploying --> Failed: deploy-timeout (parks recoverable)
-```
-
-Retired kinds (`selfImprove`, `triageIssue`, `healthCheck`, `issueLifecycle`) remain valid `Task.Spec.Kind` enum values so pre-existing stored Tasks can still be read, but no production code path creates a new Task of any of these kinds any more: `triageIssue` and the front half of `issueLifecycle` were absorbed into `clarify`, `healthCheck` was absorbed into `brainstorm`, and the back half of `issueLifecycle` (`Merge`/`MainCI`/`Deploying`) survives as the operator-only deploy supervisor described below - not an agent kind.
-
-## Phase vs. lifecycleState
-
-Every Task carries a generic `Status.Phase` (`Planning`, `Running`, `Succeeded`, `Failed`,
-`Deploying`) tracking the current pod's run - or, for `Deploying`, the pod-less deploy
-supervisor's run. Once a Task's PR has been review-approved, auto-merged, and main CI has gone
-green, the operator additionally starts populating the deploy-supervision status field - a
-10-value enum: `Triage`, `Conversation`, `Implement`, `MRCI`, `Merge`, `MainCI`, `Deploying`,
-`Done`, `Stopped`, `Parked` (the front four are legacy-drain-only, stamped only by in-flight
-pre-redesign `issueLifecycle` Tasks) - as the deploy supervisor takes over: `Phase` and this
-field both read `Deploying` at that point, in parallel, and neither alone is terminal.
-
-!!! note "Wire key vs. Go name"
-    The Go struct field is `DeployState` (`api/v1alpha1/task_types.go`), but its JSON/CRD key is
-    unchanged: `lifecycleState`. `kubectl get task -o jsonpath='{.status.lifecycleState}'` and any
-    Grafana panel or automation reading this field must use `lifecycleState`, not `deployState` -
-    the Go name is controller-internal only and never appears on the wire.
-
-Most kinds (`clarify`/`implement`/`review`/`brainstorm`/`incident`/`refine`) never populate this
-field at all - only a Task whose PR gets review-approved enters deploy supervision, and even
-then it is the operator, not an agent kind, driving it.
-
-A Task is terminal when `Phase` is `Succeeded`/`Failed`, or once deploy supervision has begun,
-when `lifecycleState` is `Done`/`Stopped`/`Parked`. The `TaskTerminal` helper is the source of
-truth; controller code and any external audit must use it rather than testing `Phase` alone.
 
 ## Queue admission and concurrency
 
-Agent work is not spawned directly from a webhook. Producers stash a `QueuedEvent` (class `normal` or `alert`) and an in-operator dispatcher admits events against per-project pool capacity, so a burst of issues cannot fan out into unbounded concurrent agent pods.
+Agent work is not spawned directly from a webhook. Producers stash a `QueuedEvent` and an in-operator dispatcher admits events against per-project pod-slot capacity, so a burst of issues cannot fan out into unbounded concurrent agent pods.
 
 | Pool | Class | Capacity source | Default |
 |---|---|---|---|
-| Normal | `normal` | `spec.queue.capacity`, else `spec.maxConcurrentTasks`, else 3 | 3 |
+| Normal | `normal` | `spec.queue.capacity`, else `spec.maxConcurrentAgents`, else 3 | 3 |
 | Alert | `alert` | `spec.queue.alertCapacity` | 1 |
 
-Over-capacity events wait in `Queued` and are admitted when a slot frees; the alert pool has reserved slots so an incident is never starved by a backlog of normal work.
+Over-capacity events wait in `Queued` and are admitted when a pod slot frees; the alert pool has reserved slots so an incident is never starved by a backlog of normal work.
 
-!!! warning "`maxConcurrentTasks: 0` fully pauses a Project"
-    A zero value (the field's zero value, whether unset or set to `0`) is a hard pause: the dispatcher admits **no** work of either class, so no agent pod, brainstorm, or incident Task is created while the Project sits at `0`. A positive value sets normal-pool concurrency. This is the operational kill switch for a runaway or a maintenance window.
+!!! warning "`maxConcurrentAgents: 0` fully pauses a Project"
+    A zero value is a hard pause: the dispatcher admits **no** work of either class, so no agent pod - and therefore no Task-minting sweep pass either - runs while the Project sits at `0`. There is no `Minimum=1`; `0` is a first-class, intentional value. This is the operational kill switch for a runaway or a maintenance window.
 
-## Token conservation and budget gates
+Two further caps bound the mint side, independent of the concurrency gate:
 
-The operator has three independent spend controls, from coarsest to finest:
+| Setting | Default | Bounds |
+|---|---|---|
+| `maxOpenTasks` | 6 | ACTIVE Tasks (every stage that is pod-eligible - not parked/delivered/rejected/failed). A creation budget, not the same lever as `maxConcurrentAgents`. Parked `backlog-sweep` Tasks do not count: they hold ownership of an Issue, not work. |
+| `maxNewTasksPerSweep` | 5 | Tasks ONE sweep pass may mint. |
 
-1. **Concurrency cap** - `spec.maxConcurrentTasks` (above). Bounds how many agent pods can run at once.
-2. **Per-Task token ceiling** - `spec.agent.maxTaskTokens`. A cumulative output-token ceiling per Task; when a Task crosses it the operator terminates the pod and marks the Task failed with reason `TokenBudgetExceeded`. This is the runaway backstop, independent of the admission gate.
-3. **Per-Project token-budget admission gate** - `spec.tokenBudget` plus operator env. When enabled, the dispatcher pauses admission before spawning new work once the Project crosses a usage threshold within a window. Two thresholds: `proactivePercent` pauses the normal pool (brainstorm/implement/review/...), `emergencyPercent` pauses the alert pool (incidents) so incidents keep running longer than routine work.
+`agentPodTTLSeconds` (default 3600, minimum 300) bounds one pod's life, not the Task: a Task persists across as many pods as it takes, each one picking up continuity from `Task.status.notes`. `maxBundleBytes` (default 400000, roughly 100k tokens) is the hard byte budget for a rendered context bundle; the oldest comments elide first, behind an explicit marker.
 
-The gate has two modes, selected by the `TOKEN_BUDGET_MODE` operator env (default `customWindow`):
+## Turn and pod-recreation budgets
 
-| Mode | Meters against |
-|---|---|
-| `customWindow` | The operator's own per-turn token accounting, reset on `TOKEN_BUDGET_RESET_SCHEDULE` (cron) |
-| `claudeSubscription` | The Claude Code 5-hour and weekly usage windows |
+Token-metered spend gates (`maxTaskTokens`, the `tokenBudget` admission mode) are gone. <!-- stale-ok: maxTaskTokens --> The backstops that replace them are turn- and pod-count based, on `Project.spec.agent`:
 
-!!! note "What is actually enforced today"
-    The per-Task `maxTaskTokens` ceiling and the concurrency cap are the always-on controls. The `tokenBudget` admission gate is present and functional but ships inert unless a `spec.tokenBudget` block and a token limit are configured; it is off across the reference fleet at the time of writing. See [operations/tuning.md](../operations/tuning.md) for the current fleet posture and the honest scope of what is deployed.
+| Setting | Default | Scope |
+|---|---|---|
+| `maxTurnsPerPod` | 40 | Caps one pod run. The `implement` agent kind is **exempt** - a long healthy coding run is not cut off. |
+| `maxTurnsPerTask` | 300 | Lifetime cap across every pod of a Task, all kinds included. This is what actually bounds the `implement` exemption. |
+| `maxReviewRounds` | 3 | The `reviewing <-> implementing` cycle. |
+| `maxPodRecreations` | 3 | Respawns of a never-Ready pod within the current stage before the Task fails. |
 
-## Deploy supervision (push-CD)
+## The review post and the merge
 
-An `implement` Task does not go terminal when its PR merges. It enters `Deploying` and the operator drives the post-merge push-CD cascade: it tracks the artifact through `CascadeStage` (`tagged` -> `parent-pr-open` -> `parent-merged` -> `helmfile-applied`) toward a terminal `tatara-helmfile` apply, then resolves the Task's `lifecycleState` (Go field `DeployState`) to `Done` and closes the originating issue. A wall-clock deadline of `now + spec.deployBudgetSeconds` (with a `spec.deploySingleHopBudgetSeconds` per-artifact override) bounds the wait; on exceed the Task parks recoverable with reason `deploy-timeout`. This is how a merged change is followed all the way to running in the cluster rather than being assumed deployed at merge.
+There is exactly **one** bot identity on the platform, and GitHub/GitLab both reject an `APPROVE` or `REQUEST_CHANGES` review from the same identity that opened the PR (422). So the operator never attempts either: it posts a `COMMENT`-type review carrying the verdict text, and the actual approval of record is the merge itself. Auto-merge is never armed on any tatara-opened PR. <!-- stale-ok: auto-merge -->
+
+```
+verdict=approve          -> operator posts a COMMENT review, then MERGES directly
+verdict=request_changes  -> operator posts a COMMENT review with inline findings,
+                             Task returns to implementing
+```
+
+A `review`-kind Task - a human's own PR under review - can never reach `merging` by any path: it parks at `awaiting-human` instead, bounded by `maxHumanReviewRounds` (5), and only a human's next comment un-parks it. Merging is exclusively an operator action; no MCP tool exposes it to an agent.
+
+Once a Task's review approves, the operator walks `spec.mergeOrder` sequentially: for each repo it re-reads the live head SHA (never the mirror), confirms CI is green, and merges. If the live head moved since the reviewed SHA, the Task returns to `reviewing` rather than merging a stale review. See [Merge and deploy](../workflows/merge-and-deploy.md#the-merge-sequence) for the full walker.
+
+!!! danger "Accepted risk: the merge gate is operator logic, not a forge-enforced control"
+    Because the platform has one bot identity, branch protection cannot require an approving review - nothing could ever satisfy it, so enabling it would deadlock every merge. Defense-in-depth is instead: no-direct-push branch protection on every repo, a scoped GitHub App installation token (not an org-wide PAT), and `gh`/`glab`/direct-to-forge-API `curl` on the agent pod's deny-list. A pod holding a merge-capable token could still bypass the gate by calling the merge endpoint directly; this is detected, not prevented, by `operator_unexpected_merge_total`. See [Approval gates](../operations/security/approval-gates.md).
 
 ## Reaper and GC
 
-A background sweep keeps state bounded: it reaps orphaned agent pods (pods whose owning Task is gone or terminal, after a grace period), GCs terminal Tasks, and GCs stale conversation transcripts. Each path is metered (`operator_orphan_reaped_total`, `operator_tasks_gc_total`, `operator_conversation_gc_total`) so leaks are visible.
+A background sweep keeps state bounded. Every terminal stage ages out on a fixed clock: `parked` (except `backlog-sweep`, which is exempt - it owns an Issue at zero agent cost and is reaped only when that Issue closes) after 7 days, `failed` after 7 days, `rejected` after 24 hours, `delivered` after 48 hours (and only once the nightly documentation batch has covered it, or it provably has nothing to document). The reaper also GCs orphaned agent pods (pods whose owning Task is gone or terminal, after a grace period). Each path is metered so leaks are visible - see [Metrics](#metrics).
 
 ## Leader election and metrics
 
@@ -166,32 +144,36 @@ Operator configuration is env scalars. The webhook signing secrets are **not** o
 |---|---|
 | `OIDC_ISSUER` | Keycloak issuer URL |
 | `OIDC_AUDIENCE` | Expected audience in bearer tokens from agent pods |
-| `S3_BUCKET` | Conversation persistence bucket (empty disables the feature; off by default) |
-| `TOKEN_BUDGET_MODE` | `customWindow` (default) or `claudeSubscription` |
-| `TOKEN_BUDGET_RESET_SCHEDULE` | Cron for the `customWindow` reset |
 | `LOG_LEVEL` | `debug`/`info`/`warn`/`error` |
 
 !!! note "Webhook secrets are per-Project, not operator env"
     There is no global `WEBHOOK_SECRET` or `GRAFANA_WEBHOOK_SECRET`. The SCM HMAC secret is read from the Secret named by `Project.spec.scmSecretRef` (key `webhookSecret`); the Grafana alert-webhook bearer secret is read from `Project.spec.grafana.secretRef` (key `webhookSecret`). Each Project supplies its own.
 
+!!! note "The contract-version handshake"
+    Every agent pod is injected with `TATARA_CONTRACT_VERSION=2`. Before submitting a pod's first turn, the operator reads `GET /v1/session` from the wrapper and asserts the reported `contractVersion` matches. On mismatch (or a missing field, meaning an old wrapper), the Task fails instantly with `stageReason=agent-contract-mismatch`, before a single turn is submitted - see [tatara-claude-code-wrapper](claude-code-wrapper.md#contract-version-handshake).
+
 ## Metrics
 
-The operator exposes roughly sixty Prometheus series on `:9090/metrics`. A representative subset:
+The operator exposes Prometheus series on `:9090/metrics`. A representative subset - see [Observability](observability.md) for the alerting-relevant set in full:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `operator_reconcile_total` | counter | controller, result | Reconcile counts by controller and result |
-| `operator_task_turns_total` | counter | project, repo, kind, issue | Agent turns completed |
-| `operator_task_tokens_total` | counter | project, repo, kind, issue, model, type | Agent token usage (input/output/cache) |
-| `operator_task_terminal_total` | counter | kind, phase, reason | Tasks reaching a terminal phase |
+| `operator_task_stage` | gauge | stage, kind | Current Task count per stage and kind - replaces every prior phase/lifecycle series |
+| `operator_task_stage_age_seconds` | gauge | task, stage, kind | Time in the current stage, observable against the F.4 deadline table |
+| `operator_illegal_stage_transition_total` | counter | from, to | A transition outside the fixed table was attempted - any nonzero value is a code bug |
+| `operator_task_parked_total` | counter | stage, stageReason | Which parks actually happen |
+| `operator_agent_pod_ttl_expired_total` | counter | agent_kind, outcome | `outcome` = `agent_handoff`\|`synthetic_handoff`\|`force_deleted` |
+| `operator_agent_contract_mismatch_total` | counter | expected, got, image | The contract-version handshake failed - any nonzero value is critical |
+| `operator_merge_cursor_stalled_seconds` | gauge | task, repo | A sequential merge that stopped advancing |
+| `operator_unexpected_merge_total` | counter | repo | An MR found merged with no `mergeCursor` advance - the accepted-risk detector |
+| `operator_sweep_last_success_timestamp_seconds` | gauge | activity | Heartbeat - alerts must set `noDataState: Alerting` on it |
+| `operator_scm_ratelimited_total` | counter | provider, path, limit_type | SCM egress rate-limit hits |
+| `operator_object_too_large_total` | counter | kind, name | The etcd object byte-budget guard could not evict enough - critical |
 | `operator_queue_depth` | gauge | project, class | Queued (not-yet-admitted) events per pool |
 | `operator_queue_inflight` | gauge | project, class | Admitted in-flight events per pool |
-| `operator_admission_blocked_total` | counter | project, class, reason | Events the gate declined to admit (`token_budget`, `project_paused`) |
-| `operator_token_budget_used_ratio` | gauge | project, scope | Budget usage vs the window limit |
 | `operator_webhook_events_total` | counter | provider, kind, action, result | Webhook events |
 | `operator_ingest_job_total` | counter | result, mode | Finished ingest Jobs by result and mode |
-| `operator_scm_writes_total` | counter | - | SCM writeback operations |
-| `operator_turn_timeout_total` | counter | - | Turns aborted on inactivity timeout |
 | `operator_orphan_reaped_total` | counter | - | Orphaned pods reaped |
-| `operator_review_outcome_total` | counter | project, repo, model, verdict | Review verdicts, keyed by review model |
-| `operator_implement_ci_total` | counter | - | Implement-PR CI outcomes (quality feedback) |
+
+See [Observability](observability.md) for the complete metric and alert catalogue.

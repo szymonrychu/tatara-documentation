@@ -26,7 +26,7 @@ Fork the `tatara-helmfile` repository into your organization and treat it as a p
 
 ```
 tatara-helmfile/
-  helmfile.yaml.gotmpl          # single 'default' env; 4 releases
+  helmfile.yaml.gotmpl          # single 'default' env; 3 releases
   .hook.sh                      # presync hook: applies raw/*.pre.yaml,
                                 #   sops-decrypts *.pre.secrets.yaml
   values/
@@ -42,21 +42,21 @@ tatara-helmfile/
       common.yaml               # Project + Repository CR values (tatara-project chart)
     project-infrastructure/
       common.yaml               # second Project's CR values
-    tatara-chat/
-      default.yaml              # ingress host + path for the chat UI
   .github/workflows/
     diff.yaml                   # PR trigger: helmfile diff -> sticky comment
     apply.yaml                  # push to main trigger: helmfile apply
 ```
 
-The four Helm releases are:
+The three Helm releases are:
 
 | Release | Chart | Namespace |
 |---|---|---|
-| `tatara-chat` | `oci://<registry>/charts/tatara-chat` | `tatara` |
 | `tatara-operator` | `oci://<registry>/charts/tatara-operator` | `tatara` |
 | `project-tatara` | `oci://<registry>/charts/tatara-project` | `tatara` |
 | `project-infrastructure` | `oci://<registry>/charts/tatara-project` | `tatara` |
+
+!!! note "No chat release"
+    The bucket previously carried a fourth release, the chat UI. That component is retired as part of the cutover to the task-centric platform; `Task.status.notes` carries what its rooms used to.
 
 The `project-*` releases declare `needs: tatara/tatara-operator` in `helmfile.yaml.gotmpl`, which forces the operator - and therefore its CRDs - to apply before any Project or Repository CR is rendered.
 
@@ -68,14 +68,14 @@ The operator requires several credential groups before it can start reconciling.
 
 ### OIDC clients
 
-Five Keycloak clients are needed for the full platform. See [Identity & OIDC](../architecture/identity-and-oidc.md#clients-and-audiences) for the authoritative client inventory. This section covers the two credential groups the **operator chart** renders directly:
+Four Keycloak clients are needed for the full platform. See [Identity & OIDC](../architecture/identity-and-oidc.md#clients-and-audiences) for the authoritative client inventory. This section covers the two credential groups the **operator chart** renders directly:
 
 | Client | Flow | Purpose |
 |---|---|---|
 | `tatara-operator` | Client credentials | Operator authenticates outbound API calls to the SCM and to the wrapper REST API |
 | `tatara-cli` | Device authorization (public) | CLI OIDC token forwarded by wrapper pods to the operator's MCP server |
 
-The chart renders the CLI OIDC credentials into a Secret named by `cliOidcSecretName` (keys `client-id`, `client-secret`) and the operator OIDC client secret into a separate Secret (key `OPERATOR_OIDC_CLIENT_SECRET`). Supply these values through `default.secrets.yaml` (SOPS-encrypted). The remaining three clients (`tatara-memory`, `tatara-claude-code-wrapper`, `tatara-chat`) are used by their respective component charts.
+The chart renders the CLI OIDC credentials into a Secret named by `cliOidcSecretName` (keys `client-id`, `client-secret`) and the operator OIDC client secret into a separate Secret (key `OPERATOR_OIDC_CLIENT_SECRET`). Supply these values through `default.secrets.yaml` (SOPS-encrypted). The remaining two clients (`tatara-memory`, `tatara-claude-code-wrapper`) are used by their respective component charts.
 
 ### SCM secret
 
@@ -194,7 +194,7 @@ openaiSecretName: "lightrag-openai"
 
 ### Image pins
 
-Tatara-built images are pinned by semver (`vX.Y.Z`); third-party images pin their own upstream tags or digests. The operator stamps these into the native objects it provisions per Project. Under semver push-CD (section 6) these pins are normally moved forward by the release pipeline, not hand-edited.
+Tatara-built images are pinned by semver (`vX.Y.Z`); third-party images pin their own upstream tags or digests. The operator stamps these into the native objects it provisions per Project. Under semver push-CD (section 6) these pins are normally advanced by a pipeline-opened PR against `tatara-helmfile`, not hand-edited.
 
 ```yaml
 # Operator manager image tag (in values/tatara-operator/common.yaml)
@@ -282,7 +282,6 @@ s3ConversationRetentionHours: 72
 Helmfile applies releases in the order they appear in `helmfile.yaml.gotmpl`, subject to `needs:` declarations:
 
 ```
-tatara-chat          (no dependencies; can be deployed independently)
 tatara-operator      (installs CRDs via templates/crds.yaml)
 project-tatara       (needs: tatara/tatara-operator)
 project-infrastructure (needs: tatara/tatara-operator)
@@ -295,13 +294,16 @@ The `project-*` releases render Project and Repository custom resources via the 
 
     ```sh
     for crd in projects.tatara.dev repositories.tatara.dev tasks.tatara.dev \
-                subtasks.tatara.dev queuedevents.tatara.dev workitems.tatara.dev; do
+                queuedevents.tatara.dev issues.tatara.dev mergerequests.tatara.dev; do
       kubectl label crd "$crd" app.kubernetes.io/managed-by=Helm
       kubectl annotate crd "$crd" \
         meta.helm.sh/release-name=tatara-operator \
         meta.helm.sh/release-namespace=tatara
     done
     ```
+
+!!! warning "The CRDs carry `helm.sh/resource-policy: keep`"
+    `charts/tatara-operator/templates/crds.yaml` annotates every CRD with `helm.sh/resource-policy: keep`. A `helm uninstall` or a `helmfile apply` that prunes the release will **not** remove them, and a `helm rollback` will **not** revert them. Removing a CRD is an explicit `kubectl delete crd <name>` and it cascades to every CR of that kind.
 
 ---
 
@@ -366,8 +368,9 @@ Deploys are semver, pipeline-driven, and largely hands-off. You almost never han
 ### How a release ships
 
 Every merged PR declares its significance: a human sets a `semver:<level>` label (`major` /
-`minor` / `patch`) on the PR; bot-authored PRs carry a `change_significance` on their change
-summary that maps to the same label. On merge to the component's `main`, the release pipeline:
+`minor` / `patch`) on the PR, or the implementer sets `change_significance` on the accepted
+`submit_outcome` call that closed the Task - the reviewer's own `submit_outcome` may only
+escalate that level, never lower it. On merge to the component's `main`, the release pipeline:
 
 1. **Cuts the tag.** Computes the next `vX.Y.Z` from the merged PR's `semver:*` label.
 2. **Publishes artifacts.** Builds and pushes the image at `:vX.Y.Z` (the required-checks pipeline
@@ -375,13 +378,16 @@ summary that maps to the same label. On merge to the component's `main`, the rel
    has tag immutability). It packages **both** charts (`tatara-operator` and `tatara-project`) at
    the bare `X.Y.Z`, with `appVersion` carrying `vX.Y.Z`, and pulls them back to prove neither is
    missing (guards against a partial-publish wedge).
-3. **Propagates the pin.** Opens a bot PR against `tatara-helmfile` that rewrites all four pins
-   atomically in one commit: the three chart-version pins (`tatara-operator` plus both
-   `project-tatara` / `project-infrastructure` releases) take the bare `X.Y.Z`; the operator
-   `image.tag` takes `vX.Y.Z`. Pins are matched by release name, so `tatara-chat`'s pin is never
-   clobbered.
-4. **Applies and closes.** That helmfile PR auto-merges on green checks and the apply workflow
-   rolls it out (section 5). On a successful apply the operator closes the originating issue.
+3. **Propagates the pin.** Opens a bot PR against `tatara-helmfile` that rewrites all three pins
+   atomically in one commit: the chart-version pins for `tatara-operator` plus both
+   `project-tatara` / `project-infrastructure` releases take the bare `X.Y.Z`; the operator
+   `image.tag` takes `vX.Y.Z`.
+4. **Applies and closes.** The component PR itself was merged by the operator, from the reviewer's
+   accepted verdict - no MCP tool exposes merge and no agent posts it directly. The `tatara-helmfile`
+   pin PR is a separate, ordinary PR: nothing arms it to merge itself, so it waits for a human
+   (or your own branch-protection rule) like any other change to that bucket. Once it lands, the
+   apply workflow rolls the pins out (section 5), and on a successful apply the operator closes the
+   originating issue.
 
 ```yaml
 # What the pipeline writes into tatara-helmfile (do not hand-edit in normal flow):

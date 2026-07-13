@@ -20,7 +20,7 @@ Tatara runs autonomous AI agents with write access to your repositories. The sec
 
     ---
 
-    How a maintainer applying the `tatara-approved` label - the only approval action - is required before any code is written, and how the merge gate works.
+    How a maintainer's **comment**, matched against `Project.spec.scm.approvalPhrases` and pinned as single-use evidence, is required before any code is written, and how the operator-owned merge gate works.
 
     [:octicons-arrow-right-24: Approval Gates](approval-gates.md)
 
@@ -55,10 +55,12 @@ tatara-operator (webhook server)
   v
 QueuedEvent created
   |
-  | Maintainer-approval check (tatara-approved label applied by a
-  | verified maintainerLogins member - never a comment, never the bot)
+  | Approval grammar, run by the OPERATOR over the mirrored thread:
+  |   the most recent maintainer comment, whose TEXT matches an entry in
+  |   approvalPhrases, pinned as single-use ApprovalEvidence.
+  |   The bot is excluded structurally. Labels are never read.
   v
-Task transitions to Implement
+Task reaches the approved stage
   |
   | OIDC-authenticated (bearer token, audience scoped per service)
   v
@@ -69,13 +71,17 @@ tatara-memory / wrapper APIs
   v
 Code commit + PR open (bot identity only)
   |
-  | review pod approves (tatara-approved + native review)
-  | deploy supervisor merges on green CI + approval (operator-only)
+  | review pod submits a verdict; the OPERATOR posts the review
+  | the OPERATOR merges, on green CI, at the exact reviewed head SHA
   v
 Merged to main
 ```
 
-Every boundary is authenticated. By default the merge is autonomous once `review` has approved from a separate pod and required checks are green; add a review-gated branch-protection rule to require a human approval on top.
+Every boundary is authenticated. Merge is an operator action: no agent can call
+it, and no pull request is ever left armed to merge itself once CI goes green.
+The one place the platform's guarantees stop short of a forge-enforced control is
+the merge itself - see
+[the accepted risk of a single bot identity](approval-gates.md#gate-3-merge-an-operator-action).
 
 ## Security posture summary
 
@@ -83,11 +89,11 @@ Every boundary is authenticated. By default the merge is autonomous once `review
 |---|---|
 | Webhook authenticity | HMAC-SHA256 signature validation |
 | Issue intake gate | `reporterLogins` allowlist |
-| Implementation approval | `maintainerLogins` allowlist, verified against the actor of a `tatara-approved` label-apply event on the issue - the sole approval action; closed by default (empty list approves nothing) |
-| Code merge gate | Deploy supervisor merges on green CI + `tatara-approved` (set by `review`, a separate pod that cannot approve its own diff); add branch protection to require a human review too |
+| Implementation approval | The [approval grammar](approval-gates.md#the-approval-grammar): the most recent maintainer comment on the thread, whose normalised text is an anchored whole-line match against `Project.spec.scm.approvalPhrases`, pinned as single-use `ApprovalEvidence`. `maintainerLogins` is closed by default (an empty list approves nothing) |
+| Code merge gate | The **operator** merges, on an accepted review verdict, on green CI, at the exact reviewed head SHA. No MCP tool exposes merge; the forge's native merge-on-green is never armed. The gate is operator logic, not a forge control - see the accepted risk on the approval-gates page |
 | API authentication | OIDC bearer tokens, per-service audience |
-| Agent tool surface | `TATARA_TOOL_PROFILE` per task kind |
+| Agent tool surface | `TATARA_TOOL_PROFILE` per task kind; 20 tools, fail-closed |
 | Agent headless mode | Interactive pickers hard-denied in `settings.json` |
-| Bot exclusion from self-approval | `botLogin` excluded from approver set at controller level |
+| Bot exclusion from self-approval | Every mirrored comment carries `isBot`, set from `botLogin`; the grammar refuses a bot-authored comment before it reads the text |
 | Commit identity | Bot email only (`botEmail` on ScmSpec) |
 | Secret storage | SOPS-encrypted values files; never plaintext in git |

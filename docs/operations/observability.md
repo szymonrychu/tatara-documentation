@@ -5,116 +5,124 @@ title: Observability
 # Observability
 
 The tatara operator ships observability first-class: a `ServiceMonitor` for Prometheus
-scraping, a Grafana dashboard as a sidecar-discovered ConfigMap, and a `PrometheusRule`
-for loop-failure alerting - all enabled by default, all cluster-agnostic. A companion
-repository, [`tatara-observability`](https://github.com/szymonrychu/tatara-observability),
-holds the full per-component Grafana alert rule set managed as code and applied by CI.
+scraping and structured `log/slog` output that doubles as the platform's audit trail (K.3
+below) - both cluster-agnostic, both enabled by default. A companion repository,
+[`tatara-observability`](https://github.com/szymonrychu/tatara-observability),
+holds the full Grafana alert rule set for the stage machine, managed as code and applied by
+Terraform CI.
+
+!!! danger "The `noDataState` trap - read this before touching any alert file"
+    Every `alerts/tatara-*.yaml` rule group sets `default_no_data_state: "OK"`. That default
+    is correct for a gauge that legitimately disappears when the system is idle - an empty
+    queue, a Project with no active Tasks. It is **catastrophic** for a heartbeat metric: when
+    the metric stops existing entirely, the alert reports OK forever. It does not fire. It
+    does not go stale. It silently reads healthy, permanently, with nothing in Grafana to
+    suggest otherwise.
+
+    This is not hypothetical - it already happened once, and this redesign deletes `phase`,
+    `lifecycleState`, `cascadeStage`, `implementGiveUps`, and `linksSyncFailures`, the fields <!-- stale-ok: lifecycleState, cascadeStage, implementGiveUps, linksSyncFailures -->
+    eight existing alerts keyed on. Left alone, all eight would have gone permanently, silently
+    green, **including both CD-cascade alerts** - meaning the merge/deploy path that ships to
+    the **cluster-admin-scoped** `arc-runner-tatara-helmfile` runner would have zero alert
+    coverage while every dashboard kept reading green.
+
+    The fix is not "check `absent()` sometimes." It is: **set `noDataState: Alerting`
+    explicitly on every heartbeat/liveness alert.** Keep `OK` as the file default only for
+    gauges that legitimately vanish when idle - never for a metric that should always exist
+    while the operator is up.
 
 ## Signal flow
 
 ```mermaid
 graph LR
     A["operator :9090\n/metrics"] -->|"ServiceMonitor\n30 s interval"| P[Prometheus]
-    W["wrapper pods\nephemeral"] -->|"POST /internal/metrics/push"| PR["operator\npush receiver"]
-    PR --> P
-    P --> D["Grafana\nTatara Loop dashboard"]
-    P --> R["PrometheusRule\ntatara-loop group"]
     OA["tatara-observability\nalerts/*.yaml"] -->|"PR = plan\nmerge = apply"| GA["Grafana\nTatara folder rules"]
-    R -->|"system=tatara fires"| WH["operator\n/webhooks/tatara/grafana"]
-    GA -->|"system=tatara fires"| WH
-    WH --> IT["incident Task"]
-    IT --> IB["brainstorm issue\n(emergency cycle)"]
+    P --> GA
+    GA -->|"system=tatara fires"| WH["operator\n/webhooks/tatara/grafana"]
+    WH --> IT["Task: kind=incident\nstage=investigating"]
+    IT -->|"submit_outcome(file_issue)"| CL["stage=clarifying"]
+    O2["operator stdout\nJSON logs"] -->|"Loki"| L[Loki]
 ```
+
+The operator is the only Loki-scraped component; agent pods are not (K.3). Alert
+verdicts route back in as `incident`-kind Tasks, which run the `investigating`
+stage and, if the alert corresponds to real work, file a tracker Issue and move to
+`clarifying` - see the [stage reference](../reference/task-stages.md) for the full
+transition table.
 
 ---
 
 ## 1. Metrics catalog
 
-### Operator metrics
-
 The operator exposes `/metrics` on the `metricsAddr` port (default `:9090`, exposed as the
 `metrics` port on the operator `Service`). **This port is not ingress-routed.** It is only
-reachable in-cluster via the Service; the optional Ingress covers only the main HTTP port
-(`:8080`).
+reachable in-cluster via the Service.
 
-#### Core counters
+### Task stage metrics
 
-| Metric | Labels | Description |
-|---|---|---|
-| `operator_reconcile_total` | `kind`, `result` | Reconcile attempts per resource kind. `kind` is the CR type (`Project`, `Repository`, `Task`); `result` is `ok` or `error`. The primary health denominator for the control loop. |
-| `operator_task_terminal_total` | `kind`, `phase`, `reason` | Every Task terminal transition, incremented once at the `terminate()` chokepoint. `phase` is only ever `Succeeded` or `Failed` - the two `Task.Status.Phase` terminal values that `terminate()` passes. (`Done`, `Stopped`, and `Parked` are `Status.DeployState` values, not `Phase`, and no code path feeds them to this counter.) `reason` carries the failure class (e.g. `PodLost`, `TurnTimeout`, `PlanningStalled`, `BootCrashLoop`). This is the uniform loop success / failure denominator - do NOT use `operator_reconcile_total` as a proxy for task outcomes. |
-| `operator_task_tokens_total` | `project`, `repo`, `kind`, `issue`, `model`, `type` | Cumulative agent token spend. `type` is `input`, `output`, `cache_read`, or `cache_creation`; `model` carries the resolved Claude model ID (this is what the dashboard's per-model breakdown keys on). Provides the global / project / repo / issue / model cost breakdown visible in the dashboard. |
-| `tatara_scan_tasks_created_total` | - | Tasks created by the hourly scan. Zero for 3+ hours is the scan-stall deadman signal. |
-| `tatara_scan_items_total` | - | Items (issues / MRs) evaluated per scan. Used alongside `tatara_scan_tasks_created_total` for the loop-liveness check. |
-| `tatara_lifecycle_giveup_total` | `reason` | Counts `implement` -> `Parked` give-ups (`Task.Status.ImplementGiveUps`); metric name predates the kind rename and was not relabeled. |
-| `operator_turn_submit_total` | `result` | Turn-submit attempts from the operator to wrapper pods. |
-| `operator_turn_timeout_total` | - | Agent turns that stalled past the inactivity deadline. |
-| `operator_agent_boot_crash_total` | `outcome`, `reason` | Wrapper pod boot budget exhaustions. `outcome=failed` means the Task was aborted. |
-| `operator_agent_unreachable_termination_total` | - | Tasks killed because the wrapper stayed unreachable past the boot deadline. |
-| `operator_ingest_job_total` | `result`, `mode` | Repo ingest job completions. `mode=full` distinguishes scheduled / self-heal full re-ingests from incremental runs. |
-| `operator_scm_writes_total` | `provider`, `verb`, `kind`, `result` | SCM write-backs (comments, labels, approvals, PRs). `kind=write` / `kind=read`. `result` is `ok`, `error`, `blocked`, or `gone`, plus two comment-specific outcomes from the [turn-taking gate](security/bot-identity.md#comment-turn-taking-gate): `suppressed_bot_mr` (withheld - target PR/MR is bot-authored) and `suppressed_last_word` (withheld - bot's last comment on the thread is still unanswered). |
-| `operator_scm_request_errors_by_status_total` | `verb`, `status` | SCM errors broken down by HTTP verb and status code. Use this to distinguish token failures (401/403), rate limits (429), or network errors from a write error alert. |
-| `operator_webhook_events_total` | `provider`, `kind`, `action`, `result` | Inbound SCM webhook events, keyed by provider (`github`/`gitlab`), event `kind` (`push`/`issue`/`mr`/`other`), `action`, and `result`. There is no `ok` result: an accepted delivery is `accepted` or (when it spawns work) `task_created`. Other `result` values: `ignored`, `duplicate`, `no_repo`, `unknown_project`, `provider_mismatch`, `too_large`, `bad_signature`, `bad_request`, `reactivated`, `error`. A reporter-allowlist intake drop is counted as `ignored` (not `dropped` - there is no `dropped` value). |
-| `operator_writeback_outcome_total` | `result` | Writeback disposition per Task: `ok`, `skip_4xx`, `skip_4xx_capped` (permanent give-up). |
-| `operator_writeback_skip_4xx_total` | `status`, `reason` | Per-skip detail when a writeback is skipped on a 4xx. |
-| `operator_reap_delete_error_total` | - | Failures in the orphan-pod reaper. |
+These replace every `phase` / `lifecycleState` / `cascadeStage` series the previous design <!-- stale-ok: lifecycleState, cascadeStage -->
+used. `operator_task_stage` is the single source of truth for "what is a Task doing right
+now" - see the [stage machine reference](../reference/task-stages.md) for the full 15-member
+enum and transition table.
 
-#### Gauges
+| Metric | Type | Labels | Why it exists |
+|---|---|---|---|
+| `operator_task_stage` | gauge | `stage`, `kind` | Replaces every `phase`/`lifecycleState` series. One gauge, sliced by the current stage and the Task's origin kind. | <!-- stale-ok: lifecycleState -->
+| `operator_task_stage_age_seconds` | gauge | `task`, `stage`, `kind` | Makes the per-stage deadline invariant observable: every stage has a budget it must exit within (never-forever, no infinite cycle). Compare against the per-stage budget table on the [stage reference](../reference/task-stages.md) to see how close a Task is to its deadline. |
+| `operator_illegal_stage_transition_total` | counter | `from`, `to` | Every stage transition is written by the operator only, checked against a fixed table; a transition outside that table is rejected. A nonzero value here is a code bug, not an operational condition. |
+| `operator_task_parked_total` | counter | `stage`, `stageReason` | Which parks actually happen, broken down by the closed `stageReason` set. |
 
-| Metric | Labels | Description |
-|---|---|---|
-| `operator_tasks_inflight` | - | Tasks currently running (Running + WritebackPending). The concurrency-cap deadman threshold is configurable (`prometheusRule.tasksInflightThreshold`, default `8`). |
-| `operator_queue_depth` | `project`, `class` | QueuedEvents waiting to be admitted per project and priority class. |
-| `operator_memory_stacks` | `phase` | Per-project memory stack count by phase (`Ready`, `Provisioning`, `Failed`, etc.). A `Failed` value above zero is a critical alert. |
-| `operator_lightrag_documents` | `project`, `status` | Per-project LightRAG corpus size, polled during gauge recompute from `/documents/status_counts`. |
+!!! danger "Cardinality: three metrics carry a `task` label"
+    `operator_task_stage_age_seconds`, `operator_merge_cursor_stalled_seconds`, and
+    `operator_object_too_large_total` all carry a per-Task label. The operator must **delete**
+    the per-task series from its own Prometheus registry (`DeleteLabelValues` /
+    `DeletePartialMatch`) when the Task is deleted - not just let Prometheus's retention age the
+    series out. A registry that only grows leaks unbounded memory in the operator process
+    itself, independent of Prometheus: at roughly 2000 Tasks/month in the reference deployment,
+    an un-deleted registry entry per Task is a slow, permanent leak in `/metrics` output size
+    and operator RSS. Already-scraped samples remaining in Prometheus for its own retention
+    window is fine and expected; a gauge that is never removed from the operator's in-process
+    registry is not.
 
-#### Histograms
+### Agent pod and contract metrics
 
-| Metric | Labels | Description |
-|---|---|---|
-| `operator_turn_submit_duration_seconds` | `kind` | SubmitTurn latency from the operator to the wrapper pod HTTP API. Buckets `ExponentialBuckets(0.05, 2, 10)` top out at 25.6 s. p95 above `prometheusRule.turnSubmitP95LatencyThreshold` (default `5` s, not 30) fires `TataraTurnSubmitLatencyHigh`. |
-| `operator_turn_duration_seconds` | - | Wall-clock duration of a completed agent turn. |
-| `operator_agent_http_duration_seconds` | `method` | Wall-clock duration of operator-to-wrapper HTTP calls, per HTTP method. |
-| `operator_ingest_job_duration_seconds` | - | Wall-clock duration of a completed repo-ingest Job. |
+| Metric | Type | Labels | Why it exists |
+|---|---|---|---|
+| `operator_agent_pod_ttl_expired_total` | counter | `agent_kind`, `outcome` | A pod hit its `agentPodTTLSeconds` bound. `outcome` is `agent_handoff` (the agent handed off cleanly), `synthetic_handoff` (the operator synthesized one), or `force_deleted`. |
+| `operator_agent_contract_mismatch_total` | counter | `expected`, `got`, `image` | The operator-wrapper contract-version handshake: the operator injects `TATARA_CONTRACT_VERSION`, and asserts the wrapper's reported version before turn-0. **Any nonzero value is critical** - it means a version-skewed pod almost burned a turn budget against a 404ing tool surface, or would have without this guard. See [Deployment](deployment.md#upgrades) for why this is reachable even on green pipelines, and the [runbook](runbooks.md#failedagent-contract-mismatch). |
 
-There is no `operator_reconcile_duration_seconds` histogram. `operator_agent_http_total` (labels `method`, `outcome`; `outcome` includes `ok`, `unreachable`, `timeout`, `transport_error`) is a **counter**, not a histogram - the wrapper HTTP call latency lives in `operator_agent_http_duration_seconds` above.
+### Merge, deploy, and sweep metrics
 
-### Push-receiver / wrapper series
+| Metric | Type | Labels | Why it exists |
+|---|---|---|---|
+| `operator_merge_cursor_stalled_seconds` | gauge | `task`, `repo` | A sequential merge (a Task with `mergeOrder` spanning multiple repos) that has stopped advancing. |
+| `operator_unexpected_merge_total` | counter | `repo` | **The C.9 accepted-risk detector.** The platform runs one bot identity, so branch protection cannot require an approving review from that identity - the merge gate is operator logic, not a forge-enforced control, and a pod holding the SCM token could in principle bypass it. This metric increments when the sweep finds an MR merged with no corresponding `mergeCursor` advance - i.e. something merged outside the operator's own path. Treat any nonzero value as critical and investigate immediately; it is the sole detection mechanism for that accepted risk. |
+| `operator_sweep_last_success_timestamp_seconds` | gauge | `activity` | A heartbeat. This is a "must always exist and always advance" gauge, not one that legitimately goes idle - see the `noDataState` warning above. |
+| `operator_sweep_errors_total` | counter | `activity`, `reason` | Sweep-pass failures by activity and reason. |
+| `operator_queue_age_seconds` | gauge | `class`, `priority`, `state` | Age of the **oldest** `QueuedEvent` in each `(class, priority, state)` bucket. This is what the incident-starvation alert keys on - see K.2 below. |
+| `operator_doc_task_abandoned_total` | counter | `reason` | The nightly documentation batch starved (`reason=never_ran`) or ran past its `documenting` stage budget (`reason=timeout`). |
 
-Ephemeral agent pods (wrapper, ingest) cannot be scraped directly - they have no stable
-`/metrics` endpoint and a per-run lifetime measured in minutes. Instead they push their
-metrics to the operator's push receiver at the end of each run. The operator re-exposes
-them through its own `/metrics`.
+### Bundle and object-size guard metrics
 
-The allowlist is controlled by the `pushMetricsAllowedPrefixes` Helm value. The chart
-default (kept in sync with the code fallback `DefaultAllowedPrefixes`) is:
+| Metric | Type | Labels | Why it exists |
+|---|---|---|---|
+| `operator_bundle_bytes` | histogram | `agent_kind` | Size of the rendered context bundle handed to an agent pod, against the Project's `maxBundleBytes` budget. |
+| `operator_bundle_elided_total` | counter | `agent_kind` | Comments elided from a bundle by the byte guard (oldest first) to stay under budget. |
+| `operator_object_too_large_total` | counter | `kind`, `name` | The pre-write byte guard could not evict enough to fit a CR under its size limit. **Critical** - this means a write was refused or truncated, not just trimmed. |
 
-```
-wrapper_,agent_,ccw_,tatara_wrapper_,ingest_,analyzer_,semantic_,scip_,llm_
-```
+### SCM metrics { #core-counters }
 
-`ccw_` and `tatara_wrapper_` (the wrapper families) and `ingest_,analyzer_,semantic_,scip_,llm_`
-(the repo-ingester families) are all admitted out of the box, so the `ccw_*` series below are
-present with no allowlist edit. Series whose name matches no prefix are dropped and counted in
-`operator_push_series_dropped_total{reason="reserved_name"}`.
+| Metric | Type | Labels | Why it exists |
+|---|---|---|---|
+| `operator_scm_ratelimited_total` | counter | `provider`, `path`, `limit_type` | SCM API calls that hit a rate limit, by provider and endpoint. |
+| `operator_scm_writes_total` | counter | `result` | Every attempted SCM write (comment, review, merge), by outcome. `result="suppressed_bot_mr"` and `result="suppressed_last_word"` count comments the operator deliberately withheld under the comment turn-taking gate rather than posted - see [Bot Identity](security/bot-identity.md#comment-turn-taking-gate). |
 
-| Metric | Labels | Description |
-|---|---|---|
-| `operator_push_receive_total` | `result` | Push receive outcomes: `accepted`, `rejected`, `too_large`, `deleted`, `empty`. `rejected` pushes mean wrapper metrics are being lost. |
-| `operator_push_series_dropped_total` | `reason` | Metric name families dropped by the allowlist (`reason=reserved_name`), or on a `type_conflict` / `build_error`. |
-| `ccw_turns_total` | `result` | Claude turns per wrapper run. |
-| `ccw_turn_tokens_total` | - | Tokens consumed per wrapper run. |
-| `ccw_commit_push_total` | `result` | Git commit + push attempts from the wrapper. |
-| `ccw_http_requests_total` | `status_code` | Operator callback HTTP responses as seen by the wrapper. |
-| `ccw_http_panics_total` | - | Recovered panics in the wrapper HTTP handler. |
-| `ccw_lifecycle_hook_total` | `hook`, `result` | Lifecycle hook executions (`preClone`, `postClone`, etc.). |
-
-!!! warning "Push series are unreliable for rate-based alerts"
-    Because pushed series TTL-evict and reset their run ID per pod lifecycle, `rate()`,
-    `increase()`, and `absent()` over pushed series behave unpredictably across pod
-    boundaries. The shipped alert rules deliberately key only on the operator's own
-    continuously-present series, never on `ccw_*` or `tatara_wrapper_*` for threshold
-    alerting.
+!!! note "This is the load-bearing subset, not the exhaustive list"
+    The tables above cover the metrics you need for day-to-day operation and every shipped
+    alert. The operator emits additional lower-traffic counters and histograms (orphan
+    adoption, GC blocks, per-object size distribution, sweep mint-cap hits) that exist for
+    deeper debugging; `curl localhost:9090/metrics` in-cluster is the source of truth for the
+    full set.
 
 ---
 
@@ -137,134 +145,74 @@ The dashboard hardcodes no datasource UID. A `$datasource` template variable let
 select any Prometheus instance in the cluster. Two additional template variables,
 `$project` and `$repo`, filter every panel to a specific project or repository.
 
-### Panel layout
-
-| Row | Panels |
-|---|---|
-| **Loop golden signals** | Lifecycle state by state (timeseries), Reconcile rate by result (timeseries), Tasks in-flight by kind (timeseries), Turn duration heatmap |
-| **Failures and scan cadence** | Failure rates (timeseries), Ingest success ratio (timeseries), Scan cadence per hour (timeseries) |
-| **Task outcomes** | Terminal transitions by phase/reason per hour (timeseries), Task success-rate SLO 6h window (stat) |
-| **Token usage** | Total tokens by type (stat), Token rate by project 1h (timeseries), Token rate by repo 1h (timeseries), Top issues by tokens (table), Input vs output tokens (pie chart) |
-| **Token budget (issue #189)** | Token budget used ratio (timeseries), Admission blocked (token budget) (timeseries) |
-| **Memory corpus** | LightRAG documents by project/status (timeseries), Memory stacks by phase (pie chart) |
+Panels that read `Task.status.phase` / `lifecycleState` are re-keyed onto <!-- stale-ok: Task.status.phase, lifecycleState -->
+`operator_task_stage{stage,kind}` - a per-stage breakdown (one series per stage, faceted by
+`kind`) replaces the old two-value phase timeseries with something that actually shows where
+Tasks are queued up. `dashboards/chat.json` is deleted along with the rest of the `tatara-chat` <!-- stale-ok: tatara-chat -->
+footprint.
 
 ---
 
-## 3. Alerts shipped
+## 3. Alerts
 
-Tatara ships alert rules from two sources with different scopes and update paths.
+Tatara ships alert rules from two sources with different scopes and update paths: a chart
+`PrometheusRule` baked into `tatara-operator` for an always-correct baseline, and the richer,
+per-component rule set in `tatara-observability` applied via Terraform CI. The stage-machine
+rewrite below concerns both: any rule keyed on `phase`, `lifecycleState`, `cascadeStage`, <!-- stale-ok: lifecycleState, cascadeStage -->
+`implementGiveUps`, or `linksSyncFailures` no longer has a metric to read. <!-- stale-ok: implementGiveUps, linksSyncFailures -->
 
-### Chart PrometheusRule (tatara-loop group)
+### Rewritten (8 rules keyed on deleted fields)
 
-A `PrometheusRule` CR in the `tatara-loop` group is rendered by the chart and enabled
-by default (`prometheusRule.enabled: true`). These rules cover only the operator's own
-continuously-present series and are intended as a minimal, always-correct baseline that
-installs automatically with the operator.
-
-```yaml
-# values.yaml knobs
-prometheusRule:
-  enabled: true
-  severityLabel: "warning"       # stamped on every alert
-  tasksInflightThreshold: 8      # cap for the TataraTasksInflightPinned deadman
-  additionalLabels: {}           # cluster-specific: match Prometheus ruleSelector
-```
-
-!!! note "ruleSelector"
-    The chart bakes no selector labels. Add the label your cluster's Prometheus
-    `ruleSelector` matches via `prometheusRule.additionalLabels` in your helmfile
-    values.
-
-#### Class A: deadman / liveness
-
-These alerts catch silent stalls - conditions that emit no error event but indicate
-the loop has stopped producing work.
-
-| Alert | Expression summary | Fires after | Description |
-|---|---|---|---|
-| `TataraOperatorDown` | `up{job=~".*tatara-operator.*"} == 0` | 5 m | Scrape target absent; no counter-based alerts below can fire while this is true. |
-| `TataraLoopWedged` | `increase(operator_reconcile_total[15m]) == 0` | 15 m | Workqueue wedged with pod alive - zero reconciles. |
-| `TataraLoopStalled` | `increase(tatara_scan_tasks_created_total[3h]) + increase(tatara_scan_items_total[3h]) == 0` | 30 m | Hourly scan producing no work at all. The worst failure class - zero errors but zero output. |
-| `TataraMemoryStackFailed` | `operator_memory_stacks{phase="Failed"} > 0` | 15 m | At least one project memory stack failed; agents for that project cannot read or write recall. |
-| `TataraTasksInflightPinned` | `operator_tasks_inflight >= tasksInflightThreshold` | 2 h | Concurrency cap saturated with nothing draining; deadlock signature. |
-
-#### Class B: active failures
-
-| Alert | Signal | Description |
-|---|---|---|
-| `TataraReconcileErrors` | `rate(operator_reconcile_total{result="error"}[15m]) > 0` for 15 m | Reconciliation failing for at least one kind. |
-| `TataraTaskFailures` | `increase(operator_task_terminal_total{phase="Failed"}[30m]) > 0` | Tasks reaching terminal `Failed`. The `reason` label carries the failure class. |
-| `TataraTurnTimeouts` | `increase(operator_turn_timeout_total[1h]) > 0` | Agent turns stalled past the inactivity deadline. |
-| `TataraAgentBootCrashLoop` | `increase(operator_agent_boot_crash_total{outcome="failed"}[30m]) > 0` | Wrapper pods exhausted the boot-respawn budget without `/readyz` coming up. |
-| `TataraAgentUnreachable` | `increase(operator_agent_unreachable_termination_total[15m]) > 0` | Tasks killed because wrapper stayed unreachable past the boot deadline. |
-| `TataraIngestJobFailing` | `operator_repository_ingest_failing > 0` for 15 m | A repo is stuck in a failing ingest state (status `Phase=Failed` or unresolved consecutive failures); recall corpus going stale. Keys on the live per-repo gauge, so it clears the moment a re-ingest succeeds and does not linger after a transient incremental burst self-heals via the full-ingest fallback. |
-| `TataraIngestStale` | `(time() - operator_repository_last_ingest_timestamp_seconds) > ingestStaleAfterSeconds` for 30 m | A repo has not been re-ingested within the staleness budget (`prometheusRule.ingestStaleAfterSeconds`, default `93600` s / 26 h) even though no ingest Job is actively failing - e.g. the re-ingest cron is not landing. |
-| `TataraLifecycleGiveups` | `increase(tatara_lifecycle_giveup_total[1h]) > 0` | `implement` Tasks gave up (recoverable `Implement` -> `Parked` transitions); the `reason` label identifies why. |
-| `TataraSCMWriteErrors` | `increase(operator_scm_writes_total{kind="write",result="error"}[15m]) > 0` | SCM write-backs (comments, labels, approvals, PRs) failing. Break down `operator_scm_request_errors_by_status_total` by `(verb, status)` to distinguish token, rate-limit, and network failures. |
-| `TataraSCMWriteFailureRatioHigh` | ratio > 30%, >= 3 writes attempted, for 15 m | Elevated fraction of SCM writes failing. Guards against alert spam during low-volume bursts. |
-| `TataraWritebackGaveUp4xx` | `increase(operator_writeback_outcome_total{result="skip_4xx_capped"}[1h]) > 0` | A Task permanently abandoned writeback on repeated 4xx; no PR was opened. Investigate via `operator_writeback_skip_4xx_total` by `(status, reason)`. |
-| `TataraPushMetricsRejected` | `increase(operator_push_receive_total{result="rejected"}[15m]) > 0` | Ephemeral pod metric pushes rejected at the receiver; wrapper/ingest metrics are being lost. |
-| `TataraPushMetricsDropped` | `increase(operator_push_series_dropped_total{reason="reserved_name"}[15m]) > 0` | A short-lived pod pushed a metric family whose name matches no prefix in `pushMetricsAllowedPrefixes` (allowlist drift). Add the dropped prefix (logged at WARN by the receiver) to the value. |
-| `TataraTokenBudgetBlocked` | `increase(operator_admission_blocked_total{reason="token_budget"}[30m]) > 0` for 15 m | The token-budget admission gate is holding work for a project (the `project` and pool `class` are in the series labels). Expected when a window is genuinely exhausted; investigate if unexpected. Only fires where a `tokenBudget` block is configured - see [Tuning](tuning.md#cap-spend). |
-| `TataraReaperDeleteErrors` | `increase(operator_reap_delete_error_total[1h]) > 0` | Orphan-pod reaper cannot delete pods; zombie pod leak. |
-
-#### Class C: latency / saturation
-
-| Alert | Signal | Description |
-|---|---|---|
-| `TataraTurnSubmitLatencyHigh` | `histogram_quantile(0.95, operator_turn_submit_duration_seconds) > turnSubmitP95LatencyThreshold` for 15 m | SubmitTurn p95 latency above the threshold (`prometheusRule.turnSubmitP95LatencyThreshold`, default `5` s). The quantile is gated on `sum(rate(..._count[15m])) > 0` so idle windows yield no series (never a NaN false-fire). The histogram tops out at 25.6 s, so the threshold must be kept under that ceiling. |
-
-### tatara-observability alert rules
-
-The [`tatara-observability`](https://github.com/szymonrychu/tatara-observability) repository
-holds a richer, per-component rule set managed as code and applied via Terraform CI. These
-rules live in the Grafana **Tatara** folder and complement the chart PrometheusRule with
-additional coverage per component, workload-generic pod-health rules, Loki-based log alerts,
-and finer-grained thresholds.
-
-Each `alerts/tatara-<component>.yaml` file defines one Grafana rule group:
-
-```yaml
-interval_seconds: 60
-default_no_data_state: "OK"    # absent series do not fire
-rules:
-  - name: "Operator reconcile loop wedged"
-    queries:
-      - expression: |
-          sum(increase(operator_reconcile_total{namespace="tatara",job="tatara-operator"}[15m]))
-    math_operator: "<"
-    threshold: 1
-    for: 15m
-    annotations:
-      summary: "No reconciles in 15m (increase={{ index $values \"C\" }})."
-    labels:
-      homelab: "true"
-      system: "tatara"          # routes to the incident webhook (omit on info rules)
-      component: "operator"
-      severity: "critical"      # warning|critical trigger an incident; info -> email only
-```
-
-The expression produces the VALUE; the comparison is `math_operator` + `threshold`. The
-Terraform module builds the reduce/round/threshold chain automatically. For LogQL rules
-(Loki), add `datasource_uid` and `query_type: "loki"` under the query.
-
-**Coverage by component file:**
-
-| File | Coverage highlights |
+| Rule (old) | New expression basis |
 |---|---|
-| `tatara-operator.yaml` | Workload pod health (crash-loop, OOMKill, stuck-waiting), control-loop liveness (reconcile wedged, scan stalled, reconcile error ratio), turn-pipeline failures (submit error ratio, p95 latency, agent HTTP spike, boot crash budget), SCM write ratio, webhook error ratio, writeback 404 loop, memory stack failed, memory retrieval surface absent, tasks inflight, queue backlog |
-| `tatara-wrapper.yaml` | Wrapper pod health (crash-loop, OOMKill, stuck-waiting, not-ready); push-based series (commit/push ratio, turns erroring, HTTP 5xx, panics, token spend runaway) - active once `ccw_` is in the push allowlist |
-| `tatara-memory.yaml` | Memory API pod health; postgres/neo4j backing-store container stuck-waiting (catches a crash-looping cnpg replica that the API-pod rules exclude and that "Memory stack stuck not ready" misses while the surviving primary keeps serving); component series (HTTP 5xx ratio, LightRAG error/latency, ingest job failure, code-graph query errors, analytics stalled with dirty repos) - component-specific rules dark until a ServiceMonitor is wired for `mem-*` pods |
-| `tatara-ingester.yaml` | Full re-ingest failure (operator-side), ingest Job stuck active > 30 m, ingest pod OOMKill/stuck-waiting, ingester-side run failure ratio |
-| `tatara-chat.yaml` | Chat pod health, HTTP 5xx ratio, store operation errors/latency, sweeper stall/error, handler panics, auth rejection rate (info only) |
-| `tatara-logs.yaml` | Loki-based: agent `internal_issue_report` action detected, operator/memory/chat ERROR log bursts > 20 lines / 5 m |
+| Both CD-cascade alerts (merge/deploy path health) | `operator_task_stage{stage=~"merging\|deploying"}` combined with `operator_task_parked_total{stageReason=~"merge-blocked\|deploy-blocked\|merge-timeout\|deploy-timeout"}` |
+| "Operator tasks inflight pinned at cap" | Re-expressed against **agent pod count**, not Task count. Tasks are now long-lived (they persist across many pods over a stage's life), so a Task-count-based cap alert false-fires chronically once concurrency gates pods specifically. Key on live agent pod count vs. `Project.spec.maxConcurrentAgents`, or on `operator_task_stage` for pod-eligible stages sitting flat. |
+| "Wrapper metrics blind while agents running" | Same fix: gate on agent-pod presence, not Task count. |
+| Four rules keyed on `phase` / `lifecycleState` / `implementGiveUps` / `linksSyncFailures` | Re-expressed against `operator_task_stage`, `operator_task_parked_total{stageReason=...}`, and `operator_agent_pod_ttl_expired_total` as appropriate per rule intent. | <!-- stale-ok: lifecycleState, implementGiveUps, linksSyncFailures -->
+
+### Deleted
+
+`tatara-chat` is archived and fully decommissioned (its helm release is removed from the <!-- stale-ok: tatara-chat -->
+cluster - see [Deployment](deployment.md)). Delete `alerts/tatara-chat.yaml` (10 rules), the <!-- stale-ok: tatara-chat -->
+chat log-burst rule in the Loki-based log-alert file, and `dashboards/chat.json`.
+
+### New (minimum set)
+
+| Alert | Severity | Expression | `noDataState` |
+|---|---|---|---|
+| Incident starvation | CRITICAL | `operator_queue_age_seconds{class="alert",state="Queued"} > 300` | `OK` (gauge legitimately absent when no incidents are queued) |
+| Agent contract mismatch | CRITICAL | `increase(operator_agent_contract_mismatch_total[5m]) > 0` | `OK` |
+| Unexpected merge | CRITICAL | `increase(operator_unexpected_merge_total[15m]) > 0` | `OK` |
+| Object too large | CRITICAL | `increase(operator_object_too_large_total[15m]) > 0` | `OK` |
+| Illegal stage transition | WARNING | `increase(operator_illegal_stage_transition_total[15m]) > 0` | `OK` |
+| Sweep heartbeat | CRITICAL | `time() - operator_sweep_last_success_timestamp_seconds > 7200` | **`Alerting`** - this is the canonical heartbeat case the danger note above exists for |
+| SCM rate limited | WARNING | `increase(operator_scm_ratelimited_total[10m]) > 0` | `OK` |
+| Merge/deploy blocked | WARNING | `increase(operator_task_parked_total{stageReason=~"merge-blocked\|deploy-blocked"}[1h]) > 0` | `OK` |
+| Docs never written | WARNING | `increase(operator_doc_task_abandoned_total{reason="never_ran"}[25h]) > 0` | `OK` |
+
+Do not key the incident-starvation alert on `operator_task_stage_age_seconds{kind="incident",stage="investigating"}` even though it looks intuitive - `investigating` carries only a 2h stage-work budget and, more importantly, an unadmitted incident Task sits in `triaging` (a 5-minute, no-pod stage) or in the admission queue, never reaching `investigating` at all while starved. The queue-age metric is the correct signal because it measures time waiting for admission, not time spent working.
+
+### CI pipeline (tatara-observability)
+
+```
+PR opened     ->  terraform plan  ->  sticky comment on PR showing planned rule changes
+Merge to main ->  terraform apply ->  rules live in Grafana within ~60 s
+```
+
+Required GitHub Actions secrets: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (S3 Terraform
+state), `TF_VAR_GRAFANA_API_KEY` (Grafana Editor SA token), `TF_VAR_GRAFANA_URL`.
+
+To add or modify a rule, edit the relevant `alerts/tatara-<component>.yaml` and open a PR. The
+Terraform module handles the Grafana API interaction; no Terraform edits are required for rule
+changes.
 
 ---
 
 ## 4. Alert routing
 
-Tatara alerts route to an operator webhook that creates an `incident` Task, kicking off
-an emergency brainstorm cycle. The routing is label-driven.
+Alerts route to an operator webhook that mints an `incident`-kind Task, entering the
+`investigating` stage (an `incident`-kind agent pod, budgeted 2h before parking). The routing
+is label-driven.
 
 **Required labels on any alert that should open an incident:**
 
@@ -281,73 +229,60 @@ global infra Terraform (`infra/terraform/grafana`), not in `tatara-observability
 `tatara-observability` repo owns only the Grafana **Tatara** folder and the `tatara-*`
 rule groups. Routing works regardless of folder or rule ownership.
 
-**CI pipeline (tatara-observability):**
+---
 
-```
-PR opened     ->  terraform plan  ->  sticky comment on PR showing planned rule changes
-Merge to main ->  terraform apply ->  rules live in Grafana within ~60 s
-```
+## 5. Structured logging: the operator is the audit trail
 
-Required GitHub Actions secrets: `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (S3 Terraform
-state), `TF_VAR_GRAFANA_API_KEY` (Grafana Editor SA token), `TF_VAR_GRAFANA_URL`.
+Agent pods are not Loki-scraped - they are ephemeral, per-turn processes with no stable
+identity to attach a log stream to. The operator is, so it carries audit-trail responsibility
+for anything that needs to outlive a Task's TTL (up to 48h for `delivered`, 7d for
+`parked`/`failed`). The operator logs the following actions at INFO on its own stdout:
 
-To add or modify a rule, edit the relevant `alerts/tatara-<component>.yaml` and open a PR.
-The terraform module handles the Grafana API interaction; no terraform edits required for
-rule changes.
+| `action` | Fields |
+|---|---|
+| `task_note` | `task`, `agent_kind`, `note_kind`, `bytes` |
+| `approval_verified` | `task`, `issue`, `maintainer_login`, `comment_external_id`, `matched_phrase`, `auto` |
+| `approval_refused` | `task`, `issue`, `reason` |
+| `task_delivered` | `task`, `stats` (tokens, turns, pod_runs, wall_seconds, agents_run, issue_count, mr_count) |
+| `stage_transition` | `task`, `from`, `to`, `stage_reason` |
+
+`stage_transition` in particular gives you a full, Loki-queryable history of every Task's path
+through the stage machine at the cost of one `slog.Info` call per transition - useful when a
+Task has already been reaped and `operator_task_stage_age_seconds` no longer has a series for
+it. Approval-gate audit fields (`approval_verified` / `approval_refused`) are the log-side
+complement to the grammar itself - see
+[Security: approval gates](../operations/security/approval-gates.md#the-approval-grammar) for
+the grammar the maintainer's comment is checked against.
 
 ---
 
-## 5. Scrape gotchas
+## 6. Scrape gotchas
 
 ### Leader-only metrics
 
-The operator runs with `leaderElection: true` (default). Business metrics - task tokens,
-terminal transitions, scan counts, memory stack gauges, lightrag documents - are emitted
-only by the leader replica. If you run `replicaCount > 1` for high availability, always
-aggregate with `sum()` or `max()` rather than querying a single instance:
+The operator runs with `leaderElection: true` (default). Business metrics - task stage,
+tokens, sweep heartbeats, queue ages - are emitted only by the leader replica. If you run
+`replicaCount > 1` for high availability, always aggregate with `sum()` or `max()` rather than
+querying a single instance:
 
 ```promql
 # Correct: aggregates across all replicas
-sum(rate(operator_reconcile_total{result="error"}[5m]))
+sum(operator_task_stage{stage="implementing"})
 
 # Wrong with HA: single-replica query may hit a non-leader
-rate(operator_reconcile_total{instance="tatara-operator-abc:9090",result="error"}[5m])
+operator_task_stage{instance="tatara-operator-abc:9090",stage="implementing"}
 ```
 
 Workload infrastructure metrics from kube-state-metrics (pod restart counts, readiness,
 container waiting reasons) are always available regardless of leader election.
 
-### Push receiver allowlist
-
-The push receiver enforces a prefix allowlist on metric names. The chart default
-already admits every family the wrapper and repo-ingester pods actually push:
-
-```yaml
-pushMetricsAllowedPrefixes: "wrapper_,agent_,ccw_,tatara_wrapper_,ingest_,analyzer_,semantic_,scip_,llm_"
-```
-
-Series whose names do not match any prefix are dropped and counted in
-`operator_push_series_dropped_total{reason="reserved_name"}`. Because `ccw_` and
-`tatara_wrapper_` are in the default, the `ccw_*` wrapper push-series rules in
-`tatara-observability` are active out of the box - no allowlist edit is required.
-Only edit `pushMetricsAllowedPrefixes` if a component starts pushing a new metric
-family under a prefix not in the list above (`TataraPushMetricsDropped` fires and
-the receiver logs the dropped family name at WARN).
-
-!!! note "Go runtime metrics from wrappers"
-    Wrappers currently forward `go_*` and `process_*` runtime metrics to the push
-    receiver, which drops them as reserved names. This is a known wrapper-side issue
-    and does not indicate a misconfigured allowlist.
-
 ### Memory API pods are not scraped
 
-The `tatara-memory` API pods (`mem-*`) do not have an active `ServiceMonitor`. The
-component-specific rules in `alerts/tatara-memory.yaml` that reference memory service
-metrics (`http_requests_total`, `lightrag_calls_total`, `lightrag_call_duration_seconds`,
-`ingest_jobs_total`, `ingest_items_total`, `code_graph_query_total`, etc.) are dark until
-scraping is wired. The `default_no_data_state: "OK"` setting prevents these from
-false-firing. The workload-generic pod-health rules (kube-state-metrics) fire correctly
-without scraping.
+The `tatara-memory` API pods (`mem-*`) do not have an active `ServiceMonitor`. Component-
+specific rules in `alerts/tatara-memory.yaml` that reference memory service metrics are dark
+until scraping is wired. The `default_no_data_state: "OK"` setting is correct here - the
+absence of these series is an intentional gap, not a heartbeat that should alert. The
+workload-generic pod-health rules (kube-state-metrics) fire correctly without scraping.
 
 ### Viewing raw metrics in-cluster
 
@@ -355,9 +290,9 @@ without scraping.
 # Port-forward the metrics port (not exposed via Ingress)
 kubectl -n tatara port-forward svc/tatara-operator 9090:metrics
 
-# Sample operator series
-curl -s http://localhost:9090/metrics | grep -E '^operator_task_tokens_total'
+# Sample Task stage state
+curl -s http://localhost:9090/metrics | grep -E '^operator_task_stage'
 
-# Check push receiver drops
-curl -s http://localhost:9090/metrics | grep operator_push_series_dropped_total
+# Check for the C.9 accepted-risk detector firing
+curl -s http://localhost:9090/metrics | grep operator_unexpected_merge_total
 ```

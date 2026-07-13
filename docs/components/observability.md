@@ -28,15 +28,24 @@ Current rule groups:
 | `alerts/tatara-wrapper.yaml` | `tatara-wrapper` | Prometheus |
 | `alerts/tatara-memory.yaml` | `tatara-memory` | Prometheus |
 | `alerts/tatara-ingester.yaml` | `tatara-ingester` | Prometheus |
-| `alerts/tatara-chat.yaml` | `tatara-chat` | Prometheus |
 | `alerts/tatara-cd.yaml` | `tatara-cd` | Prometheus |
 | `alerts/tatara-quality.yaml` | `tatara-quality` | Prometheus |
 | `alerts/tatara-usage-gate.yaml` | `tatara-usage-gate` | Prometheus |
 | `alerts/tatara-logs.yaml` | `tatara-logs` | Loki |
 
-`tatara-cd` covers the push-CD cascade (deploy-train stalls, apply failures),
-`tatara-quality` the model-keyed review/CI quality-feedback signals, and
-`tatara-usage-gate` the token/usage-budget gate.
+`tatara-cd` covers the merge/deploy cascade (sequential-merge stalls, apply
+failures), `tatara-quality` the model-keyed review/CI quality-feedback
+signals, and `tatara-usage-gate` the turn- and pod-recreation budget gates
+(`maxTurnsPerTask`, `maxPodRecreations`, `maxReviewRounds`) that replaced the
+retired per-Task token-budget admission gate. <!-- stale-ok: token/usage-budget gate -->
+
+`alerts/tatara-chat.yaml` (10 rules) and its log-burst rule are deleted along <!-- stale-ok: tatara-chat -->
+with the `tatara-chat` component itself. <!-- stale-ok: tatara-chat -->
+`alerts/tatara-cd.yaml` and `alerts/tatara-operator.yaml` also gain the new
+alert classes below - both `merge-blocked`/`deploy-blocked` (cascade) and the
+platform-wide operator health signals (contract mismatch, unexpected merge,
+sweep heartbeat) attach to their existing per-component groups; no new file
+is introduced for them.
 
 All rules land in the Grafana **Tatara** folder, which is managed exclusively by this repo.
 The `infra/terraform/grafana` state never touches the Tatara folder, so the two states never
@@ -243,6 +252,61 @@ of class `alert`, and spawns an `incident` Task. The agent runs with access to a
 
 ---
 
+## Operator metrics this release depends on
+
+The task-centric redesign deletes the operator's `phase`/`lifecycleState`/`cascadeStage` series <!-- stale-ok: lifecycleState, cascadeStage -->
+wholesale and replaces them with a stage-keyed model. Any rule still querying a deleted metric
+does not error - it just returns no data, and under the file's `default_no_data_state: "OK"`
+that reports as a silently, permanently green alert. The rules keyed on `phase`,
+`lifecycleState`, `cascadeStage`, `implementGiveUps`, and `linksSyncFailures` - eight rules in <!-- stale-ok: lifecycleState, cascadeStage, implementGiveUps, linksSyncFailures -->
+total, including both CD-cascade alerts - must be rewritten against the metrics below, not left
+in place.
+
+The metrics this release's rules key on (non-exhaustive; see [tatara-operator](operator.md#metrics)
+for the full catalogue):
+
+| Metric | Type | Labels | Alerting use |
+|---|---|---|---|
+| `operator_task_stage` | gauge | `stage,kind` | replaces every `phase`/`lifecycleState` series <!-- stale-ok: lifecycleState --> |
+| `operator_task_stage_age_seconds` | gauge | `task,stage,kind` | stage-stuck detection |
+| `operator_illegal_stage_transition_total` | counter | `from,to` | any nonzero value is a code bug |
+| `operator_task_parked_total` | counter | `stage,stageReason` | merge/deploy-blocked cycle caps firing |
+| `operator_agent_contract_mismatch_total` | counter | `expected,got,image` | any nonzero value is critical |
+| `operator_merge_cursor_stalled_seconds` | gauge | `task,repo` | a sequential merge that stopped advancing |
+| `operator_unexpected_merge_total` | counter | `repo` | the accepted-risk detector: a merge the operator did not initiate |
+| `operator_sweep_last_success_timestamp_seconds` | gauge | `activity` | heartbeat - `noData` IS the failure |
+| `operator_scm_ratelimited_total` | counter | `provider,path,limit_type` | |
+| `operator_object_too_large_total` | counter | `kind,name` | the etcd object byte-budget guard failed to evict enough |
+| `operator_doc_task_abandoned_total` | counter | `reason` | `never_ran` \| `timeout`: the nightly doc batch starved |
+| `operator_queue_age_seconds` | gauge | `class,priority,state` | age of the oldest queued event per bucket - keys the incident-starvation alert |
+
+New alert classes for this release (minimum set; land in the existing per-component group that
+owns the metric - `tatara-operator.yaml` for platform-wide operator health,
+`tatara-cd.yaml` for the merge/deploy cascade - no new rule-group file is introduced):
+
+```
+- incident starvation (CRITICAL):
+    operator_queue_age_seconds{class="alert",state="Queued"} > 300
+- agent contract mismatch (CRITICAL):
+    increase(operator_agent_contract_mismatch_total[5m]) > 0
+- unexpected merge (CRITICAL):
+    increase(operator_unexpected_merge_total[15m]) > 0
+- object too large (CRITICAL):
+    increase(operator_object_too_large_total[15m]) > 0
+- illegal stage transition (WARNING):
+    increase(operator_illegal_stage_transition_total[15m]) > 0
+- sweep heartbeat stalled (CRITICAL, no_data_state: Alerting):
+    time() - operator_sweep_last_success_timestamp_seconds > 7200
+- SCM rate limited (WARNING):
+    increase(operator_scm_ratelimited_total[10m]) > 0
+- merge / deploy blocked (WARNING):
+    increase(operator_task_parked_total{stageReason=~"merge-blocked|deploy-blocked"}[1h]) > 0
+- docs never written (WARNING):
+    increase(operator_doc_task_abandoned_total{reason="never_ran"}[25h]) > 0
+```
+
+---
+
 ## CI
 
 GitHub Actions in `.github/workflows/apply.yml` drives the full terraform lifecycle.
@@ -345,7 +409,35 @@ must not be removed. Failed incremental ingest jobs self-heal via the full-inges
 and are benign; alerting on them produces chronic noise. Only terminal full-ingest failures
 (which mean the recall corpus is going stale) warrant a page.
 
-**No-data defaults to OK.** All tatara rule groups set `default_no_data_state: "OK"`. This
-suppresses spurious alerts during scrape gaps (component restarts, transient probe failures).
-A component that is genuinely down will fire via the `up == 0` or pod-not-ready rules, not
-via no-data state.
+**No-data defaults to OK, except for heartbeats.** All tatara rule groups set
+`default_no_data_state: "OK"` at the file level. This suppresses spurious alerts during scrape
+gaps (component restarts, transient probe failures) for a gauge that legitimately disappears
+when idle. A component that is genuinely down will fire via the `up == 0` or pod-not-ready
+rules, not via no-data state.
+
+**This default is wrong, and dangerous, for a heartbeat metric.** A heartbeat series (e.g.
+`operator_sweep_last_success_timestamp_seconds`, emitted every sweep pass) stopping
+altogether - the sweep loop itself wedging - means the query returns no series at all, and
+under the file default that reports as `OK` forever: the exact failure mode invisible behind a
+green dashboard. Every heartbeat/liveness rule **must set `no_data_state: "Alerting"` as a
+per-rule override**, overriding the file default:
+
+```yaml
+rules:
+  - name: "Operator sweep heartbeat stalled"
+    queries:
+      - expression: "time() - operator_sweep_last_success_timestamp_seconds"
+    math_operator: ">"
+    threshold: 7200
+    for: 5m
+    no_data_state: "Alerting"
+    labels:
+      homelab: "true"
+      system: "tatara"
+      component: "operator"
+      severity: "critical"
+```
+
+This bit the platform once already (recorded in MEMORY) and the redesign re-arms it at scale:
+deleting the pre-redesign phase/lifecycle metrics silently green-lights every alert still keyed
+on them (see below) unless each is rewritten against a metric that still exists.

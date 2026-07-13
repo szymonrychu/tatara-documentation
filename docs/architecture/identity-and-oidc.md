@@ -23,28 +23,29 @@ code assumes `master`.
 
 ## Clients and audiences
 
-Five Keycloak clients carry the service plane. What matters is the direction each token
-flows and the audience it must carry.
+Four Keycloak clients carry the service plane. What matters is the direction each token flows and the audience it must carry. (`tatara-chat` is gone: the chat service is archived/decommissioned, and there is no fifth client to stand up.) <!-- stale-ok: tatara-chat -->
 
 | Client ID | Type | Grant | Mints tokens for (`aud`) | Used by |
 |---|---|---|---|---|
 | `tatara-operator` | confidential | client_credentials | `tatara-operator` (inbound validation) | operator: validates inbound calls from agent pods; outbound SCM/API |
 | `tatara-memory` | confidential (resource server) | - | `tatara-memory` | memory REST API: validates inbound tokens |
-| `tatara-cli` | confidential | client_credentials | `tatara-memory` (+ operator/chat via mappers) | the in-pod MCP server, outbound to memory/operator/chat |
+| `tatara-cli` | confidential | client_credentials | `tatara-memory` (+ operator via a mapper) | the in-pod MCP server, outbound to memory and the operator |
 | `tatara-claude-code-wrapper` | confidential | client_credentials | `tatara-claude-code-wrapper` | the operator, calling the wrapper REST API inbound |
-| `tatara-chat` | confidential | client_credentials | `tatara-chat` | chat service: validates inbound tokens |
 
 Two subtleties the topology hides if you read it as a flat list:
 
 - **The in-pod identity is a confidential `tatara-cli` client, not the wrapper client.**
-  The in-pod MCP server (`tatara-cli`) calls memory, operator, and chat using a
+  The in-pod MCP server (`tatara-cli`) calls memory and the operator using a
   **confidential** `client_credentials` grant: it sends a client id + secret via HTTP
   Basic auth (Keycloak's `client_secret_basic`; `client_secret_post` 401s). Those
   credentials are `CLI_OIDC_CLIENT_ID` / `CLI_OIDC_CLIENT_SECRET`, injected from the
   `tatara-cli-oidc` Secret. This is not a public client - a public client cannot mint a
   `client_credentials` token. Do not confuse this with the public device-flow client a
   human developer uses for `tatara login` on a workstation; that is a separate, public
-  concern and never the identity the pods use outbound.
+  concern and never the identity the pods use outbound. (Every pod also gets
+  `TATARA_CONTRACT_VERSION` injected alongside these credentials - not an OIDC
+  concept, but the CLI's MCP server refuses to start on a mismatch; see
+  [Agent Execution](agent-execution.md#the-contract-version-handshake).)
 - **The `tatara-claude-code-wrapper` client is an inbound audience, not an outbound
   identity.** The operator holds a `tatara-claude-code-wrapper`-audience token and uses
   it to call the wrapper's REST API. The pod's `OIDC_AUDIENCE=tatara-claude-code-wrapper`
@@ -91,29 +92,32 @@ sequenceDiagram
     WRP-->>OP: 202 {turnId}
 ```
 
-Note the two directions: the pod is the client for memory/operator/chat (confidential
+Note the two directions: the pod is the client for memory and the operator (confidential
 `tatara-cli` creds), and the operator is the client for the wrapper. These are different
 credentials for different audiences.
 
 ## Agent pod identity and why authz cannot key on it
 
-All agent pods authenticate to memory/operator/chat with the **same** confidential
+All agent pods authenticate to memory and the operator with the **same** confidential
 `tatara-cli` client credentials (from `tatara-cli-oidc`). The `sub` claim is that one
 client's service-account UUID and is identical across every pod, regardless of Task,
-Project, or kind. There is therefore no OIDC-identity distinction between a brainstorm
-pod and an incident pod.
+Project, or the running agent kind. There is therefore no OIDC-identity distinction
+between a `brainstorm` pod and an `incident` pod.
 
 Per-task authorization consequently cannot rely on the token. It relies instead on:
 
 - **Tool-surface gating** in `tatara-cli`, keyed on the operator-set `TATARA_TOOL_PROFILE`
-  (see [Data & Control Flow](data-flow.md#mcp-tool-surface)). This is the real authz
-  boundary. An unknown profile fails closed to a 4-tool `alwaysOn` set.
+  - which is the **agent kind** (`status.agentKind`: `brainstorm`, `incident`, `clarify`,
+  `refine`, `implement`, `review`, or `documentation`), not the Task's origin kind (see
+  [Data & Control Flow](data-flow.md#mcp-tool-surface)). This is the real authz
+  boundary. An unknown profile fails closed to the always-on tool set, with no
+  `submit_outcome` registered.
 - **Task context in the pod env** (`TATARA_TASK`, `TATARA_PROJECT`) plus the operator
   REST API validating that a request's task scope matches the pod it came from.
 
 ## Keycloak Terraform configuration
 
-The homelab's five clients live in `infra/terraform/keycloak/tatara_clients.tf` in the
+The homelab's four clients live in `infra/terraform/keycloak/tatara_clients.tf` in the
 maintainer's private infra repo - that path is not portable and is referenced only as
 the authoritative source, not something to copy verbatim. The example below is the shape
 you actually need, including the audience mapper that the toy two-client snippets omit
@@ -142,7 +146,7 @@ resource "keycloak_openid_client" "tatara_memory" {
 }
 ```
 
-Repeat the client-plus-audience-mapper pair for `tatara-operator`, `tatara-chat`, and the
+Repeat the client-plus-audience-mapper pair for `tatara-operator` and the
 `tatara-claude-code-wrapper` inbound audience. Every resource server the CLI client calls
 needs its audience added to the CLI client's `aud`.
 

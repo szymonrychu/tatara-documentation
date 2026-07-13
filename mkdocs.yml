@@ -124,6 +124,7 @@ nav:
     - Enrolling Repositories: getting-started/enrollment.md
   - Architecture:
     - architecture/index.md
+    - Ownership & GC: architecture/ownership.md
     - Data & Control Flow: architecture/data-flow.md
     - Identity & OIDC: architecture/identity-and-oidc.md
     - Memory Architecture: architecture/memory-architecture.md
@@ -136,17 +137,19 @@ nav:
     - tatara-cli: components/cli.md
     - tatara-claude-code-wrapper: components/claude-code-wrapper.md
     - tatara-memory-repo-ingester: components/repo-ingester.md
-    - tatara-chat: components/chat.md
     - tatara-helmfile: components/helmfile.md
     - tatara-observability: components/observability.md
   - Custom Resources:
     - reference/index.md
     - Project: reference/project.md
     - Repository: reference/repository.md
+    - Issue: reference/issue.md
+    - MergeRequest: reference/merge-request.md
     - Task: reference/task.md
+    - Task Stage Machine: reference/task-stages.md
+    - Task Notes: reference/task-notes.md
+    - The Context Bundle: reference/context-bundle.md
     - QueuedEvent: reference/queued-event.md
-    - Subtask: reference/subtask.md
-    - WorkItem: reference/work-item.md
     - MCP Tools by Agent Kind: reference/mcp-tools.md
   - Workflows:
     - workflows/index.md
@@ -158,13 +161,14 @@ nav:
     - Documentation: workflows/documentation.md
     - Refine: workflows/refine.md
     - Deep Architectural Research: workflows/research.md
-    - Deploy Supervisor & Semver Push-CD: workflows/deploy-supervisor.md
+    - Merge & Deploy: workflows/merge-and-deploy.md
   - Operations:
     - operations/index.md
     - Deployment & GitOps: operations/deployment.md
     - Observability: operations/observability.md
     - Tuning & On/Off: operations/tuning.md
     - Runbooks: operations/runbooks.md
+    - Task-Centric Cutover: operations/cutover.md
     - Security:
       - operations/security/index.md
       - Bot Identity: operations/security/bot-identity.md

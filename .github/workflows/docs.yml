@@ -28,6 +28,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check for stale pre-redesign terms
+        run: ./scripts/check-stale-terms.sh
+
       - name: Build docs (strict)
         run: mkdocs build --strict
 

@@ -185,8 +185,10 @@ spec:
 
 1. Must be unique within the namespace. The operator uses this name to construct Job names and
    metric labels.
-2. Must match an existing `Project` CR in the same namespace. The operator will set
-   `status.phase = Failed` and stop reconciling if the referenced Project does not exist.
+2. Must match an existing `Project` CR in the same namespace. The operator will set this
+   Repository's own `status.phase = Failed` <!-- stale-ok: status.phase --> and stop reconciling
+   if the referenced Project does not exist. This is the Repository CRD's own ingest-lifecycle
+   field (`Ingesting`/`Ingested`/`Failed`), unrelated to `Task.status.stage`.
 3. HTTPS URLs are standard. SSH URLs are supported if the ingest Job has an SSH key mounted via
    `Project.spec.agent.extraVolumes` / `extraVolumeMounts`.
 4. Kubebuilder default is `main`. Override for repositories that use a different trunk branch

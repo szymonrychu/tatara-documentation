@@ -35,8 +35,8 @@ forgotten, and the docs drift from the code. Tatara inverts each of these becaus
 same agent loop that ships product work is pointed at the platform itself:
 
 - **Idle improvements get done.** The periodic [brainstorm](../workflows/brainstorm.md)
-  surveys the code graph and files concrete proposals; a maintainer applies `tatara-approved`
-  to the good ones and the loop implements them.
+  surveys the code graph and files concrete proposals as new `clarify` Tasks; a maintainer
+  comments an approval phrase on the good ones and the loop implements them.
 - **Incidents close their own loops.** A firing alert spawns an
   [incident](../workflows/incident.md) investigation that produces an evidence-backed
   issue - which is then implemented, whether the fix is in code or in the alerting itself.
@@ -54,32 +54,35 @@ tatara's own repositories.
 ## Brainstorm-driven improvements
 
 The [brainstorm](../workflows/brainstorm.md) cron queries tatara's own knowledge graph,
-scores improvement candidates, and files them as proposal issues carrying the
-`tatara-brainstorming` label. **Brainstorm never implements** - a verified maintainer must
-apply `tatara-approved` directly to the proposal issue before the loop writes any code; a
-comment never releases it, and the bot cannot approve its own proposal. This is
-[Gate 3](agentic-model.md#gate-3-brainstorm-proposal-approval) and it is the load-bearing
-control on self-directed work.
+scores improvement candidates, and files them as new `clarify` Tasks carrying the
+`tatara-brainstorming` label. **Brainstorm never implements** - each accepted proposal becomes
+its own `clarify` Task, and a verified maintainer must post a comment matching one of
+`Project.spec.scm.approvalPhrases` before the loop writes any code; the bot is structurally
+excluded from ever satisfying its own gate. This is
+[Gate 1, the approval grammar](agentic-model.md#gate-1-the-approval-grammar) and it is the
+load-bearing control on self-directed work - brainstorm-authored proposals go through the exact
+same gate as a human-filed issue, not a lighter one.
 
 A representative cycle on tatara's own codebase:
 
 ```mermaid
 flowchart LR
-    A[brainstorm cron<br/>fires on tatara Project] --> B[Query code graph:<br/>find coupling / gaps]
-    B --> C[propose_issue:<br/>tighten context guard]
-    C --> D[Issue opened,<br/>tatara-brainstorming label]
-    D --> E[Maintainer applies label<br/>tatara-approved]
-    E --> F[clarify hands off:<br/>tatara-implementation label]
+    A[brainstorm Task<br/>fires on tatara Project] --> B[Query code graph:<br/>find coupling / gaps]
+    B --> C[submit_outcome propose:<br/>tighten context guard]
+    C --> D[new clarify Task,<br/>tatara-brainstorming label]
+    D --> E[Maintainer comments<br/>an approval phrase]
+    E --> F[Task.status.stage = approved]
     F --> G[implement Task<br/>implements + opens PR]
-    G --> H[review approves,<br/>merged on green CI]
+    G --> H[review: submit_outcome approve,<br/>operator merges on green CI]
 ```
 
 **Example - a graph-discovered refactor.** A brainstorm pass reading the operator's code
 graph notices that a token-accounting helper is copy-pasted across three reconcilers. It
 files *"Deduplicate per-turn token accounting into a single helper"* with a problem
-statement, a proposed approach, and the expected benefit. A maintainer applies `tatara-approved`; `clarify`
-hands off to `implement`, which extracts the helper, adds a table-driven test, and opens a PR
-that squash-merges once CI is green. The improvement is one a human would have wanted and
+statement, a proposed approach, and the expected benefit, as a new `clarify` Task. A maintainer
+comments an approval phrase on the issue; the Task moves to `approved` and then `implementing`,
+which extracts the helper, adds a table-driven test, and opens a PR that a review pod approves
+and the operator merges once CI is green. The improvement is one a human would have wanted and
 never scheduled.
 
 Brainstorm caps its own volume - at or above `maxOpenProposals` (default 5) open
@@ -94,16 +97,17 @@ against tatara's repos.
 
 When a Grafana alert fires against tatara's own services, the operator spawns an
 [incident](../workflows/incident.md) agent with read-only Grafana MCP access. It queries
-metrics, logs, and the firing rule, forms a diagnosis, and files one evidence-backed
-issue. That issue then goes through the normal `clarify` -> `implement` -> `review` handoff. Two shapes of fix come
-out of this, and tatara does both.
+metrics, logs, and the firing rule, forms a diagnosis, and calls
+`submit_outcome(action=file_issue)` to open one evidence-backed issue under a new `clarify`
+Task. That Task then goes through the normal `clarify` -> `implement` -> `review` handoff. Two
+shapes of fix come out of this, and tatara does both.
 
 ### 1. Fixing the code the alert pointed at
 
 The common case: the alert is real, and the remediation is a code change in the implicated
-component repo. The incident agent's issue names the component (via
-[`propose_issue(repo, body)`](../workflows/incident.md#5-agent-output)); an implementation
-agent then edits that component and opens a PR.
+component repo. The incident agent's [`submit_outcome(action=file_issue)`](../workflows/incident.md)
+call names the component repo directly; an implementation agent then edits that component and
+opens a PR.
 
 **Example - a latency alert becomes a code fix.** A `tatara_memory_query_latency` alert
 fires. The incident agent follows the alert's `generatorURL`, runs PromQL to confirm the
@@ -154,24 +158,23 @@ escape hatch for work that turns out to be done.
 `--dry-run` flag to the enrollment command."* By the time the implementation agent picks it
 up, another PR - shipped for a sibling issue on the shared branch - has already added
 exactly that flag. Instead of duplicating the change or opening an empty PR, the agent
-reads the repository, confirms the flag exists, and terminates by calling **`already_done`**
-with a pointer to the commit that delivered it. The issue is closed as *already delivered*,
-not *refused* - a distinct, honest outcome. No redundant PR is opened, and the tracker
-reflects reality.
+reads the repository, confirms the flag exists, and terminates by calling
+`submit_outcome(action=declined, decline_reason=...)`, pointing at the commit that delivered
+it. The Task parks as `implement-declined` rather than opening a redundant PR, and the
+tracker reflects reality.
 
 This matters because autonomous loops that only ever *add* work eventually drown in
-duplicates. Refine and `already_done` are the counter-pressure:
+duplicates. Refine and the decline path are the counter-pressure:
 
 | Situation | Terminal action | Result |
 |---|---|---|
-| The fix already shipped (prior PR, shared branch) | `already_done(reason=...)` | Issue closed as delivered; no PR |
-| Duplicate or stale proposal in the backlog | refine `close_issue` / `edit_issue` | Backlog groomed before brainstorm runs |
-| Recoverably-parked implementation | refine tightens scope; operator re-rolls | Work resumes with better direction |
+| The fix already shipped (prior PR, shared branch) | `submit_outcome(action=declined)` | Task parks `implement-declined`; no PR |
+| Duplicate or stale proposal in the backlog | refine `closes[]` / `links[]` | Backlog groomed before brainstorm runs |
+| Recoverably-parked implementation | refine `folds[]` adopts the work; operator re-rolls | Work resumes with better direction |
 
 Refine itself never writes code and never opens issues - it only grooms - so this
 pruning can never turn into a runaway. See the
-[refine workflow](../workflows/refine.md#groom-only-contract) for the full groom-only
-contract.
+[refine workflow](../workflows/refine.md) for the full groom-only contract.
 
 ---
 
@@ -188,15 +191,15 @@ next due cron tick does. See [Documentation](../workflows/documentation.md).
 
 The freshness signal comes from the component repos themselves. When a feature lands, the
 implementing agent records what shipped via
-[`change_summary`](../workflows/implement.md) - its `delivered_scope` and
-`most_problematic` fields are recorded into the MR body **and carried into the docs** the
-next time the `documentation` cron fires.
+[`submit_outcome(action=submitted)`](../workflows/implement.md) - its `title`, `body`, and
+required `change_significance` land in the MR **and carry into the docs** the next time the
+nightly `documentation` batch fires, covering every Task delivered since the last run.
 
 ```mermaid
 flowchart LR
-    A[Component MRs merge<br/>features delivered] --> B[change_summary records<br/>delivered_scope on each]
-    B --> C[documentation cron tick<br/>scm.cron.documentation]
-    C --> D{Non-trivial change<br/>since last run?}
+    A[Component MRs merge<br/>features delivered] --> B[submit_outcome records<br/>title / body / significance]
+    B --> C[nightly documentation Task<br/>one batch per project]
+    C --> D{Anything delivered<br/>since last run?}
     D -->|no| E[Skip this tick]
     D -->|yes| F[documentation agent<br/>edits docs/*.md, opens PR]
     F --> G[mkdocs build --strict<br/>green -> merged -> published]
@@ -220,11 +223,12 @@ pointed at tatara's own repos. The four categories reinforce each other:
 
 - **Brainstorm** surfaces improvements from the graph.
 - **Incidents** convert live alerts into code *and* alerting fixes.
-- **Refine** and **`already_done`** keep the backlog honest by closing what is already done.
+- **Refine** and the decline path keep the backlog honest by closing what is already done.
 - **Documentation** is refreshed by the same loop, from the features that land.
 
 Every one of these runs under the human gates in
 [The Agentic Operating Model](agentic-model.md): a person still decides which proposals get
-worked and can require an approving review before any merge. What changes is the *default
+worked, by comment, and the platform's single bot identity means that decision - not a
+per-PR human sign-off - is the gate. What changes is the *default
 direction of drift*. Left alone, most platforms decay. Left alone, tatara files, implements,
 reviews, and merges its own improvements - and genuinely gets better.

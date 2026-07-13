@@ -73,15 +73,14 @@ of them is a hard no for your environment, tatara as shipped is not for you yet.
 
 ### 1. Kubernetes
 
-Not negotiable. The platform **is** a `controller-runtime` operator. Five root
-CRDs (`Project`, `Repository`, `Task`, `Subtask`, `QueuedEvent`) are the state
-store; every agent turn runs as a `Pod`; the manager calls
-`ctrl.GetConfigOrDie()` at boot and cannot start without a cluster. (`WorkItem`
-is **not** a CRD - it is an embedded `WorkItemRef` struct carried in
-`Task.Status.WorkItems` as the per-Project work-item ledger; `kubectl get
-workitems` returns nothing.) There is no alternative scheduler and no
-non-Kubernetes state backend. "Run tatara without Kubernetes" is not a
-configuration - it would be a different product.
+Not negotiable. The platform **is** a `controller-runtime` operator. Six root
+CRDs (`Project`, `Repository`, `Task`, `QueuedEvent`, `Issue`, `MergeRequest`)
+are the state store; every agent turn runs as a `Pod`; the manager calls
+`ctrl.GetConfigOrDie()` at boot and cannot start without a cluster.
+`Subtask` is deleted and `WorkItem` was never a CRD to begin with - both retired concepts; per-implementation-stream state now lives on the `Task`'s own `status.notes` journal plus the `Issue`/`MergeRequest` CRs it owns. <!-- stale-ok: Subtask, WorkItem -->
+There is no alternative scheduler and no non-Kubernetes state backend. "Run
+tatara without Kubernetes" is not a configuration - it would be a different
+product.
 
 ### 2. A coding agent
 
@@ -99,8 +98,10 @@ the best-abstracted axis: provider selection is a switch over `github` and
 `gitlab`, both fully implemented, with header-based provider auto-detection.
 Needing *an* SCM is irreducible; the specific provider is swappable **within
 those two**. A third provider (Gitea, Forgejo, Bitbucket) is a code change, and
-some capabilities (GitHub Projects v2, push-CD deploy supervision) are
-GitHub-only. See [Seam 3](#seam-3-the-scm-provider).
+some capabilities (GitHub Projects v2, GitHub's atomic review-plus-inline-comments
+API that the merge sequence's forge-side idempotency check relies on) are
+GitHub-only - GitLab's equivalent path is N+1 calls with an inverted posting
+order. See [Seam 3](#seam-3-the-scm-provider).
 
 ### 4. An OIDC identity provider
 
@@ -250,7 +251,7 @@ config change.
 |---|---|---|---|
 | 1 | Single Claude adapter + operator's Anthropic precondition | wrapper binary; `pod.go:135`, `pod.go:460` | Formalize the HTTP seam as a canonical `AgentRuntime` contract; move credential env-name, secret key, and OIDC audience into a per-Project agent-adapter descriptor; ship the Claude wrapper as one impl. New binary + operator + CRD change. |
 | 2 | Deploy-supervision welded to helmfile + GitHub | `deploy_supervision.go` (six constants) | Lift terminal repo, confirm workflow, pin locators, and artifact attribution into a per-Project deploy-target descriptor; default to today's values for back-compat. |
-| 3 | Helmfile path is the *hot* path, not opt-in | `change_summary` tool / REST; `writeback.go:311` | Declaring change significance is required at the summary tool, so the helmfile-coupled push-CD path fires for every implemented change. The no-helmfile "close-on-merge" fallback is logged as an anomaly (`opened_no_significance`). Demote significance to optional; add a first-class `deployConfirmation: none|helmfile|<target>` toggle. |
+| 3 | Helmfile path is the *hot* path, not opt-in | `submit_outcome(action=submitted)`'s required `change_significance` field; `writeback.go:311` | Declaring change significance is required on every `implement`/`documentation` outcome, so the helmfile-coupled push-CD path fires for every implemented change. The no-helmfile "close-on-merge" fallback is logged as an anomaly (`opened_no_significance`). Demote significance to optional; add a first-class `deployConfirmation: none|helmfile|<target>` toggle. |
 | 4 | Memory stack mandatory, no off switch | `task_controller.go:226`; `MemorySpec` has no `enabled` | Add `spec.memory.enabled` (mirror `grafana.enabled`); skip provisioning and the Task gate when false. Optionally accept an external Postgres DSN to drop CNPG. Highest-leverage single change. |
 | 5 | DeployWatcher is GitHub-only and git-file-based | `github_deploy.go` | Redefine the seam as a provider-neutral `DeployObserver` (published version / convergence outcome / applied state); confirm against **live cluster state** (the operator already has k8s API access) or a CD-native applied revision, not git files. |
 | 6 | OIDC mandatory to boot, no no-auth mode | `config.go:455-465`; memory middleware | Add an auth-disabled mode to the memory middleware and relax the operator's mandatory-OIDC validation when disabled, for single-tenant / dev. |

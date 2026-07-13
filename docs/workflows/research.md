@@ -21,30 +21,28 @@ ADR-style artifact rather than a plain proposal issue. This is Phase 1 of a four
 | Piece | Status | Where |
 |---|---|---|
 | `tatara-deep-architectural-research` SKILL.md + ADR template | Live | `tatara-agent-skills/skills/brainstorming/tatara-deep-architectural-research/` |
-| `skip_research` MCP tool | Live | `tatara-cli` MCP tools, registered in the brainstorm tool profile |
+| Cheap early-exit via `submit_outcome(action=skip)` | Live | shared with plain brainstorm - see [The skip path](#the-skip-path) |
 | `archfitness` import-graph checker | Live, but currently synthetic-test-only | `tatara-operator/internal/archfitness` |
 | ADR-framed brainstorm prompt | Live | brainstorm goal-prompt builder |
 | Serena MCP env-gate plumbing | Plumbed end-to-end but **inert** | `TATARA_SERENA_URL` unset in helmfile; no Serena deployed |
 | Dedicated research Task kind, web-search/arXiv/OpenAlex/Firecrawl MCP servers, egress policy, tournament-rank proposal admission, SCMProvider port refactor, skills-archive/self-improvement loop | **Not built** - design-doc only (Phases 2-4) | n/a |
 
-## skip_research
+## The skip path
 
-`skip_research(reason)` is an escape-hatch MCP tool available to brainstorm agents. It requires
-a non-empty `reason` and posts `{"action": "none", "reason": ...}` to the Task's brainstorm
-outcome endpoint - the same outcome shape as a normal no-yield brainstorm cycle. It exists so an
-agent that surveys a problem and finds nothing novel or shippable can terminate cheaply instead
-of running an expensive research fan-out for no result.
-
-`skip_research` is a **tool name**, not a CRD field - there is no `skipResearch` field on the
-`Project` or `Task` spec.
+A research-flavored brainstorm agent that surveys a problem and finds nothing novel or
+shippable exits the same way any brainstorm pod does: `submit_outcome(action=skip, reason=...)`,
+with a required non-empty `reason` (see [Brainstorm](brainstorm.md#output)). There is no
+dedicated `skip_research` tool and no separate outcome shape - research is a goal variant of
+brainstorm, so it shares brainstorm's one `submit_outcome` schema, cheap early-exit included.
 
 ## The ADR artifact
 
 Where a normal brainstorm proposal is a single issue body forbidden from listing open questions,
 a research-flavored proposal is framed as an ADR: problem statement with file:line evidence,
 2-3 options with tradeoffs, a recommendation, and (unlike a normal proposal) open questions are
-explicitly allowed. It is filed the same way as any other proposal - via `propose_issue`, landing
-as an issue body - it is **not** written to an in-repo `docs/adr/` directory. Cross-cycle
+explicitly allowed. It is filed the same way as any other proposal - via
+`submit_outcome(action=propose)`, landing as an issue body - it is **not** written to an in-repo
+`docs/adr/` directory. Cross-cycle
 championing (letting a research thread survive multiple brainstorm cycles, exempt from the
 one-issue-per-cycle / silence-over-noise defaults) is called out in the design doc as still
 deferred.
@@ -69,16 +67,15 @@ paper, or crawl MCP server is wired to consume that egress yet - that is Phase 2
 The per-repo research fan-out that used to go through the `Workflow` tool (with an `ultracode`
 effort tier) is now plain `Agent`-tool subagent dispatch - same topology (one subagent per repo
 or per research angle, results reported back compactly), cheaper mechanism. `tatara-health-check`
-(the skill backing the retired `healthCheck` kind) is removed along with the kind; its
-"survey and report" behavior is absorbed into brainstorm's own subagent fan-out described on
-[Brainstorm](brainstorm.md).
+is removed; its "survey and report" behavior is absorbed into brainstorm's own subagent fan-out
+described on [Brainstorm](brainstorm.md).
 
 ## Current capability (Phase 1)
 
 As deployed, deep architectural research is: the existing brainstorm loop, plus a skill that asks
 the agent to frame findings as an ADR against the in-cluster knowledge graph and on-disk sources,
-plus a cheap early-exit tool (`skip_research`) and an as-yet-unenforced import-fitness check
-(`archfitness`). It is **not** a live, internet-connected, multi-source research agent: the
+plus the shared `submit_outcome(action=skip)` early-exit and an as-yet-unenforced import-fitness
+check (`archfitness`). It is **not** a live, internet-connected, multi-source research agent: the
 internet-facing, multi-agent "survey the field" capability from the original design (Phases 2-4)
 is unimplemented. Enrolling `internet` in `brainstorm.sources` only stamps an egress label; no
 web-search, academic-paper, or crawl MCP server is wired to consume it yet.

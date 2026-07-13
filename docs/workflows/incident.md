@@ -5,10 +5,13 @@ title: Incident Response
 # Incident Response
 
 When a Grafana alert fires, the tatara operator receives a webhook, deduplicates it against
-any already-running investigation, and spawns a project-scoped `incident` Task. The agent
-queries Grafana live, diagnoses the problem, and files exactly one evidence-backed issue via
-`propose_issue`. That issue enters the normal triage/brainstorm flow with an additive
-`tatara-incident` label so it is immediately visible as incident-originated.
+any already-running investigation, and spawns a project-scoped `incident` Task at the
+`investigating` stage. The agent queries Grafana live, diagnoses the problem, and submits an
+outcome that either files exactly one evidence-backed issue - carrying an additive
+`tatara-incident` label so it is immediately visible as incident-originated - or declares a
+confirmed false positive. `investigating` is the stage the `incident` origin kind enters at
+`triaging`, and it runs the `incident` agent kind - see the
+[origin-kind table](index.md#origin-kinds-and-the-agent-kind-each-one-spawns).
 
 ---
 
@@ -142,48 +145,31 @@ context - same principle as brainstorm's fan-out, same retirement of the `Workfl
 
 ## 5. Agent output
 
-The agent's intended terminal action is **`propose_issue(repo, body)`**, called once after
-investigation. The `repo` argument is chosen from the Project's enrolled repositories based on
-which one the evidence implicates.
+The pod's only path forward is `submit_outcome`:
 
-!!! note "There is no `incident` argument on `propose_issue`"
-    `propose_issue` takes `project`, `repo`, `title`, `body`, `kind`, `systemicId` - no
-    `incident` flag. The incident-origin is **operator-inferred**, not agent-supplied: when the
-    writeback layer handles the proposal it checks for an in-flight `incident` Task on the project
-    (`incidentTask != nil`) and, if one exists, sets `ProposedIssue.Incident` and carries the
-    in-flight Task's alert-group identity onto the proposal (for recurring-alert dedup). The
-    incident goal prompt itself instructs the agent to call `propose_issue(repo, body)` with no
-    flag. "Called exactly once" is a prompt instruction, not a tool-level constraint - the
-    `incident` tool profile also grants `comment_on_issue`, `change_summary`,
-    `decline_implementation`, `task_update` and the `subtask_*` tools; `propose_issue` is simply
-    the one the goal steers the agent to as its output.
-
-Given an in-flight incident Task, the operator's writeback layer:
-
-1. Creates the issue in the specified repository via the SCM API.
-2. Stamps it with the phase label (`tatara-brainstorming` by default) to start the triage
-   flow.
-3. Stamps it with the **incident label** (`tatara-incident` by default) as an additive,
-   permanent marker.
-
+```json
+{"action":"file_issue","alert_rules":["tatara_operator_reaper_stalled"],
+ "issue":{"repo":"tatara-operator","title":"...","body":"..."},
+ "reason":"..."}
 ```
-propose_issue(repo, body)   (operator infers incident-origin from the in-flight incident Task)
-    |
-    v
-SCM issue created with:
-  - tatara-brainstorming  (phase label, managed/swept by the reconciler)
-  - tatara-incident       (additive label, NEVER swept)
+or
+```json
+{"action":"false_positive","alert_rules":["tatara_operator_reaper_stalled"],
+ "reason":"..."}
 ```
 
-The incident label is never removed by the operator's phase-label reconciler. An issue filed
-by an incident agent carries `tatara-incident` for its entire lifetime regardless of which
-phase it is in. This is intentional: it allows filtering and dashboarding on incident-origin
-without needing separate issue types.
+`alert_rules` (at least one) and `reason` are **required on both** actions - an incident always
+cites which rule(s) fired and why it reached its verdict, confirmed or not.
 
-### False positives
-
-If the agent determines the alert is a **confirmed false positive**, it terminates with a
-one-line note and does NOT call `propose_issue`. No issue is created.
+- **`file_issue`:** the operator creates the issue in the named repository, mints the Issue CR
+  **under this same Task** - the incident Task, not a fresh one - and moves the stage
+  `investigating -> clarifying`. The issue is additively marked `tatara-incident`
+  (configurable, below) for its entire lifetime, independent of whatever stage its owning Task
+  is in - this is what lets it be filtered and dashboarded on incident-origin without a
+  separate issue type.
+- **`false_positive`:** the stage moves `investigating -> rejected`. No issue is created, and
+  `status.documentedBy` stays permanently empty - a false positive owns no merged MR, so it is
+  never eligible for the nightly [documentation](documentation.md) batch either.
 
 ### Custom incident label
 
@@ -210,7 +196,7 @@ The only branch is in **which goal the agent gets**. The webhook checks
 
 | `tatara_tier_quality` label | Goal | Behavior |
 |---|---|---|
-| absent / `false` | `GoalProject` | Standard read-only investigation ending in `propose_issue`; the agent is explicitly told not to remediate |
+| absent / `false` | `GoalProject` | Standard read-only investigation ending in `submit_outcome(action=file_issue)`; the agent is explicitly told not to remediate |
 | `true` | `GoalTierRevert(project, kind, model)` | Investigates the quality regression for the named `kind`/`model` and opens a **GitOps MR against `tatara-helmfile`** (`values/project-<project>/common.yaml`) bumping `agent.modelByKind[kind]` back to the higher tier (e.g. `claude-opus-4-8`) and raising `agent.effortByKind[kind]` |
 
 !!! warning "Agent proposes, never merges"
@@ -225,17 +211,24 @@ The only branch is in **which goal the agent gets**. The webhook checks
 
 ## 6. Queue priority
 
-Incident events are enqueued with `class: alert` rather than the default `class: normal`.
-The queue maintains a reserved capacity slot for alert-class events:
+Incident events are enqueued with `class: alert` and `priority: 0` - two independent guarantees,
+not one. `class: alert` draws from its own reserved pool, on top of the normal pool:
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `spec.queue.alertCapacity` | `1` | Slots reserved exclusively for `class: alert` events |
-| `spec.queue.capacity` | `3` | Slots for normal-class events |
+| `spec.agent.maxConcurrentAgents` | `3` | Slots for the normal pool (also the project-wide pause switch at `0`) |
 
-A saturated normal queue (all 3 implementation/brainstorm tasks running) does **not** block
-an incoming incident. The alert slot is admitted immediately. This ensures an incident
-investigation starts promptly even during a busy implementation cycle.
+A saturated normal pool does **not** block an incoming incident: the alert pool is drained
+first and independently, so an incident is admitted even while every normal-pool slot is
+running an implement/brainstorm/review pod. `priority: 0` on the `QueuedEvent` itself (see the
+[QueuedEvent reference](../reference/queued-event.md)) is a second, redundant guarantee within
+whichever pool the event does land in.
+
+!!! danger "An incident stuck in `triaging` for 15 minutes is a CRITICAL alert"
+    Between the reserved alert-pool capacity and priority-0 admission, an incident should never
+    queue meaningfully. A `triaging`-stage incident Task older than 15 minutes indicates the
+    admission path itself is broken, not ordinary backlog pressure - it pages, not just logs.
 
 ---
 
@@ -253,18 +246,16 @@ sequenceDiagram
     Grafana->>Operator: POST firing alert<br/>Authorization: Bearer <token>
     Operator->>Operator: Verify bearer token<br/>Check grafana.enabled
     Operator->>Operator: Compute groupHash = sha256(groupKey)[:16]
-    Operator->>Queue: EnqueueEvent(name=groupHash, class=alert)
+    Operator->>Queue: EnqueueEvent(dedupKey=groupHash, class=alert, priority=0)
     Note over Queue: Duplicate fire -> AlreadyExists, drop
-    Queue->>Task: Admit -> create incident Task<br/>label tatara.dev/alert-group=<hash><br/>annotation tatara.dev/grafana-alert=<ctx>
+    Queue->>Task: Admit -> create incident Task at investigating<br/>label tatara.dev/alert-group=<hash><br/>annotation tatara.dev/grafana-alert=<ctx>
     Task->>Agent: Spawn pod with grafana-mcp
     Agent->>Agent: Query Grafana (PromQL/LogQL/<br/>dashboards/alert rule)
     Agent->>Agent: Form diagnosis
-    Agent->>SCM: propose_issue(repo, body)
-    Note over SCM: operator infers incident-origin from<br/>the in-flight incident Task
-    SCM-->>Agent: Issue URL
-    Agent->>Task: Task Succeeded
-    SCM->>Operator: Webhook: issue labeled tatara-brainstorming
-    Operator->>Task: Create clarify Task<br/>(label=tatara-incident persists)
+    Agent->>Task: submit_outcome(action=file_issue, alert_rules, reason)
+    Task->>SCM: Operator creates the issue,<br/>mints the Issue CR under this Task
+    SCM-->>Task: Issue URL
+    Task->>Task: stage: investigating -> clarifying
 ```
 
 ---
@@ -319,10 +310,10 @@ files directly and open a PR; `terraform apply` runs on merge to main.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `alertCapacity` | `int` | `1` | Reserved concurrent slots for `class: alert` (incident) events. Independent of `capacity`. |
+| `alertCapacity` | `int` | `1` | Reserved concurrent slots for `class: alert` (incident) events. Independent of `spec.agent.maxConcurrentAgents`. |
 
 ### `spec.scm.incidentLabel`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `incidentLabel` | `string` | `tatara-incident` | Additive label stamped on every incident-originated issue. Never swept by the phase-label reconciler. |
+| `incidentLabel` | `string` | `tatara-incident` | Additive label stamped on every incident-originated issue for its entire lifetime. It is a permanent origin marker, never a status projection - see [Labels are write-only](../operations/security/approval-gates.md#labels-are-write-only). |

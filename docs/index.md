@@ -20,7 +20,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     ---
 
-    Issues move through triage, implementation, and review agents in sequence, each handing off automatically. A maintainer approves by applying a label; tatara merges once required checks are green.
+    Issues move through triage, implementation, and review agents in sequence, each a discrete pod handing off through the operator's stage machine. A maintainer approves by posting a comment that matches a configured phrase; the operator itself merges once a review pod accepts the change and required checks are green.
 
     [:octicons-arrow-right-24: The agentic operating model](concepts/agentic-model.md)
 
@@ -36,7 +36,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     ---
 
-    Four CRDs (`Project`, `Repository`, `Task`, `QueuedEvent`) managed by a controller-runtime operator. Everything is a CR; everything is auditable.
+    Six CRDs (`Project`, `Repository`, `Task`, `QueuedEvent`, `Issue`, `MergeRequest`) managed by a controller-runtime operator. Everything is a CR; everything is auditable.
 
     [:octicons-arrow-right-24: CRD Reference](reference/index.md)
 
@@ -90,7 +90,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     You want your team's backlog to move faster without more headcount. You want proposals to appear automatically, implemented code to be reviewable, and a clear audit trail.
 
-    Tatara generates improvement proposals from a periodic brainstorm, routes them through your normal PR review flow, and requires a human maintainer to apply an explicit approval label before any code is written. Nothing is unilateral.
+    Tatara generates improvement proposals from a periodic brainstorm, routes them through your normal PR review flow, and requires a human maintainer to post an approving comment before any code is written. Nothing is unilateral.
 
     Read [The Big Picture](explainers/big-picture.md) and [Workflows](workflows/index.md).
 
@@ -119,7 +119,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 | PR review | Reviews human-authored PRs with inline suggestions |
 | Incident response | Grafana alert fires an investigation agent with Grafana MCP access |
 | Brainstorm | Periodic scan of the codebase and knowledge graph proposes improvements, from new features to tech-debt and CI health fixes |
-| Conversation persistence | S3-backed transcripts resume across pod restarts |
+| Task continuity | A Task outlives any single pod: `Task.status.notes` is an append-only journal every pod reads at turn 0, so a bounded pod's handoff carries forward to the next one |
 | Multi-repo tasks | Single task can span and open PRs across multiple repositories |
 | Systemic improvements | Groups related issues into one agent run with a combined PR |
 

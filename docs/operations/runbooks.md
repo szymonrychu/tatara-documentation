@@ -29,20 +29,31 @@ Operational runbooks for common tatara failure scenarios. Each entry lists sympt
 
 ## Agent pod stuck / no turns completing
 
-**Symptoms:** Task in `Running` phase, `turnsCompleted` not incrementing, wrapper `/readyz` fails.
+**Symptoms:** Task sitting in a pod-spawning stage (e.g. `implementing`, `reviewing`), `stats.turns`
+not incrementing, wrapper `/readyz` fails. See the
+[stage reference](../reference/task-stages.md) for which stages spawn which agent kind.
 
 **Diagnosis:**
 ```bash
+kubectl -n tatara get task <task-name> -o jsonpath='{.status.stage}{" "}{.status.stageReason}{"\n"}'
 kubectl -n tatara get pods -l tatara.io/task=<task-name>
 kubectl -n tatara logs <pod-name> -c wrapper --tail=50
 kubectl -n tatara logs <pod-name> -c wrapper --previous   # if restarted
 ```
 
+Check which of the three per-stage clocks is armed before assuming the pod itself is at fault
+(see the stage reference's clock table): a pod that never becomes ready is on the READINESS
+clock and **respawns automatically** (bounded by `maxPodRecreations`, default 3) rather than
+failing the Task outright - the terminal reason when that budget is spent is
+`pod-recreation-exhausted`, not a stalled-forever state.
+
 **Common causes:**
-1. **Boot quiescence timeout** - claude process hung during boot dialog detection. Check logs for `bootWait` timeout. Fix: delete the pod; the operator respawns.
+1. **Boot quiescence timeout** - claude process hung during boot dialog detection. Check logs for `bootWait` timeout. This is the READINESS clock; the operator respawns the pod automatically. If you see this recurring, watch `stats.podRecreations` climb toward `maxPodRecreations` and `stageReason` land on `pod-recreation-exhausted` once exhausted.
 2. **Anthropic credential invalid** - the wrapper authenticates with `CLAUDE_CODE_OAUTH_TOKEN`, injected from the `oauth-token` key of the Anthropic Secret (`anthropicSecretName`). An expired or revoked token fails boot. Update the Secret key and let the operator respawn the pod.
 3. **OIDC token fetch failure** - Keycloak unreachable. Check `OIDC_ISSUER` and Keycloak health.
-4. **MCP server not starting** - `tatara mcp` fails at init. Check `TATARA_MEMORY_URL` and `TATARA_OPERATOR_URL` are reachable from the pod.
+4. **MCP server not starting** - `tatara mcp` fails at init. Check `TATARA_MEMORY_URL` and `TATARA_OPERATOR_URL` are reachable from the pod. If instead the MCP server starts but the Task fails instantly with `stageReason=agent-contract-mismatch`, this is not a boot problem - see
+   [`failed(agent-contract-mismatch)`](#failedagent-contract-mismatch) below.
+5. **Stage-deadline or admission-starved park** - if the Task is `parked` rather than stuck in a pod stage, check `stageReason`. `admission-starved` means it has been waiting on a `maxConcurrentAgents` slot past the 24h admission clock (skipped entirely while the project is paused at `maxConcurrentAgents=0`); `stage-deadline` means an agent was running but blew the per-stage work budget - see the budget table on the [stage reference](../reference/task-stages.md).
 
 ---
 
@@ -54,6 +65,7 @@ kubectl -n tatara logs <pod-name> -c wrapper --previous   # if restarted
 ```bash
 kubectl -n tatara logs deploy/tatara-operator | grep webhook | tail -50
 kubectl -n tatara get queuedevents
+kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.stage}{" "}{.status.stageReason}{"\n"}{end}'
 ```
 
 **Common causes:**
@@ -61,6 +73,69 @@ kubectl -n tatara get queuedevents
 2. **Reporter allowlist drop** - `spec.scm.reporterLogins` is set and the issue author is not in the list. Intentional if you set this; add the account or clear the list.
 3. **WebhookURL not registered** - check `Project.status.webhookURL` and confirm it matches the GitHub/GitLab webhook URL. The URL is set automatically on Project reconcile.
 4. **Bot-authored issue** - the operator ignores issues authored by `botLogin` to prevent self-loops. Expected behavior.
+5. **`maxOpenTasks` cap reached** - the Project's active-Task creation budget (default 6, counts every Task whose stage is pod-eligible; `parked(backlog-sweep)` Tasks do not count against it) is exhausted. A sweep that would exceed it mints nothing this pass. Check `Project.spec.maxOpenTasks` against the current count of active Tasks; raise it or wait for one to clear a stage.
+6. **`maxConcurrentAgents=0`** - the Project is paused. At 0, `admit()` short-circuits and no `QueuedEvent` is ever admitted, so no pod and no Task work happens, even though the Task/QueuedEvent CR itself may exist. This is the intended full-project kill switch, not a bug - check `Project.spec.maxConcurrentAgents` if work has stopped platform-wide for one Project.
+7. **Landed on `parked(backlog-sweep)` instead** - a webhook-originated Task from a sweep-discovered backlog issue starts parked with no pod and no queue entry by design; it exists only to own the Issue CR until a non-bot comment promotes it to `triaging` (subject to the `maxOpenTasks` cap in cause 5). This is expected, not stuck.
+
+---
+
+## `parked(identity-unverified)`
+
+**Symptoms:** A `clarifying`-stage Task moved to `parked` with `stageReason=identity-unverified`
+after a maintainer commented `decision=implement` intent, but the Task never advanced to
+`approved`.
+
+**Explanation:** The Task's `clarifying -> approved` transition requires the C.6 approval
+grammar to pass for **every** Issue the Task owns, not just one if the Task is multi-issue. The
+grammar failed - the operator saw a comment but it did not satisfy the approval check.
+
+**Diagnosis, in order:**
+
+1. **Phrase match.** Confirm the maintainer's comment matches one of `Project.spec.scm.approvalPhrases` under an **anchored, whole-line** match - a phrase embedded mid-sentence or as part of a longer line does not count. Check the exact phrase list on the Project CR.
+2. **Commenter identity.** Confirm the commenter's login is in `Project.spec.scm.maintainerLogins` and is **not** the bot's own login (`botLogin`) - a bot self-comment can never satisfy the grammar, by design.
+3. **Every owned Issue, not just one.** If the Task owns more than one Issue, every one of them needs its own matching comment from a maintainer login. A Task with three owned Issues and only one approved comment stays parked.
+
+For the full grammar specification (anchoring rules, phrase normalization, multi-issue
+semantics) see
+[Security: approval gates](../operations/security/approval-gates.md#the-approval-grammar) - this
+runbook only tells you what to check, not how the grammar itself works.
+
+**Re-entry:** `identity-unverified` is not one of the narrow `parked` re-entry cases - a fresh
+maintainer comment does not automatically retry the grammar. Correct the phrase or login issue
+and have the maintainer re-comment with a matching, anchored phrase.
+
+---
+
+## `failed(agent-contract-mismatch)`
+
+**Symptoms:** A Task fails **instantly** on entering a pod stage, before turn-0 is ever
+submitted, with `stageReason=agent-contract-mismatch`. No turn budget was spent.
+
+**Explanation:** The operator and the agent image (wrapper/cli/skills) ship in different helm
+releases applied concurrently by the release cascade, so a version-skewed moment is reachable:
+an operator upgrade that bumped `TATARA_CONTRACT_VERSION` landed without a matching agent-image
+pin bump in the same window (or vice versa). The wrapper's MCP server refuses to start on a
+version mismatch, and the operator independently verifies the wrapper's reported contract
+version before submitting turn-0 - this failure is the guard working as intended, not a random
+crash.
+
+**Diagnosis:**
+```bash
+kubectl -n tatara logs deploy/tatara-operator | grep agent_contract_mismatch | tail -20
+curl -s http://localhost:9090/metrics | grep operator_agent_contract_mismatch_total
+```
+The `operator_agent_contract_mismatch_total{expected,got,image}` metric tells you which image
+is stale: `expected` is the operator's `TATARA_CONTRACT_VERSION`, `got` is what the wrapper
+reported, and `image` names the offending pin.
+
+**Fix:** Re-check the helmfile pins for the operator release and the agent-image release
+(wrapper/cli/skills) in `tatara-helmfile`. One of them did not advance in step with the other.
+Bump the stale pin so both sides agree on the contract version, then let the operator re-admit
+the Task (it does not auto-retry; treat it like any other `failed` Task requiring a human look,
+per the [stage reference](../reference/task-stages.md)).
+
+See [Deployment](deployment.md#upgrades) for why this window is reachable even when both
+pipelines are green.
 
 ---
 

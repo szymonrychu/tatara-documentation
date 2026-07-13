@@ -4,7 +4,7 @@ title: Components
 
 # Components
 
-This section covers the eight independent GitHub repositories that make up the
+This section covers the seven independent GitHub repositories that make up the
 running platform and its deploy/observability tooling. Each ships its own Helm
 chart (or deploy mechanism), CI pipeline, and independent release lifecycle.
 There is no umbrella helmfile and no monorepo. Components compose into the
@@ -25,7 +25,6 @@ agent skills) and `tatara-documentation` (this site).
 | [`tatara-cli`](cli.md) | OIDC device-flow auth, REST passthrough to any tatara backend, stdio MCP server for agent sessions | Go | Homebrew tap (`szymonrychu/tap`) + binary pre-installed in wrapper container image | 2 |
 | [`tatara-claude-code-wrapper`](claude-code-wrapper.md) | Single-session Claude Code supervisor over PTY; submits turns, captures results via Stop hook | Go + Claude Code | K8s Pod - ephemeral, one per Task, spawned by operator | 4 |
 | [`tatara-memory-repo-ingester`](repo-ingester.md) | Stateless batch ingester: language-aware static analysis, code graph + semantic chunk push to memory | Go | K8s Job - ephemeral, spawned per ingest cycle by operator | 3 |
-| [`tatara-chat`](chat.md) | Durable OIDC-gated agent-to-agent chat rooms with cursor-based delivery and long-poll | Go | Helm chart (`tatara-chat`) -> K8s Deployment | 7 |
 | [`tatara-helmfile`](helmfile.md) | GitOps helmfile: owns all platform Helm releases and enrollment CRs; deploys on merge via in-cluster ARC runner | Helmfile + YAML | GitHub Actions + in-cluster ARC runner | - |
 | [`tatara-observability`](observability.md) | Observability-as-code: Grafana alert rules applied by Terraform on merge to main | Terraform + YAML | GitHub Actions | - |
 
@@ -38,7 +37,7 @@ agent skills) and `tatara-documentation` (this site).
 
 ## Plane model
 
-The eight components fall into three functional layers.
+The seven components fall into three functional layers.
 
 ### Control plane
 
@@ -47,7 +46,7 @@ Nothing in the data plane runs without the control plane authorizing it.
 
 | Component | Responsibility |
 |---|---|
-| `tatara-operator` | Single source of truth for task state. Reconciles four CRDs (`Project` / `Repository` / `Task` / `QueuedEvent`); a fifth, `Subtask`, is a data-only REST object with no reconciler. Decides what runs, when, and with what context. Receives SCM and Grafana webhooks, enforces concurrency and token-budget limits, drives the agent turn loop, supervises deploys, writes results back to the SCM as PRs and comments. |
+| `tatara-operator` | Single source of truth for task state. Reconciles six CRDs (`Project` / `Repository` / `Task` / `QueuedEvent` / `Issue` / `MergeRequest`); `Subtask` is deleted and `WorkItem` was never a CRD. <!-- stale-ok: Subtask, WorkItem --> Decides what runs, when, and with what context. Receives SCM and Grafana webhooks, enforces the `maxConcurrentAgents` pod-admission gate, drives the agent turn loop, walks the merge and deploy sequence itself, writes results back to the SCM as PRs, comments, and (once) a review verdict. |
 | `tatara-helmfile` | Single source of truth for deployment state. Every Helm release version and every enrollment CR is pinned here. No component is deployed outside this repo's apply pipeline. |
 
 ### Data plane
@@ -64,12 +63,11 @@ keeping the knowledge graph current.
 
 ### Supporting infrastructure
 
-Supporting components provide CI/CD, inter-agent coordination, and observability.
-They do not participate in the core agent turn loop.
+Supporting components provide CI/CD and observability. They do not participate in the core
+agent turn loop.
 
 | Component | Responsibility |
 |---|---|
-| `tatara-chat` | Inter-agent coordination. Durable chat rooms (one per implementation stream) let parallel agent subagents exchange findings mid-session without polling the operator. |
 | `tatara-observability` | Platform alerting. Defines Grafana alert rules as declarative YAML; on firing, alerts labelled `system=tatara` route to the operator's Grafana webhook endpoint, which opens an `incident` Task. |
 
 ---
@@ -82,15 +80,16 @@ They do not participate in the core agent turn loop.
 
     ---
 
-    The orchestration brain. Reconciles four CRDs with a controller-runtime
-    manager: `Project`, `Repository`, `Task`, and `QueuedEvent` (a fifth,
-    `Subtask`, is a data-only REST object; `WorkItem` is a Go struct, not a CRD).
+    The orchestration brain. Reconciles six CRDs with a controller-runtime
+    manager: `Project`, `Repository`, `Task`, `QueuedEvent`, `Issue`, and
+    `MergeRequest` (`Subtask` is deleted; `WorkItem` was never a CRD). <!-- stale-ok: Subtask, WorkItem -->
     Provisions per-project memory stacks (CNPG Postgres, Neo4j, LightRAG,
     tatara-memory), ingests repos, receives HMAC-verified GitHub/GitLab and
-    bearer-verified Grafana webhooks, admits queued work against concurrency and
-    token-budget gates, spawns `tatara-claude-code-wrapper` pods, supervises the
-    post-merge push-CD cascade, and writes results back as one PR per changed
-    repository plus an issue comment.
+    bearer-verified Grafana webhooks, admits agent pods against the
+    `maxConcurrentAgents` gate, spawns `tatara-claude-code-wrapper` pods, drives
+    the 15-stage Task machine end to end, walks the merge sequence and the
+    semver push-CD cascade itself, and writes results back as PRs, issue
+    comments, and its own posted review.
 
     [:octicons-arrow-right-24: tatara-operator](operator.md)
 
@@ -112,7 +111,7 @@ They do not participate in the core agent turn loop.
 
     A Go CLI distributed via Homebrew tap (`szymonrychu/tap`) and pre-installed in
     the wrapper container image. Subcommands: `login` (OIDC device flow), `status`,
-    `raw` (REST passthrough to memory, operator, or chat), `mcp` (starts the stdio
+    `raw` (REST passthrough to memory or the operator), `mcp` (starts the stdio
     MCP server Claude Code connects to), and `mcp-config` (writes `.mcp.json`).
     Inside every agent pod it is the sole MCP server - all tool calls flow through it.
 
@@ -125,9 +124,12 @@ They do not participate in the core agent turn loop.
     A Go supervisor that allocates a PTY, spawns an interactive `claude` process,
     submits turns via bracketed-paste input, and captures results from a custom
     cc-stop-hook. Exposes a turn-lifecycle HTTP API (`POST /v1/messages`,
-    `GET /v1/messages/{turnId}`, etc.) that the operator drives. Conversation
-    transcripts can be persisted to S3 and restored on the next pod so successive
-    pods resume the same session rather than starting empty.
+    `GET /v1/messages/{turnId}`, `GET /v1/session`, etc.) that the operator
+    drives. One pod is one bounded run, capped by `agentPodTTLSeconds`; there is
+    no session-resume mode. The operator renders an identical context bundle at
+    every pod's turn 0, and continuity across pods comes from `Task.status.notes`,
+    an append-only journal the wrapper's stop sequence guarantees is written
+    before a TTL-expired pod is torn down.
 
     [:octicons-arrow-right-24: Claude Code Wrapper](claude-code-wrapper.md)
 
@@ -144,27 +146,13 @@ They do not participate in the core agent turn loop.
 
     [:octicons-arrow-right-24: Repo Ingester](repo-ingester.md)
 
--   :material-chat-outline: **tatara-chat**
-
-    ---
-
-    A Go REST service backed by CNPG Postgres. Rooms are identified by UUID;
-    participants receive server-generated handles. Message delivery is cursor-based:
-    each participant's read cursor advances under a `FOR UPDATE` row lock, so
-    concurrent polls never double-deliver. Supports long-poll (`?wait=<dur>`),
-    direct messages, `orchestrator | implementer | reviewer | human` participant
-    roles, and a configurable 24h idle TTL with automatic archival and retention
-    sweep.
-
-    [:octicons-arrow-right-24: tatara-chat](chat.md)
-
 -   :material-ship-wheel: **tatara-helmfile**
 
     ---
 
-    The single source of truth for what is running. A Helmfile repo with four
-    releases (`tatara-operator`, `tatara-chat`, `project-tatara`,
-    `project-infrastructure`). PRs post a sticky `helmfile diff` comment; merge
+    The single source of truth for what is running. A Helmfile repo with
+    releases including `tatara-operator`, `project-tatara`, and
+    `project-infrastructure`. PRs post a sticky `helmfile diff` comment; merge
     to main triggers `helmfile apply` on the in-cluster ARC runner
     (`arc-runner-tatara-helmfile`), using that runner pod's in-cluster
     ServiceAccount. Both the Helm chart version (bare semver `X.Y.Z`) and the
@@ -207,21 +195,19 @@ sequenceDiagram
     participant Ing as repo-ingester Job
     participant Wrap as claude-code-wrapper Pod
     participant Cli as tatara-cli (MCP stdio)
-    participant Chat as tatara-chat
 
-    SCM->>Op: HMAC-verified webhook (issue labelled / push)
+    SCM->>Op: HMAC-verified webhook (comment / push)
     Op->>Mem: provision memory stack (if new Project)
     Op->>Ing: spawn ingest Job for changed repo
     Ing->>Mem: POST entities + edges (code graph, semantic chunks)
     Op->>Wrap: spawn agent Pod (Task context injected as env)
-    Note over Wrap: clone repo, configure MCP,<br/>optionally restore S3 conversation
-    loop each turn
+    Note over Wrap: clone repo, configure MCP,<br/>render fresh context bundle
+    loop each turn, bounded by agentPodTTLSeconds
         Op->>Wrap: POST /v1/messages (turn prompt)
-        Wrap->>Cli: MCP tool calls (memory query, subtask management)
+        Wrap->>Cli: MCP tool calls (memory query, task_note, submit_outcome)
         Cli->>Mem: REST (query memories, entities, code graph)
-        Cli->>Op: REST (create / update Subtask, report issue)
-        Wrap->>Chat: mid-session coordination messages (optional)
-        Wrap-->>Op: callback POST (turn result, conversation pointer)
+        Cli->>Op: REST (task_note, submit_outcome, report_internal_issue)
+        Wrap-->>Op: callback POST (turn result)
     end
     Op->>SCM: PR opened + issue comment (one PR per changed repo)
 ```
@@ -285,19 +271,16 @@ graph TB
 
     subgraph Sup["Supporting"]
         Obs[tatara-observability\nGrafana alerts via Terraform]
-        Chat[tatara-chat\nagent chat rooms]
     end
 
     HF -->|helm apply| Op
     HF -->|helm apply| Mem
-    HF -->|helm apply| Chat
     Op -->|spawns| Wrap
     Op -->|spawns| Ing
     Op -->|provisions per-project| Mem
     Wrap -.-|MCP stdio| Cli
     Cli -->|REST| Mem
     Cli -->|REST| Op
-    Wrap -->|REST| Chat
     Ing -->|REST| Mem
     Obs -->|Grafana alert webhook| Op
 ```

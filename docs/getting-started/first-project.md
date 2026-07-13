@@ -32,7 +32,8 @@ metadata:
 spec:
   scmSecretRef: tatara-scm   # Secret in the same namespace; key "token" = bot PAT
   triggerLabel: tatara        # label that activates the agent loop on issues (default: tatara)
-  maxConcurrentTasks: 3       # max simultaneous agent pods project-wide (default: 3)
+  maxConcurrentAgents: 3      # kill switch: max simultaneous agent PODS project-wide (default: 3; 0 fully pauses the project)
+  agentPodTTLSeconds: 3600    # bounds one pod's life; the Task persists across many pods (default: 3600, minimum 300)
 
   scm:
     provider: github          # github | gitlab
@@ -76,7 +77,9 @@ stringData:
 | `spec.scm.owner` | Yes | - | GitHub org / GitLab group path |
 | `spec.scm.botLogin` | Yes | - | Bot account username |
 | `spec.triggerLabel` | No | `tatara` | Issues labeled with this activate the agent loop |
-| `spec.maxConcurrentTasks` | No | `3` | Caps simultaneous agent pods project-wide |
+| `spec.maxConcurrentAgents` | No | `3` | The project's kill switch: caps simultaneous agent PODS (the admission unit is the pod-spawn, not the Task). `0` fully pauses the project - no pod, of any kind, is ever admitted |
+| `spec.agentPodTTLSeconds` | No | `3600` | Bounds one agent pod's life; the Task itself persists across as many pods as it needs |
+| `spec.maxOpenTasks` | No | `6` | Separate lever from `maxConcurrentAgents`: caps how many Tasks may be *active* (any pod-eligible stage) at once, independent of how many pods are running concurrently |
 
 ---
 
@@ -138,14 +141,14 @@ spec:
 
 | Field | Default | Description |
 |---|---|---|
-| `model` | *(none)* | Claude model string, e.g. `claude-opus-4-8` or `claude-sonnet-4-6`. A single model serves all task types in the Project |
+| `model` | *(none)* | Claude model string, e.g. `claude-opus-4-8` or `claude-sonnet-4-6`. A single model serves all agent kinds in the Project unless overridden per kind in `modelByKind` |
 | `image` | *(none)* | Full `tatara-claude-code-wrapper` image reference (registry + tag). Pin to an explicit tag; never `latest` |
 | `effort` | `xhigh` | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`. Passed to the wrapper as the `EFFORT` env var, which drives Claude's reasoning budget |
-| `maxTurnsPerTask` | `50` | Maximum agent turns before the task is forced to a handover and a fresh pod continues from where the previous left off. Raise for complex implementation tasks (`100` is a proven production value) |
+| `maxTurnsPerPod` | `40` | Caps turns for a single pod's run. The `implement` agent kind is **exempt** - a long healthy coding run is not cut off mid-work; it is bounded only by `maxTurnsPerTask` below |
+| `maxTurnsPerTask` | `300` | Lifetime turn ceiling across every pod of the same Task, for every agent kind including `implement`. This is what actually bounds the `implement` exemption above |
 | `turnTimeoutSeconds` | `1800` | Per-turn inactivity window in seconds. A turn is killed only after this many seconds with **no agent output** - an actively streaming turn is never interrupted |
-| `contextWindowTokens` | `200000` | Context window size reported to the agent. Match this to the model's actual context limit |
-| `handoverThresholdPercent` | `25` | When last-turn input tokens exceed this share of `contextWindowTokens`, the next pod resumes from a compacted handover summary rather than the full conversation transcript |
-| `maxLifecycleIterations` | `10` | Maximum pod starts (lifecycle iterations) per task before it is parked. Prevents infinite restart loops. Minimum 3 |
+| `maxReviewRounds` | `3` | Caps the `reviewing` <-> `implementing` cycle on non-`review`-kind Tasks. Beyond it the Task parks `review-loop-exhausted` |
+| `maxPodRecreations` | `3` | A pod that never becomes Ready within 5 minutes of creation is respawned, not failed, up to this budget. Past it the Task fails at `pod-recreation-exhausted` |
 | `permissionMode` | `bypassPermissions` | Claude Code permission mode. Leave as default; headless agents require this mode |
 
 ```yaml
@@ -154,10 +157,11 @@ spec:
     model: claude-opus-4-8
     image: harbor.example.com/tatara-claude-code-wrapper:v1.2.3
     effort: xhigh
-    maxTurnsPerTask: 100
+    maxTurnsPerPod: 40
+    maxTurnsPerTask: 300
     turnTimeoutSeconds: 1800    # 30 minutes of inactivity, not wall-clock age
-    contextWindowTokens: 200000
-    handoverThresholdPercent: 25
+    maxReviewRounds: 3
+    maxPodRecreations: 3
 ```
 
 !!! tip "Turn timeout semantics"
@@ -195,15 +199,39 @@ spec:
 ## 4. Approval and intake
 
 Tatara's intake model determines which humans can drive the agent loop; a separate allow-list
-determines who can approve an issue for implementation. Approval is granted by exactly one
-action - a maintainer applying the `tatara-approved` label directly to the issue - never by a
-comment, regardless of author.
+determines who can release an issue into implementation.
+
+**You approve by commenting.** When a `clarify` agent has settled the scope, a maintainer posts a
+comment whose text is an approval phrase, and the operator - not the agent - reads it. The operator
+checks that the comment is the most recent one from a maintainer, that its author is not the bot,
+and that its text matches an entry in `spec.scm.approvalPhrases`. It then pins the comment's id on
+the Issue as single-use evidence and lets the work start. No label approves anything.
+
+### What approves, and what does not
+
+| A maintainer comments | Result |
+|---|---|
+| `go ahead` | **Approves.** The whole comment is the phrase |
+| `LGTM` | **Approves.** Case and markdown emphasis are normalised away, so `**LGTM**` works too |
+| `I can't approve this until the tests pass` | Does not approve. The match is anchored to a whole line: the comment must *consist of* a phrase, not merely contain one |
+| `Looks good, ship it once you have rebased on main` | Does not approve. Same reason - and this is the point of the anchoring, because a substring match would have shipped it |
+| `> go ahead` (quoting someone else) | Does not approve. Quoted lines are stripped before the match |
+| An `approve` from an account not in `maintainerLogins` | Does not approve. Identity is checked before the text is read |
+| The bot posting `go ahead` | Does not approve. The bot is excluded structurally, before the text is read |
+
+`approvalPhrases` defaults, when unset, to `approve`, `approved`, `go ahead`, `lgtm`, `ship it`,
+`implement it`. An empty list means those defaults; it never means "any text approves".
+
+If no comment passes, the Task parks and the operator comments on the issue saying what it was
+waiting for. Post a passing comment at any time afterwards and the Task picks up where it left off.
+See [Approval Gates](../operations/security/approval-gates.md#the-approval-grammar) for the full
+rules.
 
 ### Allow-lists
 
 | Field | Effect when empty | Effect when set |
 |---|---|---|
-| `spec.scm.maintainerLogins` | **Closed by default.** No login is a maintainer, so `tatara-approved` can never be verified and no issue - human-filed or bot-authored - ever advances to implementation | Only a label-apply event whose actor is a listed login records approval; a non-maintainer or bot applying the same label is ignored |
+| `spec.scm.maintainerLogins` | **Closed by default.** No login is a maintainer, so no comment can ever approve anything and no issue - human-filed or bot-authored - ever advances to implementation | Only a comment authored by a listed login can approve, and only when its text matches an approval phrase |
 | `spec.scm.reporterLogins` | Issues and comments from any author are processed | Only the bot, maintainers, and listed reporters trigger the agent loop; all others are silently dropped at intake |
 
 !!! danger "Security recommendation"
@@ -227,32 +255,28 @@ Both lists are overridable per-repository via `RepositorySpec.maintainerLogins` 
 
 ### Label set
 
-The operator uses six labels to track an issue through its lifecycle. Defaults work out of the
-box; override only to match organizational naming conventions.
-
-| Field | Default | Lifecycle role |
-|---|---|---|
-| `approvedLabel` | `tatara-approved` | Applied directly by a maintainer to approve an issue - the only approval action; triggers implementation once the webhook verifies the actor |
-| `brainstormingLabel` | `tatara-brainstorming` | Applied while a proposal is under triage or discussion |
-| `implementationLabel` | `tatara-implementation` | Applied while an implementation agent is active |
-| `declinedLabel` | `tatara-declined` | Applied when a proposal is rejected before implementation |
-| `incidentLabel` | `tatara-incident` | Additive label on incident-sourced proposals; never swept by the reconciler |
-| `triggerLabel` (top-level) | `tatara` | The label that activates the agent on any issue |
+The operator projects a small set of labels onto an issue as a **one-way, read-only mirror**
+of `Issue.status.status` and `Task.status.stage` - useful for dashboards and humans scanning the
+issue list, but never read back to decide anything. Defaults work out of the box; override only
+to match organizational naming conventions. Field names are on `spec.scm.*` (e.g.
+`brainstormingLabel`, `declinedLabel`, `incidentLabel`) plus the top-level `triggerLabel`; see the
+merged `tatara-operator` source for the exact current set and defaults, since the label
+vocabulary is deliberately not part of this contract's stable surface the way the approval
+grammar below is.
 
 ### Merge policy
 
-An agent-opened PR is never merged by an agent. Once a `review` pod approves it (applying
-`tatara-approved` plus a native PR approval, from a separate pod that structurally cannot approve
-its own diff), the operator-only [deploy supervisor](../workflows/deploy-supervisor.md) merges it
-as soon as required checks are green. There is no human merge step in the shipped default; to
-require one on top of `review`'s approval, add an SCM branch-protection rule mandating an
-approving review.
-
-!!! note "`mergePolicy` field"
-    `spec.scm.mergePolicy` still exists on the Project CR; its exact accepted values and their
-    effect under the deploy-supervisor merge model should be re-derived from the merged
-    `tatara-operator` source rather than assumed from the pre-redesign `afterApproval`/
-    `autoMergeOnGreenCI` semantics.
+An agent-opened PR is never merged by an agent, and no tatara-opened PR is ever opened with the
+forge's own merge-when-green feature switched on. Once a `review` pod calls
+`submit_outcome(verdict=approve)` from a separate pod that structurally cannot decide its own
+diff's fate on the forge, the operator itself reads the live PR head, posts a `COMMENT`-type
+review carrying the verdict, and [merges it](../workflows/merge-and-deploy.md#the-merge-sequence)
+as soon as required checks are green - never a native forge `APPROVE`, since GitHub blocks a
+PR's own author from approving it (one bot identity means that call always 422s). There is no
+SCM branch-protection rule that adds a human merge step on top of this: a rule requiring an
+approving review would deadlock every merge, because the platform can never satisfy it on its
+own PR. See [the accepted-risk note](../operations/security/index.md) for what real
+defense-in-depth looks like under one bot identity instead.
 
 ### PR reaction scope
 
@@ -470,6 +494,25 @@ kubectl -n tatara logs deploy/tatara-operator -f | jq .
 Look for `"msg":"project reconciled"` or `"msg":"memory stack ready"` with your project name in
 the `resource_id` field.
 
+### Watch it work
+
+Once you file a test issue, watch the Task the operator mints for it move through the stage
+machine directly:
+
+```sh
+kubectl -n tatara get tasks -o custom-columns=\
+NAME:.metadata.name,STAGE:.status.stage,KIND:.spec.kind,AGENT:.status.agentKind -w
+```
+
+`STAGE` is the single source of truth (see [Task reference](../reference/task.md) for the full
+fifteen-value enum); `KIND` is the immutable origin and `AGENT` is whichever pod is running right
+now - they diverge as soon as an issue moves past `clarifying`. The mirrored `Issue` and
+`MergeRequest` CRs the Task owns are visible the same way:
+
+```sh
+kubectl -n tatara get iss,mr -l tatara.dev/task=<task-name>
+```
+
 ---
 
 ## Annotated full Project YAML
@@ -485,56 +528,53 @@ metadata:
 spec:
   scmSecretRef: tatara-scm      # (2)!
   triggerLabel: tatara          # (3)!
-  maxConcurrentTasks: 5         # (4)!
+  maxConcurrentAgents: 5        # (4)!
+  agentPodTTLSeconds: 3600      # (5)!
+  maxOpenTasks: 6                # (6)!
 
   agent:
-    model: claude-opus-4-8      # (5)!
-    image: harbor.example.com/tatara-claude-code-wrapper:v1.2.3  # (6)!
-    effort: xhigh               # (7)!
-    maxTurnsPerTask: 100        # (8)!
-    turnTimeoutSeconds: 1800    # (9)!
-    contextWindowTokens: 200000 # (10)!
-    handoverThresholdPercent: 25 # (11)!
-    maxLifecycleIterations: 10  # (12)!
+    model: claude-opus-4-8      # (7)!
+    image: harbor.example.com/tatara-claude-code-wrapper:v1.2.3  # (8)!
+    effort: xhigh               # (9)!
+    maxTurnsPerPod: 40           # (10)!
+    maxTurnsPerTask: 300         # (11)!
+    turnTimeoutSeconds: 1800    # (12)!
+    maxReviewRounds: 3           # (13)!
+    maxPodRecreations: 3         # (14)!
 
   memory:
-    pgInstances: 3              # (13)!
-    pgStorage: 20Gi             # (14)!
-    neo4jStorage: 10Gi          # (15)!
+    pgInstances: 3              # (15)!
+    pgStorage: 20Gi             # (16)!
+    neo4jStorage: 10Gi          # (17)!
 
   scm:
-    provider: github            # (16)!
-    owner: my-org               # (17)!
-    botLogin: my-org-bot        # (18)!
-    botEmail: 12345+my-org-bot@users.noreply.github.com  # (19)!
-    maintainerLogins:           # (20)!
+    provider: github            # (18)!
+    owner: my-org               # (19)!
+    botLogin: my-org-bot        # (20)!
+    botEmail: 12345+my-org-bot@users.noreply.github.com  # (21)!
+    maintainerLogins:           # (22)!
       - alice
       - bob
-    reporterLogins:             # (21)!
+    reporterLogins:             # (23)!
       - alice
       - bob
-    approvedLabel: tatara-approved            # (22)!
-    brainstormingLabel: tatara-brainstorming
-    implementationLabel: tatara-implementation
-    declinedLabel: tatara-declined
-    incidentLabel: tatara-incident
-    mergePolicy: afterApproval  # (23)!
-    prReactionScope: labeledOrMentioned  # (24)!
-    babysitDeadlineMinutes: 60  # (25)!
-    conversationIdleMinutes: 60 # (26)!
-    guidance: >-                # (27)!
+    approvalPhrases:            # (24)!
+      - go ahead
+      - lgtm
+    prReactionScope: labeledOrMentioned  # (25)!
+    guidance: >-                # (26)!
       Focus on reliability and observability alongside new features.
     cron:
       issueScan:
         schedule: "0 * * * *"
-        maxPerRepo: 1           # (28)!
+        maxPerRepo: 1           # (27)!
       mrScan:
         schedule: "0 * * * *"
         maxPerRepo: 1
       brainstorm:
         enabled: true
         schedule: "0 * * * *"
-        maxOpenProposals: 8     # (29)!
+        maxOpenProposals: 8     # (28)!
         sources:
           - docs
           - memory
@@ -543,16 +583,16 @@ spec:
         enabled: true
         schedule: "0 2 * * *"
       refine:
-        closedLookbackDays: 30  # (30)!
+        closedLookbackDays: 30  # (29)!
 
   grafana:
-    enabled: true               # (31)!
+    enabled: true               # (30)!
     url: http://prometheus-grafana.monitoring.svc.cluster.local
-    secretRef: tatara-grafana   # (32)!
+    secretRef: tatara-grafana   # (31)!
 
   queue:
-    capacity: 5                 # (33)!
-    alertCapacity: 1            # (34)!
+    capacity: 5                 # (32)!
+    alertCapacity: 1            # (33)!
 ```
 
 1.  Project name must be unique per namespace. It becomes the label `tatara.dev/project` on all
@@ -561,77 +601,76 @@ spec:
     The Secret must exist before the Project is applied.
 3.  Issues labeled with this value activate the agent loop. Defaults to `tatara`. Match this to
     the label you apply in your SCM provider to request agent attention.
-4.  Maximum concurrent agent pods across all repositories in this Project. Events exceeding this
-    cap wait in `Queued` state; the queue admits them as slots free.
-5.  Claude model for all agents in this Project. A single model serves all task types. Changing
-    this affects new tasks immediately; in-flight tasks continue with the model they started on.
-6.  Full image reference for the `tatara-claude-code-wrapper` container. Pin to an explicit digest
+4.  The project's kill switch: maximum concurrent agent **pods** across all repositories in this
+    Project - the admission unit is the pod-spawn, not the Task. Setting this to `0` fully pauses
+    the project: no `QueuedEvent` is ever admitted, so no pod and no Task is created.
+5.  Bounds one agent pod's life in seconds. The Task itself persists across as many pods as it
+    needs; a pod that runs past this deadline is stopped with a guaranteed handoff note written to
+    `Task.status.notes`, and a fresh pod picks up where it left off. Minimum `300`.
+6.  A separate lever from `maxConcurrentAgents`: caps how many Tasks may be *active* (any
+    pod-eligible stage) at once, independent of how many pods are running concurrently right now.
+7.  Claude model for all agent kinds in this Project. A single model serves every kind unless
+    overridden per kind in `modelByKind`. Changing this affects new pods immediately; an in-flight
+    pod continues with the model it started on.
+8.  Full image reference for the `tatara-claude-code-wrapper` container. Pin to an explicit digest
     or tag; the operator uses this verbatim in every agent Pod spec.
-7.  Reasoning effort level. `xhigh` is the default and the recommended starting point. Lower
+9.  Reasoning effort level. `xhigh` is the default and the recommended starting point. Lower
     values reduce API cost but also agent quality on complex multi-file implementation tasks.
-8.  Maximum agent turns per task. Each turn is one LLM call-response cycle with tool use. A task
-    that reaches this limit hands over to a fresh pod that continues from a compacted summary or
-    full transcript.
-9.  Per-turn inactivity timeout in seconds. Only a stalled turn (no output for this duration) is
+10. Caps turns for a single pod's run. The `implement` agent kind is exempt - a long healthy
+    coding run is not cut off mid-work, bounded instead by `maxTurnsPerTask` below.
+11. Lifetime turn ceiling across every pod of the same Task, for every agent kind including
+    `implement`. This is what actually bounds the `implement` exemption above.
+12. Per-turn inactivity timeout in seconds. Only a stalled turn (no output for this duration) is
     killed. A turn actively writing files or running tests is never interrupted by this timer.
-10. Context window size in tokens reported to the agent. Set to the model's actual published
-    context limit. The wrapper uses this to decide when to compact the conversation.
-11. When last-turn input tokens exceed this percentage of `contextWindowTokens`, the next pod
-    resumes from a compacted handover summary instead of replaying the full transcript. Below the
-    threshold, full transcript replay is used for better task continuity. Default is 25%.
-12. Maximum pod start count (lifecycle iterations) before the task is parked. Prevents indefinite
-    restart loops on persistently failing tasks. Minimum allowed value is 3.
-13. CNPG PostgreSQL replica count. `1` is fine for development; `3` delivers HA via synchronous
+13. Caps the `reviewing` <-> `implementing` cycle on non-`review`-kind Tasks. Beyond this many
+    `request_changes` rounds the Task parks `review-loop-exhausted`.
+14. A pod that never becomes Ready within 5 minutes of creation is respawned automatically, not
+    failed, up to this budget. Past it the Task fails at `pod-recreation-exhausted`.
+15. CNPG PostgreSQL replica count. `1` is fine for development; `3` delivers HA via synchronous
     replication and is required for production workloads.
-14. PVC storage allocated per PostgreSQL replica. Stores embedding vectors; scale with the number
+16. PVC storage allocated per PostgreSQL replica. Stores embedding vectors; scale with the number
     and size of enrolled repositories.
-15. PVC for the Neo4j graph database. The code-knowledge graph grows with total ingested line
+17. PVC for the Neo4j graph database. The code-knowledge graph grows with total ingested line
     count across all enrolled repositories.
-16. SCM provider: `github` or `gitlab`.
-17. GitHub organization name or GitLab group path (as it appears in repository URLs).
-18. Username of the dedicated bot account. Its PAT must grant repo contents read/write, issues,
+18. SCM provider: `github` or `gitlab`.
+19. GitHub organization name or GitLab group path (as it appears in repository URLs).
+20. Username of the dedicated bot account. Its PAT must grant repo contents read/write, issues,
     pull requests, and org-membership read on all target repositories. No webhook-admin scope:
     the operator never registers webhooks (you configure them manually, section 6).
-19. GitHub noreply commit-author email for the bot. Links agent commits to the bot account in
+21. GitHub noreply commit-author email for the bot. Links agent commits to the bot account in
     the GitHub web UI. Find this in the bot account's GitHub email settings.
-20. Human maintainer logins. **Required for anything to ever be approved** - empty means no
-    approvals are ever possible. When set, only these accounts' `tatara-approved` label-apply
-    events are recorded as approval (never a comment); they also form the trusted-insider set for
-    intake bypass. Overridable per-repository.
-21. Reporter allow-list. When set, issues and comments from accounts not in this list, not in
+22. Human maintainer logins. **Required for anything to ever be approved** - empty means no
+    approvals are ever possible. When set, only a comment from one of these accounts, matching
+    `approvalPhrases` below, is ever recorded as approval; they also form the trusted-insider set
+    for intake bypass. Overridable per-repository.
+23. Reporter allow-list. When set, issues and comments from accounts not in this list, not in
     `maintainerLogins`, and not the bot are silently dropped at intake. Closes the primary
     prompt-injection vector. Overridable per-repository.
-22. The six lifecycle labels that the operator applies and sweeps. Defaults work out of the box.
-    Override only to match organizational label naming conventions.
-23. Merge is performed by the operator-only deploy supervisor once `review` has approved
-    (`tatara-approved` + native PR approval) and required checks are green - no agent and no human
-    merge step in the shipped default. `mergePolicy` still exists as a field; re-derive its exact
-    accepted values and effect under the deploy-supervisor model from the merged operator source.
-24. Cron `mrScan` re-review scope. This example opts in to the narrow setting. Left unset (or
+24. The closed, per-project wordlist an approving maintainer comment must match: some line of the
+    normalized comment body must *consist of* one of these phrases, anchored whole-line, not
+    merely contain it. Empty means the built-in defaults (`lgtm`, `approve`, `approved`, `ship it`,
+    `go ahead`, `go`, `implement it`) - it never means "any text approves."
+25. Cron `mrScan` re-review scope. This example opts in to the narrow setting. Left unset (or
     `all`), the `mrScan` path re-reviews every open human PR/MR each cycle. `labeledOrMentioned`
     restricts scheduled re-review to PRs labeled with `triggerLabel` or that `@mention` the bot.
     The field has no default; set it explicitly to narrow the loop.
-25. Minutes after a task is submitted before the operator considers it stalled and re-queues it
-    if no turn has been recorded. Default 60.
-26. Minutes of agent conversation inactivity before the operator considers the session idle and
-    may intervene. Default 60.
-27. Free-form project charter text appended verbatim to brainstorm and health-check goal prompts.
-    Use this to focus agent attention on your project's priorities and in-scope concerns.
-28. Maximum concurrent issue-scan (or MR-scan) Tasks per repository lane. `1` is the safe default;
+26. Free-form project charter text appended verbatim to brainstorm goal prompts. Use this to focus
+    agent attention on your project's priorities and in-scope concerns.
+27. Maximum concurrent issue-scan (or MR-scan) Tasks per repository lane. `1` is the safe default;
     a single scan agent per repo prevents conflicting concurrent scans.
-29. Project-wide cap on open, unapproved agent proposals across all repositories. When the count
+28. Project-wide cap on open, unapproved agent proposals across all repositories. When the count
     reaches this number, the brainstorm cycle is skipped entirely for that tick.
-30. How far back in days closed issues are loaded during the refine pre-step for
+29. How far back in days closed issues are loaded during the refine pre-step for
     already-implemented detection. Defaults to 30 days when not set.
-31. Enables the per-project Grafana integration: a read-only `grafana-mcp` Deployment provisioned
+30. Enables the per-project Grafana integration: a read-only `grafana-mcp` Deployment provisioned
     with a Viewer service account token (agents reach it via the injected `TATARA_GRAFANA_MCP_URL`,
     not as a pod sidecar), and an alert-webhook receiver at `<webhookURL>/grafana`.
-32. Kubernetes Secret containing two keys: `serviceAccountToken` (Grafana Viewer SA token,
+31. Kubernetes Secret containing two keys: `serviceAccountToken` (Grafana Viewer SA token,
     mounted into the grafana-mcp container) and `webhookSecret` (bearer token the configured
     Grafana contact point must present to the webhook).
-33. Queue admission capacity - maximum simultaneously admitted normal-class events. Defaults to
-    `maxConcurrentTasks` when not set. Override only to decouple queue capacity from the
+32. Queue admission capacity - maximum simultaneously admitted normal-class events. Defaults to
+    `maxConcurrentAgents` when not set. Override only to decouple queue capacity from the
     concurrency cap.
-34. Reserved concurrent slots for alert-class events (Grafana-sourced incidents). Default 1.
+33. Reserved concurrent slots for alert-class events (Grafana-sourced incidents). Default 1.
     Alert slots are separate from `capacity`, ensuring an incoming incident always gets an agent
     pod even when the normal queue is fully saturated.

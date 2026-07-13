@@ -105,61 +105,95 @@ At boot, the wrapper writes `/workspace/.mcp.json` pointing to `tatara-cli`,
 and configures `~/.claude/settings.json` to enable it. Claude discovers the
 tools automatically when the session starts. From Claude's perspective, these
 are just tools - the same as any other capability. It calls `query` (memory
-retrieval) or `comment_on_issue` the same way it calls a file-read tool.
+retrieval) or `submit_outcome` (reporting its result) the same way it calls a
+file-read tool.
 
-The set of tools available is scoped by task type. A brainstorm pod gets
-broader tool access than a review pod; the operator sets a `TATARA_TOOL_PROFILE`
-environment variable, and `tatara-cli` filters its tool list at startup.
+The full tool surface is small (20 tools total) and scoped per **agent kind** -
+`brainstorm`, `incident`, `clarify`, `refine`, `implement`, `review`, or
+`documentation`. A brainstorm pod gets broader tool access than a review pod;
+the operator sets the `TATARA_TOOL_PROFILE` environment variable to the agent
+kind, and `tatara-cli` filters its registered tool list at startup, failing
+**closed** on an unrecognized profile rather than serving everything.
 
 ---
 
-## When context runs low: handover
+## One pod, many pods: how a Task survives
 
-Long-running tasks (multi-file refactors, deep research, complex
-implementations) approach the context window before the work is done. Rather
-than let the session degrade, tatara hands the task off to a fresh pod that
-continues from a compact summary.
+A `Task` is a durable Kubernetes object. It can live for hours or days and pass
+through many stages (`clarifying`, `approved`, `implementing`, `reviewing`,
+`merging`, ...). A **pod is not the Task** - it is one bounded run against it.
+The pod is named `<task-name>-<agent-kind>`, and `Project.spec.agentPodTTLSeconds`
+(default 3600s, minimum 300s) caps how long that one pod may live. When a Task
+needs a `clarify` pod, then later an `implement` pod, then a `review` pod, those
+are three separate, single-purpose pods against the same Task - not one long
+session resumed three times.
 
-The mechanism is a **chat-backed handoff**, not a transcript replay. On a pod's
-first turn, if the operator supplied a continuation key (the task's
-`CONVERSATION_OBJECT_KEY`, reused as a `handoff_key`), the wrapper prepends a
-short preamble to the goal: call `get_handoff` with this key before starting,
-and `write_handoff` an updated summary before finishing. The `/handoff` skill
-drives the actual calls. `get_handoff` and `write_handoff` hit the tatara-chat
-`/handoffs` endpoints - a small structured summary keyed by `handoff_key`, not
-the full conversation. The wrapper itself never calls chat; it only injects the
-preamble.
+There is no session-resume mode. There is no continuation key, no conversation
+object, and no chat service a new pod queries to catch up - that whole
+mechanism was removed along with `tatara-chat` itself, which is decommissioned. <!-- stale-ok: tatara-chat -->
+Every pod's first turn gets the **same kind of render**: the operator builds a
+context bundle fresh from the current state of the Task's CRs - its Issue(s),
+MergeRequest(s), recent comments, recent events, and its notes - and delivers
+it as the `text` of the pod's first `POST /v1/messages`. There is no special
+"resume" preamble; turn 0 looks the same whether this is the Task's first pod
+or its fifth. See [Task notes](../reference/task-notes.md) and the context
+bundle reference for the exact mechanics.
 
-So when a pod is about to exhaust its context, it writes a handoff summary and
-exits. The next pod for the same task reads that summary on its first turn and
-picks up where the previous one left off. The earlier transcript-to-S3 replay
-machinery was removed (issue #114); the wrapper no longer uploads conversations
-anywhere. A compact handoff is cheaper to carry across pods and cannot overflow
-the new pod's context on boot the way a full transcript could.
+What actually carries continuity from one pod to the next is
+`Task.status.notes`: an append-only journal every pod reads as part of that
+turn-0 bundle. An agent writes to it with `task_note(kind, body)` - `note` for
+an observation, `plan` for its approach, `handoff` for what the next pod needs
+to know. Nothing else persists agent working memory across pod boundaries.
+
+### The TTL stop sequence
+
+Because a pod's life is bounded, tatara has to guarantee a handoff note gets
+written before the pod disappears - even if the pod is unresponsive or mid-turn
+when its TTL expires (which, empirically, is nearly always the case). At
+`t0 = podStartedAt + agentPodTTLSeconds` the wrapper:
+
+1. **Stops admitting normal turns.** Any `POST /v1/messages` without
+   `handoff: true` gets `410 Gone` past `t0`.
+2. **Waits for the in-flight turn** to complete, bounded by the turn timeout.
+3. **Submits exactly one more turn**, marked `handoff: true`, asking the agent
+   to call `task_note(kind=handoff)` with everything the next pod needs, then
+   stop.
+4. **Falls back to a synthetic note.** If that turn fails, times out, or the
+   hard cap (`t0` plus twice the turn timeout, plus 60s grace) is reached, the
+   operator writes the handoff note itself, in-process, from the last turn's
+   final text and which repos were pushed - then force-deletes the pod.
+
+`Task.status.notes` is therefore never empty after a TTL stop: either the agent
+wrote the handoff, or the operator did.
 
 ```mermaid
 sequenceDiagram
     participant CL1 as Claude (Pod 1)
-    participant CHAT as tatara-chat /handoffs
+    participant WR1 as Pod 1 Wrapper
+    participant OP as Operator
     participant WR2 as Pod 2 Wrapper
     participant CL2 as Claude (Pod 2)
 
-    Note over CL1: context nearing limit
-    CL1->>CHAT: write_handoff(key, summary) via /handoff skill
-    Note over CL1: pod exits (context limit / eviction)
-
-    WR2->>CL2: first turn preamble: "get_handoff <key> first"
-    CL2->>CHAT: get_handoff(key)
-    CHAT-->>CL2: prior summary
-    Note over CL2: continues where Pod 1 left off
+    Note over WR1: t0 = podStartedAt + agentPodTTLSeconds reached
+    WR1->>WR1: 410 Gone on further normal turns
+    OP->>WR1: submit handoff:true turn
+    WR1->>CL1: "call task_note(kind=handoff), then stop"
+    CL1-->>WR1: task_note(kind=handoff, body=...)
+    Note over OP: on failure/timeout, operator writes a<br/>synthetic handoff note itself
+    OP->>WR1: force-delete pod
+    OP->>WR2: spawn next pod, submit turn 0
+    WR2->>CL2: context bundle (Issue/MR/comments/events + notes)
+    Note over CL2: continues from the notes journal,<br/>not a resumed session
 ```
 
-This makes agent sessions **resilient to pod restarts**. A task survives node
-evictions, OOM kills, and scheduled pod rotations: the next pod rehydrates from
-the handoff summary. A distinct, narrower case is an in-pod crash relaunch,
-where the wrapper restarts Claude in the *same* pod with `--continue` to resume
-the most recent on-disk conversation - the only place a transcript is replayed,
-and only locally.
+This makes a Task **resilient to pod restarts** in the ordinary sense: node
+evictions, OOM kills, and TTL rotations all just end one pod and start the
+next, with the notes journal as the only thing that crosses the boundary. A
+distinct, narrower mechanism is the in-pod crash relaunch, where the wrapper
+restarts Claude in the *same* pod with `--continue` to resume the most recent
+on-disk conversation after a local crash. That is the only place a transcript
+is ever replayed, it happens only inside one pod's lifetime, and it is
+unrelated to the cross-pod handoff above.
 
 ---
 
@@ -210,15 +244,15 @@ graph TD
     CLI --> MEM[Memory Server]
     CLI --> OPAPI[Operator API]
     CLI --> SCM[GitHub / GitLab]
-    CLI --> CHAT[tatara-chat handoffs]
     CL -->|turn done| HOOK[cc-stop-hook]
     HOOK -->|POST result| WR
     WR -->|result callback| OP
-    CHAT -->|get_handoff on next pod| WR2[New Pod Wrapper]
-    WR2 -->|continues from summary| CL2[Claude Code, continued]
+    OP -->|TTL stop: task_note kind=handoff| TASK[(Task.status.notes)]
+    TASK -->|turn 0 context bundle| WR2[Next Pod Wrapper]
+    WR2 --> CL2[Claude Code, next pod]
 ```
 
 One pod. One Claude process. One turn at a time. Results delivered via webhook
-or poll. Context handed off through a compact chat-backed summary so restarts
-survive. Decisions surfaced to humans via issue comments, not interactive
-prompts.
+or poll. Continuity carried forward through the Task's own notes journal, not
+a resumed session, so pod restarts and TTL rotations survive. Decisions
+surfaced to humans via issue comments, not interactive prompts.
