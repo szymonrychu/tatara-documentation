@@ -5,7 +5,7 @@ description: Complete reference for the tatara.dev/v1alpha1 CRD model - adopter-
 
 # Custom Resource Reference
 
-All tatara custom resources live in the `tatara.dev/v1alpha1` API group. There are five CRDs: two that you configure as an adopter and three that the operator manages autonomously. The work-item ledger is embedded in `Task.Status` rather than a separate CRD.
+All tatara custom resources live in the `tatara.dev/v1alpha1` API group. There are **six CRDs**: two that you configure as an adopter, and four that the operator manages autonomously.
 
 ## CRD taxonomy
 
@@ -20,15 +20,14 @@ You create and own these resources. The operator reads them but never overwrites
 
 ### Operator-managed
 
-The operator creates, updates, and garbage-collects these resources. Do not manually edit them in normal operation; editing `Task.Status` directly will be overwritten on the next reconcile.
+The operator creates, updates, and garbage-collects these resources. Do not manually edit them in normal operation; editing `.status` directly will be overwritten on the next reconcile.
 
 | CRD | `kubectl` print columns | Description |
 |-----|-------------------------|-------------|
-| [`Task`](task.md) | `Phase`, `Lifecycle`, `Kind`, `Turns` | One agent session driving a repository toward a goal |
-| [`QueuedEvent`](queued-event.md) | `Seq`, `Class`, `Kind`, `State` | Admission-queue entry; becomes a `Task` on dispatch |
-| [`Subtask`](subtask.md) | `Order`, `Phase` | A unit of work fed to a running `Task` agent turn by turn |
-
-`Task.Status.WorkItems` is a typed slice (`[]WorkItemRef`) embedded directly in the Task status - not a separate CRD. It is the authoritative ledger of every SCM artifact (issues, PRs, MRs) the task spans. See the [WorkItem reference](work-item.md) for field details.
+| [`Task`](task.md) | `Stage`, `Kind`, `Agent`, `Issues`, `MRs`, `Turns`, `Project`, `Description`, `Age` | One durable unit of agent work, carried by a succession of agent pods across its stage machine |
+| [`QueuedEvent`](queued-event.md) | `Seq`, `Class`, `Kind`, `State` | Admission-queue entry; admitted into a pod-spawn (a new or existing `Task`) when a concurrency slot is available |
+| [`Issue`](issue.md) (`iss`) | `Task`, `Repo`, `Num`, `State`, `Status`, `Comments`, `Age` | Mirror of one SCM issue: title, body, comments, and the platform's approval state. The bundle is rendered from this object, never a live forge call |
+| [`MergeRequest`](merge-request.md) (`mr`) | `Task`, `Repo`, `Num`, `State`, `Status`, `CI`, `Age` | Mirror of one SCM pull/merge request: title, body, comments, CI status, mergeability |
 
 ## API group and version
 
@@ -43,62 +42,61 @@ All resources are **Namespaced**. Deploy the operator and all CRs into the same 
 
 ## Ownership and relationships
 
-The diagram below shows ownership (solid lines, `ownerReference`), derivation (dashed lines, logical), and embedding (dotted lines).
+The diagram below is a summary. `Issue` and `MergeRequest` are **multi-owned**: any `Task` currently responsible for an artifact holds a plain owner ref, and exactly one owner - the Task responsible *right now* - carries `controller=true`. See [Ownership, GC, and admission](../architecture/ownership.md) for the full treatment, including the controller-transfer rules.
 
 ```mermaid
 graph TD
     P["<b>Project</b><br/>(adopter-configured)"]
     R["<b>Repository</b><br/>(adopter-configured)"]
     QE["<b>QueuedEvent</b><br/>(operator-managed)"]
-    T["<b>Task</b><br/>(operator-managed)"]
-    ST["<b>Subtask</b><br/>(operator-managed)"]
-    WI["<b>WorkItem ledger</b><br/>Task.Status.WorkItems<br/>(embedded slice)"]
+    T1["<b>Task</b><br/>(controller owner)"]
+    T2["<b>Task</b><br/>(plain owner)"]
+    I["<b>Issue</b><br/>(mirror)"]
+    MR["<b>MergeRequest</b><br/>(mirror)"]
 
     P -->|"owns 1..N"| R
     P -->|"owns 0..N"| QE
-    QE -.->|"becomes on admission"| T
-    P -->|"owns 0..N"| T
-    T -->|"owns 0..N"| ST
-    T -.-|"embeds"| WI
+    P -->|"owns 0..N"| T1
+    P -->|"owns 0..N"| T2
+    QE -.->|"admitted, spawns a pod for"| T1
+    T1 ==>|"owns, controller=true"| I
+    T2 -->|"owns, plain ref"| I
+    T1 ==>|"owns, controller=true"| MR
 ```
 
 Key derivation rules:
 
-- A `Project` must exist before any `Repository`, `QueuedEvent`, or `Task` can reference it.
-- A webhook event or cron scan produces a `QueuedEvent`. The dispatcher promotes it to a `Task` when a concurrency slot is available.
-- `clarify` tasks are given a deterministic name - `lc-` plus the first 16 hex chars of `sha256(projectName \0 issueRef \0 isPR-flag)`, e.g. `lc-3f2a9c1d4b6e0f78` - so repeated webhook deliveries for the same work item collide on `Create` (AlreadyExists) and stay idempotent. The `isPR` flag disambiguates a GitHub issue #N from a PR #N in the same repo. Grep `kubectl get tasks` for the `lc-` prefix, not for the issue number.
-- `Subtask` resources are created by the agent via the MCP REST API; the Task reconciler feeds them to the running agent session one turn at a time.
-- The `WorkItems` ledger is seeded from `Task.Spec.Source` on first reconcile and maintained by the operator as the agent drives MCP actions (open PR, merge, close issue).
+- A `Project` must exist before any `Repository`, `QueuedEvent`, `Task`, `Issue`, or `MergeRequest` can reference it.
+- A webhook event or cron scan produces a `QueuedEvent`. The dispatcher admits it - either into an existing `Task` (a stage-driven pod respawn) or by minting a new one - when a concurrency slot is available.
+- `Issue` and `MergeRequest` are the mirror: the operator syncs them from the SCM and every agent read (`scm_read(kind=issues|mr|comments)`) is served from these objects, never a live forge call. `scm_read(kind=ci)` is the one exception - CI status is read live.
+- `clarify` Tasks are given a deterministic name so repeated webhook deliveries for the same issue collide on `Create` (`AlreadyExists`) and stay idempotent. See [Task naming](task.md).
 
 ## Task kinds and scoping
 
-A `Task.Spec.Kind` determines whether the task is *repo-scoped* (requires `repositoryRef`) or *project-scoped* (must have an empty `repositoryRef`). The CRD schema cannot express this conditional; the reconciler enforces it at runtime and terminates tasks that violate it.
+### Two enums, not one
 
-| Kind | Scope | Description |
+A `Task` carries two kind-shaped fields and they mean different things. Conflating them is the single most common misreading of the model.
+
+| Field | Meaning | Values |
+|---|---|---|
+| `Task.spec.kind` | The **origin**. Why this Task exists. Immutable; baked into the Task name. | `brainstorm`, `incident`, `clarify`, `refine`, `review`, `documentation` |
+| `Task.status.agentKind` | The **running agent**. Which pod is executing right now. Changes as the Task advances through its [stage machine](task-stages.md). | the six above, plus `implement` |
+
+`implement` is an **agent kind only**. There is no `implement` Task origin: a Task that started life as a `clarify` (a human filed an issue) runs an `implement` pod once it is approved, and a `review` pod after that. One Task, one durable object, many pods.
+
+| Origin kind | Scope | Description |
 |------|-------|-------------|
 | `brainstorm` | project | Surveys all project repos + external research; proposes a linked issue set across affected repos |
 | `incident` | project | Investigates a Grafana alert; files an evidence-backed incident proposal |
-| `clarify` | project | Runs the triage/human conversation on a new or commented issue; hands off to `implement` |
-| `implement` | project | Picks up the whole Task CR (all issues+comments+open PRs/MRs); opens/updates PRs across every affected repo under the Task |
-| `review` | project | Reviews all PRs/MRs under a Task; approves (label + native review) or invokes `implement` again |
+| `clarify` | project | Runs the triage/human conversation on a new or commented issue; hands off to an `implement` pod once approved |
+| `review` | project | Reviews a human-authored PR/MR; can never itself reach `implementing`/`merging` - a human's PR is fixed by the human |
 | `documentation` | repo (docs repo) | Schedule-driven: updates docs when non-trivial changes have landed since the last run |
-| `refine` | project | Groom-only backlog peer: closes duplicates, dedups, recovers stalled `implement` runs |
+| `refine` | project | Groom-only backlog peer: closes duplicates, dedups, recovers stalled Tasks |
 
-!!! note "Retired kinds: still valid enum values, no longer created"
-    `selfImprove`, `triageIssue`, `healthCheck`, and `issueLifecycle` remain in the
-    `Task.Spec.Kind` CRD enum so pre-existing stored Tasks can still be read, but no production
-    code path creates a new Task of any of these kinds. `triageIssue` and the front half of
-    `issueLifecycle` were absorbed into `clarify`; `healthCheck` was absorbed into `brainstorm`;
-    the back half of `issueLifecycle` (Merge/MainCI/Deploying) survives as the operator-only
-    [deploy supervisor](../workflows/deploy-supervisor.md), not an agent kind. Treat any other
-    reference to these four names elsewhere in the docs or CRD as historical.
+!!! info "Only documentation is repo-scoped"
+    `repositoryRef` is set **only** on `documentation` Tasks, which target one docs repo per run. Every other origin kind is project-scoped: the Task CR is a cross-repo umbrella, and its `implement`/`review` pods write back across every affected repo under that one Task.
 
-!!! info "Almost everything is project-scoped now"
-    Where the prior model split kinds roughly evenly between repo-scoped and project-scoped,
-    six of the seven live kinds are now project-scoped - the Task CR is a cross-repo umbrella
-    (see [Task reference](task.md#task-umbrella-and-the-workitem-ledger)) and `implement`/`review`
-    write back across every affected repo under one Task. Only `documentation` stays repo-scoped,
-    since it targets one docs repo per run.
+Model and effort tiering (`Project.spec.agent.modelByKind` / `effortByKind`) keys on the **agent** kind, because that is what determines what the pod is about to do - see [`AgentSpec`](project.md#agentspec).
 
 ## Conventions used in field tables
 
@@ -137,7 +135,7 @@ kubectl -n tatara get project my-project \
 The printcolumn markers define what `kubectl get` shows without `-o yaml`. All columns map to `status.*` fields so they reflect observed state, not desired spec:
 
 ```bash
-# Task: shows Phase, Lifecycle, Kind, Turns at a glance
+# Task: shows Stage, Kind, Agent, Issues, MRs, Turns, Project, Description, Age at a glance
 kubectl -n tatara get tasks
 
 # Repository: shows ingest Phase and last ingested commit SHA
@@ -159,105 +157,26 @@ kubectl -n tatara get repositories
 | `lastIssueScan` | `*Time` | Timestamp of most recent issue scan cycle |
 | `lastBrainstorm` | `*Time` | Timestamp of most recent brainstorm cycle |
 | `lastDocumentation` | `*Time` | Timestamp of most recent documentation cron cycle |
-| `lastCDScan` | `*Time` | Timestamp of the most recent push-CD deploy-supervision backstop sweep (the `cdScan` cron) |
+| `lastCDScan` | `*Time` | RETIRED - there is no independent deploy-supervision backstop cron any more; every stage's stall detection is a fixed per-stage clock. See [Project reference](project.md#status). |
 | `lastRefine` | `*Time` | Timestamp of most recent refine pre-step |
 | `tokenBudget` | object | Token-budget accumulator/snapshot: the custom-window running total and the latest Claude-subscription usage snapshot reported by the wrapper. See [Project reference](project.md). |
 
-## Task.Status fields at a glance
-
-`Task.Status` is split into two logical sections: fields that apply to all task kinds, and deploy-supervision fields populated only once a Task's PR has been review-approved and the deploy supervisor has taken it over.
-
-### All kinds
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `phase` | enum | `Planning`, `Running`, `Succeeded`, `Failed`, `Deploying` (populated for every kind; `Deploying` only once the deploy supervisor has taken the Task over post-merge) |
-| `podName` | string | Name of the current or most recent agent pod |
-| `turnsCompleted` | int | Total agent turns executed |
-| `prURL` | string | URL of the PR/MR opened (if any) |
-| `resultSummary` | string | Human-readable summary of the run outcome |
-| `conditions` | `[]metav1.Condition` | Operator-set conditions |
-| `reviewVerdict` | object | Agent's review decision (`approve`, `request_changes`, `comment`) with optional inline suggestions |
-| `prOutcome` | object | Agent's declared action on a bot-authored PR (`merge` or `close`) |
-| `issueOutcome` | object | Agent's triage decision (`implement`, `close`, `discuss`) |
-| `implementOutcome` | object | Agent's declared non-implementation reason (`declined`, `already_done`) |
-| `brainstormOutcome` | object | Agent's declared no-proposal reason |
-| `changeSummary` | object | Scope report: PR title/body, delivered scope, remaining scope, and the required `significance` (`major`/`minor`/`patch`) that drives the push-CD semver tag |
-| `followupIssueURL` | string | URL of the follow-up issue opened for remaining scope |
-| `workItems` | `[]WorkItemRef` | Work-item ledger (issues, PRs, MRs this task spans) |
-| `pendingComments` | `[]string` | Agent-queued comments; posted on next reconcile then cleared |
-| `pendingInterjections` | `[]string` | Mid-turn webhook comments delivered to the live session |
-| `resolvedModel` | string | Model resolved at pod spawn (`modelForKind`); the model the token/cost metrics price against |
-| `cumulativeTokens` | int64 | Total input+output tokens across all turns |
-| `lastTurnInputTokens` | int64 | Input token count of the most recent turn (context-window pressure signal) |
-| `cumulativeInput` / `cumulativeOutput` / `cumulativeCacheRead` / `cumulativeCacheCreation` | int64 | Per-category token totals across all turns (uncached input, output, cache-read, cache-creation) |
-
-### Deploy-supervision only
-
-Populated only once a Task's PR has been review-approved and the deploy supervisor has taken it
-over - never populated for a `clarify`/`implement`/`review` Task still in agent-driven flow.
-
-!!! note "Wire key vs. Go name"
-    The JSON/CRD key is unchanged: `lifecycleState`. Only the Go struct field was renamed, to
-    `DeployState` (`api/v1alpha1/task_types.go`). `kubectl -o jsonpath` and any Grafana panel or
-    automation must read `.status.lifecycleState`, not `.status.deployState`.
-
-| Field | Type | Enum values | Description |
-|-------|------|-------------|-------------|
-| `lifecycleState` | string | `Triage`, `Conversation`, `Implement`, `MRCI`, `Merge`, `MainCI`, `Deploying`, `Done`, `Stopped`, `Parked` (front four legacy-drain-only, never set by new-model kinds) | Current deploy-supervision phase (Go field: `DeployState`) |
-| `lastActivityAt` | `*Time` | - | Last state transition or agent activity |
-| `deadlineAt` | `*Time` | - | Babysit deadline; task is parked if exceeded |
-| `headBranch` | string | - | Name of the task's feature branch |
-| `prNumber` | int | - | PR/MR number in the SCM tracker |
-| `mergeCommitSHA` | string | - | SHA of the merge commit after a successful merge |
-| `mergedHeadSHA` | string | - | Head SHA of the most recently merged branch; guards against duplicate re-proposals |
-| `cascadeStage` | string | `tagged`, `parent-pr-open`, `parent-merged`, `helmfile-applied` | Push-CD cascade progress during the `Deploying` phase |
-| `deployedVersion` | string | - | Semver (`vX.Y.Z`) this Task's artifact is driving toward the cluster |
-| `deployArtifact` | string | - | Deploy-ledger artifact identity (`repo@vX.Y.Z`) |
-| `deployDeadline` | `*Time` | - | Deploy-cascade deadline; the Task parks recoverable (`deploy-timeout`) if exceeded |
-
-`lifecycleIterations`, `implementGiveUps`, `implementEmptyRetries`, `writebackSkip4xxAttempts`,
-`handover`, `conversationObjectKey`, `sessionID`, and `implementContext` move to Task-wide fields
-(they now apply across the whole Task's `clarify`/`implement` conversation history, not one
-phase-scoped lifecycle) - see [Task reference](task.md#conversation-resume-fields-all-kinds).
-
-!!! warning "Terminal state detection"
-    A `Task` is terminal when `phase` is `Succeeded` or `Failed`, **or** when `lifecycleState` is `Done`, `Stopped`, or `Parked`. `Deploying` (on either field) is not terminal. Use the `TaskTerminal()` helper in the Go client or check both fields in your automation.
+`Task.status` fields are documented on the [Task reference](task.md#taskstatus).
 
 ## QueuedEvent lifecycle
 
 ```mermaid
 stateDiagram-v2
     [*] --> Queued: producer enqueues
-    Queued --> Admitted: dispatcher finds free slot
-    Admitted --> [*]: reconcileDone GC-deletes after Task confirmed live
+    Queued --> Admitted: dispatcher finds a free slot, in (priority, seq) order
+    Admitted --> [*]: pod gone AND Task has left the requesting stage (or is terminal)
 ```
 
-The dispatcher evaluates the queue on every reconcile cycle. `normal`-class events consume from the main capacity pool (`queue.capacity`, default equals `maxConcurrentTasks`). `alert`-class events (Grafana incident webhooks) consume from a reserved pool (`queue.alertCapacity`, default `1`) so incidents are never starved by a full normal queue.
+The dispatcher evaluates the queue on every reconcile cycle. Capacity comes from `Project.spec.maxConcurrentAgents` (not a Task-count lever): the admission unit is **one agent pod-spawn**, not one Task. A Task advancing to another pod-spawning stage enqueues a new `QueuedEvent`, so every pod-spawn passes the same chokepoint - `maxConcurrentAgents: 0` freezes the whole project mid-flight, including a Task already in flight.
 
-`QueuedEvent.Spec.DedupKey` prevents duplicate Task creation: if a `QueuedEvent` with the same `dedupKey` is already `Queued` or `Admitted`, a new event with the same key is dropped.
+Admission drains in ascending **`(priority, seq)`**, not plain `seq` FIFO. `QueuedEvent.spec.priority` has three values: `incident` (0), webhook-originated (1, a human is waiting on a thread right now), and cron/sweep-originated (2, proactive work). FIFO is preserved within a priority tier. `class=alert` (incidents) still gets a reserved capacity pool (`queue.alertCapacity`) on top of the priority ordering, so a busy normal queue can never starve an incident.
 
-## WorkItem ledger roles and states
-
-`Task.Status.WorkItems` is the single source of truth for every SCM artifact a task touches.
-
-| Role | Applies to | Meaning |
-|------|-----------|---------|
-| `source` | issue or PR | The originating item that triggered this task |
-| `proposed` | issue | An agent-created proposal issue awaiting a maintainer to apply `tatara-approved` |
-| `closes` | issue | An issue this task's PR will close on merge |
-| `openedPR` | PR | A PR/MR the agent opened |
-| `reviewed` | PR | A human-authored PR the agent reviewed |
-
-| State | Meaning |
-|-------|---------|
-| `proposed` | Proposal issue created; awaiting a maintainer to apply `tatara-approved` directly (no other action approves it) |
-| `approved` | A verified maintainer applied the `tatara-approved` label directly to the proposal |
-| `declined` | A maintainer applied `tatara-declined`, or the triage agent declined the proposal |
-| `implemented` | Implementation merged; issue closed |
-| `open` | Issue or PR is open in the tracker |
-| `closed` | Issue closed without merge |
-| `merged` | PR/MR merged |
+Dedup is a **natural key on a field**, never a hash and never a label selector: `QueuedEvent.spec.dedupKey` holds `iss:<repo>#<number>` or `mr:<repo>!<number>` (or an alert-group hash for incidents), looked up through the `issueKey`/`mrKey` field indexes on `Issue`/`MergeRequest` and the `queuedEventDedupKey` index on `QueuedEvent` itself. Kubernetes label values cannot carry `:` or `#`, so a label-based "natural key" would have been silently hashed back into an opaque digest - the exact failure mode this design avoids.
 
 ## Quick reference: required vs optional fields
 

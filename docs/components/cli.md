@@ -14,30 +14,29 @@ serves both roles; the mode is determined by the subcommand.
 ```
                         +-----------+
   human (device flow)   |           |   tatara-memory REST
-  ─────────────────────>|  tatara   |───────────────────────>
+  --------------------->|  tatara   |----------------------->
                         |           |
   Claude Code / agent   |   (cli)   |   tatara-operator REST
-  ─────────────────────>|           |───────────────────────>
+  --------------------->|           |----------------------->
     MCP over stdio      |  mcp sub  |
-                        |           |   tatara-chat REST
-                        +-----------+───────────────────────>
+                        +-----------+
 ```
 
 !!! abstract "Security model at a glance"
     The load-bearing facts for a reader evaluating this as an agent tool surface:
 
-    - **Call-time profile gating is the only authz boundary the CLI enforces.**
-      `tools/list` is byte-identical for every agent kind (so all pods share one
-      Anthropic prompt-cache prefix); the operator-set `TATARA_TOOL_PROFILE` is
-      checked per call, not by filtering the list. See
-      [Per-kind tool gating](#per-kind-tool-gating).
-    - **Fail-open vs fail-closed:** an empty/unset profile is fail-**open** (every
-      registered tool callable, local-dev path, logged WARN); a non-empty but
-      unrecognized profile is fail-**closed** (only the 4 `alwaysOn` tools). A typo
-      never grants the full surface.
-    - **This is defense-in-depth, not a hard boundary.** The profile is set by the
-      operator on the pod, not by the agent. It is not a substitute for SCM branch
-      protection or the operator's own writeback gates.
+    - **`tools/list` is per-profile, not byte-identical across agent kinds.**
+      Tools outside the resolved profile's allow-set are not registered at all,
+      so the shape of `tools/list` itself differs per agent kind. This is a
+      deliberate trade against the prior single-prompt-cache-prefix
+      optimization; see [Per-kind tool gating](#per-kind-tool-gating).
+    - **Fail-closed, uniformly.** `resolveProfile` fails **closed** whether
+      `TATARA_TOOL_PROFILE` is empty, unset, or unrecognized: only the 6
+      always-on tools register, and `submit_outcome` is not registered at all.
+      There is no fail-open path any more.
+    - **This is defense-in-depth, not a hard boundary.** The profile is set by
+      the operator on the pod, not by the agent. It is not a substitute for SCM
+      branch protection or the operator's own writeback gates.
     - **Credentials never reach the agent process.** Backend URLs and credential
       resolution are covered in [URL and credential resolution](#url-and-credential-resolution).
 
@@ -63,13 +62,16 @@ Inside every agent pod `tatara mcp` runs as a subprocess of Claude Code over
 `stdio`. The wrapper bootstrap writes `/workspace/.mcp.json` pointing at
 `tatara mcp` before the agent session starts. From that point, every MCP tool
 call Claude Code makes is translated by the CLI into an authenticated REST
-request against one of the three tatara backends (memory, operator, chat) and
-the response is returned as the MCP tool result.
+request against one of the two tatara backends (memory, operator) and the
+response is returned as the MCP tool result. There is no third backend: chat
+is decommissioned (see [How agents use it inside pods](#how-agents-use-it-inside-pods)).
 
 The MCP server:
 
-- starts without valid credentials (serves `tools/list` unauthenticated; actual
-  backend calls fail until credentials are available),
+- **refuses to start on a contract-version mismatch** - see
+  [Contract-version handshake](#contract-version-handshake),
+- registers only the tools the resolved profile allows (fail-closed on an
+  empty or unrecognized profile),
 - automatically refreshes device-flow tokens from disk,
 - automatically remints client-credentials tokens before expiry,
 - writes structured JSON logs to `~/.local/state/tatara/mcp.log`,
@@ -82,21 +84,20 @@ sequenceDiagram
     participant KK as Keycloak
     participant MEM as tatara-memory
     participant OP as tatara-operator
-    participant CH as tatara-chat
 
     CC->>CLI: MCP tools/list
-    CLI-->>CC: full tool list (identical for every profile)
+    CLI-->>CC: tool list for the resolved profile
 
-    CC->>CLI: MCP tools/call "query" {mode, text}
+    CC->>CLI: MCP tools/call "memory_query" {mode, text}
     CLI->>KK: ensure token fresh (cc grant / disk refresh)
     KK-->>CLI: bearer token
     CLI->>MEM: POST /queries {mode, text}
     MEM-->>CLI: result JSON
     CLI-->>CC: MCP tool result
 
-    CC->>CLI: MCP tools/call "propose_issue" {title, body, ...}
-    CLI->>OP: POST /projects/{p}/issues
-    OP-->>CLI: 201 created
+    CC->>CLI: MCP tools/call "submit_outcome" {kind, payload}
+    CLI->>OP: POST /tasks/{task}/outcome
+    OP-->>CLI: 200 TaskDTO
     CLI-->>CC: MCP tool result
 ```
 
@@ -123,8 +124,8 @@ until `tatara login` is run again.
 
 ### `tatara status`
 
-Shows auth state, the resolved project, the token file path, and all three
-resolved backend base URLs. Makes no network calls.
+Shows auth state, the resolved project, the token file path, and the resolved
+backend base URLs. Makes no network calls.
 
 ```
 Auth:     logged in (token valid for 14m23s)
@@ -132,7 +133,6 @@ Project:  tatara
 Token:    /home/you/.config/tatara/token.json
 Memory:   https://tatara.szymonrichert.pl/api/v1/memory/tatara
 Operator: https://tatara.szymonrichert.pl/api/v1/operator
-Chat:     https://tatara.szymonrichert.pl/api/v1/chat
 ```
 
 ### `tatara raw`
@@ -148,8 +148,8 @@ tatara raw GET /memories
 tatara raw --target operator GET /projects
 
 # POST with a body
-tatara raw --target operator POST /projects/tatara/issues \
-  -d '{"repositoryRef":"szymonrychu/tatara-cli","title":"test","body":"...","kind":"improvement"}'
+tatara raw --target operator POST /tasks/tatara-implement-2026-07-12-a1b2c/outcome \
+  -d '{"kind":"implement","payload":{"action":"submitted","title":"..."}}'
 
 # read body from a file
 tatara raw --target memory POST /memories -d @payload.json
@@ -157,11 +157,10 @@ tatara raw --target memory POST /memories -d @payload.json
 
 | Flag | Description |
 |---|---|
-| `--target` | Backend: `memory` (default), `operator`, or `chat` |
+| `--target` | Backend: `memory` (default) or `operator` |
 | `-d` / `--data` | Request body: literal JSON, `@file`, or `-` for stdin |
 | `--base-url` | Override memory base URL (see URL resolution below) |
 | `--operator-base-url` | Override operator base URL |
-| `--chat-base-url` | Override chat base URL |
 
 ### `tatara mcp`
 
@@ -176,11 +175,10 @@ tatara mcp --metrics-addr 127.0.0.1:9090
 
 | Flag | Env | Description |
 |---|---|---|
-| `--tool-profile` | `TATARA_TOOL_PROFILE` | Restrict the exposed tool set to a named profile (see below). Empty = full set (fail-open). |
+| `--tool-profile` | `TATARA_TOOL_PROFILE` | The agent kind naming the tool profile to register (see below). Empty or unrecognized fails **closed** to the always-on set. |
 | `--metrics-addr` | `TATARA_MCP_METRICS_ADDR` | TCP address for the `/metrics` Prometheus endpoint. Empty disables it. |
 | `--base-url` | `TATARA_MEMORY_URL` | tatara-memory base URL |
 | `--operator-base-url` | `TATARA_OPERATOR_URL` | tatara-operator REST base URL |
-| `--chat-base-url` | `TATARA_CHAT_URL` | tatara-chat REST base URL |
 
 ### `tatara mcp-config`
 
@@ -217,184 +215,88 @@ timeout) on an existing `tatara` entry. Only `command` and `args` are updated.
 
 ## MCP tool surface
 
-The server registers **all** tools from every group at startup, unconditionally
-- the `tools/list` response is byte-identical for every agent kind so all pods
-share one Anthropic prompt-cache prefix. Profile gating happens later, at
-call time (see [Per-kind tool gating](#per-kind-tool-gating)). For the
-authoritative per-kind allow-sets, counts, and where the gating code lives, see
-the [MCP Tool Profiles reference](../reference/mcp-tools.md); the tables below
-are a high-level tour of the groups.
+**20 tools total**, from five constructors: `CodeTools()` (4), `MemoryTools()`
+(5), `PlatformTools()` (7, including `report_internal_issue`), `SCMTools()`
+(3), `OutcomeTool(profile)` (1, the shaped `submit_outcome`). The prior
+`AllTools()`, `ChatTools()`, and `HandoffTools()` constructors are deleted -
+chat is decommissioned and `task_note` now carries the continuity job chat and
+handoff tools used to. Server registration is
+`NewServer(memory, operator *client.Client, log, profile)` - there is no `chat`
+client argument.
 
-### Memory tools (13)
+Unlike the pre-redesign server, **tools outside a profile's allow-set are not
+registered at all** - `tools/list` itself differs per agent kind, rather than
+being filtered at call time behind a byte-identical list. `submit_outcome` is
+shaped from `TATARA_TOOL_PROFILE` at registration time; with an empty or
+unrecognized profile it is not registered.
 
-Target: `tatara-memory`. Cover the knowledge graph CRUD and query surface.
+For the authoritative per-kind allow-sets, exact counts, and tool schemas, see
+the [MCP Tool Profiles reference](../reference/mcp-tools.md#the-profile-gating-table)
+(source of truth). The groups, at a glance:
 
-| Tool | Operation |
+| Group | Tools |
 |---|---|
-| `create_memory` | Insert a text memory, returns `track_id` |
-| `get_memory` | Retrieve by `track_id` |
-| `delete_memory` | Delete by `track_id` |
-| `bulk_create_memories` | Async batch ingest (supports reconcile mode) |
-| `get_ingest_job` | Poll a bulk ingest job's status |
-| `query` | Semantic search (`local`, `global`, `hybrid`, `naive`) |
-| `describe` | Generative answer with source citations |
-| `get_entity` | Entity by name |
-| `search_entities` | Search entities by query string |
-| `patch_entity` | Partial entity update |
-| `list_edges` | All edges in the knowledge graph |
-| `create_edge` | New edge between two entities |
-| `delete_edge` | Delete edge by opaque ID |
+| Always-on (every profile, including the fail-closed empty one) | `task_get`, `task_context`, `task_note`, `project_get`, `repo_list`, `report_internal_issue` |
+| SCM (`SCMTools()`, 3) | `scm_read`, `issue_write`, `mr_write` - no `merge`, no `approve`, no `request_changes`; a review is posted by the operator from `submit_outcome` |
+| Code-graph (`CodeTools()`, 4) | `code_search`, `code_context`, `code_graph`, `code_explain` |
+| Memory (`MemoryTools()`, 5) | `memory_query`, `memory_describe`, `memory_write`, `memory_entity`, `memory_edges` |
+| Platform (`PlatformTools()`, 7) | `task_get`, `task_list`, `task_context`, `task_note`, `project_get`, `repo_list`, `report_internal_issue` |
+| Outcome (`OutcomeTool(profile)`, 1) | `submit_outcome` - one tool name, seven payload schemas, one per agent kind |
 
-### Code-graph tools (19)
-
-Target: `tatara-memory` (code-graph endpoints). Expose the repository code
-graph built by tatara-memory-repo-ingester.
-
-| Tool | Operation |
-|---|---|
-| `code_search` | Search code entities by name/description, optional type filter |
-| `code_entity` | Single entity with immediate edges |
-| `code_neighbors` | Traverse along a relation |
-| `code_callers` / `code_callees` | Reverse/forward call graph to depth N |
-| `code_dependents` / `code_dependencies` | Reverse/forward import/dependency graph |
-| `code_file_imports` | Imports from a file's package |
-| `code_resource_graph` | Terraform/Helm subgraph for a resource |
-| `code_cross_repo` | Cross-repo symbol links (provides/requires) |
-| `code_path` | Shortest path between two entities |
-| `code_important` | Top entities by degree or betweenness centrality |
-| `code_stats` | Entity/edge counts, isolated nodes, import cycles |
-| `code_ambiguous_edges` | Low-confidence edges for review |
-| `code_explain` | Full context: detail, in/out neighbors, file locations |
-| `code_related` | Semantic neighbors over conceptual/rationale edges |
-| `code_hyperedges` | N-ary group relations (list or single fetch) |
-| `code_communities` | Detected communities; optionally list members |
-| `code_bridges` | High-betweenness bridge entities between communities |
-
-### Operator tools (26)
-
-Target: `tatara-operator`. Cover project/task lifecycle, issue management, and
-agent self-reporting. Twenty-five are registered via the shared `op()` helper
-(including `project_list`); `report_internal_issue` is registered separately, for
-26 in the group. A selection of these appears in each profile (see gating below).
-The four `alwaysOn` tools are present in every profile:
-
-| Tool | Always available |
-|---|---|
-| `report_internal_issue` | Emit a structured log + metric for a platform issue |
-| `project_get` | Read the current project |
-| `repo_list` | List repositories in a project |
-| `task_get` | Read the current task |
-
-Additional operator tools (profile-gated):
-
-| Tool | Description |
-|---|---|
-| `project_list` | List all Projects (registered and callable; granted to no named profile - reachable only in fail-open mode) |
-| `task_list` | List tasks in a project |
-| `task_update` | Update task notes/status |
-| `subtask_list` / `subtask_create` / `subtask_update` | Agent self-planning subtask ledger |
-| `propose_issue` | File a new improvement proposal (brainstorm) |
-| `comment_on_issue` | Post a comment on an existing issue |
-| `comment` | Post a comment on the current task's linked issue |
-| `issue_outcome` | Triage outcome: implement, close, or discuss |
-| `change_summary` | Submit a structured PR/MR change summary |
-| `review_verdict` | Post approve/request-changes/comment review on a PR |
-| `pr_outcome` | Decide to merge or close a tatara-authored PR |
-| `decline_implementation` | Explicit refusal with a reason (parks the task) |
-| `already_done` | Declare the change is already present (parks the task) |
-| `skip_research` | End a brainstorm with no proposal |
-| `submit_handover` | Submit a handover document for the next agent |
-| `list_issues` | List open/closed issues across project repos |
-| `list_commits` | Recent default-branch commits across project repos |
-| `close_issue` | Close an issue with a mandatory explanatory comment |
-| `edit_issue` | Patch issue **title and body only** - labels are not editable (they drive the lifecycle state machine and stay operator-controlled) |
-| `create_issue` | Registered but granted to **no named profile**; reachable only in fail-open (empty profile) mode |
-
-### Chat tools (10)
-
-Target: `tatara-chat`. Enable agent-to-agent communication rooms.
-
-| Tool | Description |
-|---|---|
-| `chat_create_room` | Create a room, returns id |
-| `chat_list_rooms` | List rooms (optionally by status) |
-| `chat_get_room` | Get room + participants |
-| `chat_close_room` | Archive a room |
-| `chat_add_participant` | Join as a participant (orchestrator/implementer/reviewer/human) |
-| `chat_list_participants` | List participants |
-| `chat_remove_participant` | Remove a participant |
-| `chat_send_message` | Send a message, optionally DM to a target participant |
-| `chat_poll_messages` | Poll for new messages (advances cursor) |
-| `chat_get_log` | Paginated full room log |
-
-### Handoff tools (4)
-
-Target: `tatara-chat`. Carry continuity between agent sessions (added after the
-tool surface was last widely documented). Granted only to continuity-carrying
-profiles; `delete_handoff` is `refine`-only, since refine is the handoff groomer.
-
-| Tool | Gate |
-|---|---|
-| `write_handoff` | `handoff` profiles |
-| `get_handoff` | `handoff` profiles |
-| `list_handoffs` | `handoff` profiles |
-| `delete_handoff` | `refine` only |
+`task_note(kind, body)` replaces the entire prior chat (10 tools) and handoff
+(4 tools) surface. It has no `agent` argument - the operator stamps the writer
+from `status.agentKind`, so an agent can never produce a note claiming to be
+the operator.
 
 ### Per-kind tool gating
 
-The operator sets `TATARA_TOOL_PROFILE` in the agent pod env. The CLI does
-**not** filter `tools/list` - every tool is registered for every profile so the
-list stays byte-identical and cache-shareable (Component 4a). Gating is enforced
-at **call time**: before dispatching a tool handler the server checks the
-resolved per-profile allow-set, and a denied call returns
-`tool "<name>" is not permitted for profile "<profile>"` without reaching the
-backend. Memory, code-graph, and the 4 `alwaysOn` tools are callable in every
-named profile. Chat and handoff tools are gated to profiles where multi-agent
-coordination or session continuity is expected.
+The operator sets `TATARA_TOOL_PROFILE` in the agent pod env to the **agent
+kind** (`status.agentKind`; 7 values). The CLI resolves that profile at
+startup and registers only the allowed tools - gating happens at
+**registration time**, not call time.
 
-- **Empty/unset profile** -> fail-**open**: every registered tool is callable
-  (local-dev path), logged as a WARN.
-- **Non-empty but unrecognized profile** -> fail-**closed**: only the 4
-  `alwaysOn` tools, logged as a WARN. A typo must never grant the full surface.
+- **Empty or unset profile** -> fail-**closed**: only the 6 always-on tools
+  register, logged as a WARN. `submit_outcome` is not registered.
+- **Unrecognized profile string** -> fail-**closed**, identically. A typo can
+  never grant a wider surface than the always-on set.
 
-The per-kind allow-sets and exact counts are in the
-[MCP Tool Profiles reference](../reference/mcp-tools.md) (source of truth).
-See [MCP Tool Profiles](../reference/mcp-tools.md) for the authoritative version
-of this table if the two ever disagree.
-
-`toolProfileForKind` maps a Task `kind` to a profile name; under the 7-kind model the profile
-name matches the kind name for all seven live kinds.
-
-| Profile | Task kind(s) | Chat | Handoff (r/w) | Handoff delete | Operator tools | Total allowed |
-|---|---|:---:|:---:|:---:|---:|---:|
-| `refine` | `refine` | no | yes | **yes** | 6 | 46 |
-| `brainstorm` | `brainstorm` | yes | yes | no | 7 | 56 |
-| `implement` | `implement` | no | yes | no | 8 | 47 |
-| `review` | `review` | no | no | no | 4 | 40 |
-| `clarify` | `clarify` | ? | ? | no | ? | ? |
-| `incident` | `incident` | yes | yes | no | 10 | 59 |
-| `documentation` | `documentation` | no | ? | no | ? | ? |
-| *(empty)* | fail-open, local dev | - | - | - | all 22 (+`project_list`) | 72 |
-| *(unrecognized string)* | fail-closed | no | no | no | 0 | 4 |
-
-!!! warning "Do not invent tool counts"
-    `clarify` and `documentation` are new profiles with no shipped tool-set yet as of this
-    plan. The spec names a new `clarify` profile "from old lifecycle/triage" (implying it
-    inherits most of the retired `triage`/`lifecycle` profiles' operator-tool surface) and
-    leaves `documentation`'s tool set unspecified. **Re-derive both from
-    `tatara-cli/internal/mcp/profiles.go` once that change merges** - do not publish a
-    fabricated tool count. `brainstorm` also drops its `healthCheck` dual-kind row since
-    `healthCheck` no longer exists as a kind sharing the profile, and the `selfImprove` profile
-    is removed outright (the kind was already dead before this redesign).
+Per-profile counts, derived from the gating table (20 minus each profile's
+denied cells): brainstorm 17, incident 18, clarify 14, implement 16, review
+15, refine 13, documentation 18. The full tool-by-profile matrix lives in the
+[MCP Tool Profiles reference](../reference/mcp-tools.md#the-profile-gating-table);
+this page does not duplicate it.
 
 !!! note "Security intent"
-    Call-time profile gating limits the blast radius of a prompt-injection
-    attack. A `review` agent has no tool to push commits or open issues. A
-    `brainstorm` agent cannot call `change_summary` or `pr_outcome`. `refine`
-    is deliberately deny-by-default: groom-only, with no `create_issue` and no
-    label mutation. This is a defense-in-depth measure, not a hard security
-    boundary - the tool profile is set by the operator pod, not by the agent
-    itself.
+    Profile gating limits the blast radius of a prompt-injection attack. A
+    `review` agent has no tool to merge or approve. A `brainstorm` agent
+    cannot call `mr_write`. `refine` keeps `mr_write` restricted to
+    `action=comment` only (a cli-side and operator-side check, not the
+    schema) - it grooms the backlog, it does not push code. This is
+    defense-in-depth, not a hard security boundary: the tool profile is set
+    by the operator on the pod, not by the agent itself.
+
+---
+
+## Contract-version handshake
+
+The wrapper image and the operator image ship in different helm releases and
+can apply concurrently, so a moment where a new operator pairs with an old
+agent image (old cli, old skills) is reachable. Without a check, that pod
+would burn its entire turn budget against tool calls the old cli does not
+have.
+
+`tatara mcp` refuses to start on a mismatch: if `TATARA_CONTRACT_VERSION` is
+set in the environment and does not equal the cli's compiled contract
+version, it logs FATAL and exits non-zero, before registering any tools. An
+**unset** value is allowed through - this is what makes a workstation or a
+test run work with no contract-version env at all. Inside an agent pod the
+operator always sets `TATARA_CONTRACT_VERSION=2`, so the check is live there
+unconditionally.
+
+This is one of three defenses in the full handshake; the other two
+(the wrapper reporting `contractVersion` on `GET /v1/session`, and the
+operator asserting it before turn-0) live in
+[tatara-claude-code-wrapper](claude-code-wrapper.md#contract-version-handshake).
 
 ---
 
@@ -402,10 +304,10 @@ name matches the kind name for all seven live kinds.
 
 Backend URLs are resolved in this order for each backend:
 
-1. CLI flag (`--base-url`, `--operator-base-url`, `--chat-base-url`)
-2. Environment variable (`TATARA_MEMORY_URL`, `TATARA_OPERATOR_URL`, `TATARA_CHAT_URL`)
-3. Config file (`~/.config/tatara/config.yaml`, fields `baseUrl`, `operatorBaseUrl`, `chatBaseUrl`)
-4. Default (`https://tatara.szymonrichert.pl/api/v1/{memory|operator|chat}`)
+1. CLI flag (`--base-url`, `--operator-base-url`)
+2. Environment variable (`TATARA_MEMORY_URL`, `TATARA_OPERATOR_URL`)
+3. Config file (`~/.config/tatara/config.yaml`, fields `baseUrl`, `operatorBaseUrl`)
+4. Default (`https://tatara.szymonrichert.pl/api/v1/{memory|operator}`)
 
 The memory URL is further scoped by project: `TATARA_MEMORY_URL/<project>` (set
 via `--project` / `-p` / `TATARA_PROJECT`).
@@ -460,10 +362,10 @@ installed in the image and injects the environment the CLI needs:
       "env": {
         "TATARA_MEMORY_URL": "http://tatara-memory.tatara.svc:8080/api/v1/memory",
         "TATARA_OPERATOR_URL": "http://tatara-operator.tatara.svc:8080",
-        "TATARA_CHAT_URL": "http://chat-tatara.tatara.svc:8080",
         "TATARA_TOOL_PROFILE": "implement",
         "TATARA_PROJECT": "tatara",
-        "TATARA_TASK": "tatara-tatara-cli-42",
+        "TATARA_TASK": "tatara-implement-2026-07-12-a1b2c",
+        "TATARA_CONTRACT_VERSION": "2",
         "OIDC_ISSUER": "https://auth.szymonrichert.pl/realms/master",
         "CLI_OIDC_CLIENT_ID": "tatara-agent",
         "CLI_OIDC_CLIENT_SECRET": "<injected from Secret>"
@@ -479,18 +381,23 @@ Key points:
   version in the image is pinned by `TATARA_CLI_VERSION` in the wrapper
   Dockerfile. Bumping that pin and merging to `main` rebuilds the image and
   ships the new CLI to all agents.
-- `TATARA_TOOL_PROFILE` is set per-task by the operator pod's pod.go before
-  spawning the agent. The CLI reads it at startup; changing it requires
-  restarting the MCP process (i.e., restarting the pod).
+- `TATARA_TOOL_PROFILE` is set to the **agent kind** (`status.agentKind`, not
+  `spec.kind`) by the operator's pod builder before spawning the agent. The
+  CLI reads it at startup; changing it requires restarting the MCP process
+  (i.e., restarting the pod).
 - `TATARA_TASK` and `TATARA_PROJECT` are injected so that operator tools that
   accept `task` or `project` as optional arguments can fall back to these env
   vars. The agent rarely needs to pass them explicitly.
+- **There is no `TATARA_CHAT_URL` and no chat backend.** tatara-chat is fully <!-- stale-ok: tatara-chat -->
+  decommissioned; the cli's `TargetChat` client, `ChatTools()`, and
+  `HandoffTools()` are deleted along with the `chat` argument to
+  `mcp.NewServer`. <!-- stale-ok: TargetChat, ChatTools, HandoffTools -->
+  `task_note` on the always-on tool set does the continuity job chat used to.
 - Backend URLs use in-cluster DNS (`*.tatara.svc`); the default hosted URLs are
-  never used inside pods. Note the exact shapes the operator injects: the operator
-  REST base is the service root on `:8080` with **no** `/api/v1/operator` suffix
-  (`http://tatara-operator.tatara.svc:8080`), and chat is the **per-project**
-  service `chat-<project>` on `:8080` (`http://chat-<project>.<ns>.svc:8080`), not
-  a shared `tatara-chat`. Operator ports `:8081`/`:8082` are the operator's own
-  health and internal-callback binds, not client-facing service ports.
+  never used inside pods. The operator REST base is the service root on
+  `:8080` with **no** `/api/v1/operator` suffix
+  (`http://tatara-operator.tatara.svc:8080`). Operator ports `:8081`/`:8082`
+  are the operator's own health and internal-callback binds, not client-facing
+  service ports.
 - The MCP server can optionally expose a `/metrics` endpoint
   (`TATARA_MCP_METRICS_ADDR`), scraped by the Prometheus stack.

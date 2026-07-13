@@ -20,7 +20,6 @@ steps assume all items here are satisfied.
 | metrics-server | `kubectl top` and any HPA/VPA you add (operator uses none) | Optional; v0.6+ |
 | CloudNativePG (CNPG) operator | Per-Project Postgres clusters with pgvector | v1.22+ |
 | Neo4j | LightRAG graph store, per Project | Single-node community, operator-built (image `neo4j:2026.04.0`); 10 Gi per Project |
-| S3-compatible object store | Conversation transcript persistence | Optional; any S3-compatible API |
 | OCI registry | Component images and Helm charts | Harbor 2.x recommended |
 | `regcred` pull secret | Cluster-wide image pull credential | Secret in the `tatara` namespace |
 | Keycloak realm | OIDC authentication for all tatara APIs | Keycloak 22+ |
@@ -43,7 +42,7 @@ everything below is a dependency that must be healthy before the first `helmfile
 ```mermaid
 graph TD
     K8S["<b>Kubernetes 1.27+</b><br/>nginx Ingress &middot; Default StorageClass &middot; metrics-server"]
-    DS["<b>Data Services</b><br/>CloudNativePG operator &middot; Neo4j &middot; S3 (optional)"]
+    DS["<b>Data Services</b><br/>CloudNativePG operator &middot; Neo4j"]
     REG["<b>OCI Registry</b><br/>component images &middot; Helm charts &middot; regcred pull secret"]
     EXT["<b>External APIs</b><br/>Keycloak OIDC &middot; Anthropic &middot; OpenAI"]
     SCM["<b>SCM Provider</b><br/>GitHub / GitLab &middot; bot account &middot; PAT &middot; webhook secret"]
@@ -73,8 +72,8 @@ by any CronJob dependency.
 
 The operator itself is lightweight: `100m` CPU request, `128 Mi` memory request, `256 Mi` memory
 limit. Agent pods are spawned on demand; size your node pool to accommodate the expected
-concurrency (`Project.spec.maxConcurrentTasks`, default 3) at `250m` CPU / `512 Mi` memory each,
-plus LightRAG and Neo4j per enrolled Project.
+concurrency (`Project.spec.maxConcurrentAgents`, default 3, 0 pauses the whole Project) at
+`250m` CPU / `512 Mi` memory each, plus LightRAG and Neo4j per enrolled Project.
 
 ### nginx Ingress controller
 
@@ -168,31 +167,6 @@ restarts is a known failure mode; a pod restart clears it. The graph is a rebuil
 projection: if the StatefulSet is lost, a full re-ingest of every enrolled repository
 reconstructs it from the source repos and the CNPG-backed document store.
 
-### S3-compatible object store (optional, recommended)
-
-Conversation transcripts are stored in S3 so agent sessions resume across pod restarts.
-Without it, every new pod begins a fresh conversation.
-
-Any S3-compatible backend works: AWS S3, Ceph RGW (Rook-Ceph OBC), or MinIO.
-
-Required configuration in your helmfile secrets overlay:
-
-```yaml
-s3Endpoint: "http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc:8080"  # omit for AWS
-s3Bucket: "tatara-conversations"
-s3Region: "us-east-1"
-s3ForcePathStyle: true   # required for Ceph RGW / MinIO
-s3SecretName: "tatara-s3-credentials"  # Secret with AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
-```
-
-!!! tip "Ceph RGW endpoint"
-    When using Rook-Ceph, set `s3Endpoint` to the RGW service DNS name from the OBC's
-    `BUCKET_HOST` env var, not a hand-rolled hostname. Endpoint mismatches produce
-    NXDOMAIN errors that are silent until the first conversation resume attempt.
-
-Conversation objects are retained for `s3ConversationRetentionHours` (default 72 h) after
-the associated task batch goes terminal, then reaped.
-
 ---
 
 ## 3. Registry
@@ -239,7 +213,7 @@ Deployment, tatara-memory Deployment, CNPG Cluster) via the `imagePullSecret` va
 
 ## 4. Identity (Keycloak)
 
-All tatara APIs are OIDC-gated. You need a Keycloak realm with five clients. The realm
+All tatara APIs are OIDC-gated. You need a Keycloak realm with four clients. The realm
 name is arbitrary; you supply the issuer URL as `oidcIssuer` in the operator values.
 The canonical client inventory (IDs, types, audiences) is documented in
 [Identity & OIDC](../architecture/identity-and-oidc.md#clients-and-audiences).
@@ -282,16 +256,6 @@ The canonical client inventory (IDs, types, audiences) is documented in
     Required settings:
     - Device authorization grant enabled
     - Default scopes include `tatara` (which carries the audience mapper for `tatara-memory`)
-
-=== "tatara-chat"
-
-    **Type:** Confidential  
-    **Purpose:** The tatara-chat service validates tokens against `aud: tatara-chat`.
-    Agent pods receive credentials for this client to participate in chat rooms.
-
-    Required settings:
-    - Service accounts enabled
-    - Audience mapper: add `tatara-chat` to the `aud` claim
 
 === "tatara-claude-code-wrapper"
 
@@ -440,10 +404,10 @@ renders the same Secret.
     |---|---|---|
     | Contents | Read and write | Clone, branch, and push agent commits |
     | Issues | Read and write | Clarify conversation, comment, label |
-    | Pull requests | Read and write | Open, review (approve), and merge agent PRs (merge performed by the deploy supervisor) |
+    | Pull requests | Read and write | Open PRs, post the review pod's verdict as a comment (the single bot identity can never post `APPROVE` on its own PR), and merge on an accepted verdict (merge is performed by the operator) |
     | Metadata | Read | Baseline repo access (mandatory for fine-grained PATs) |
     | Members (Organization) | Read | Org-membership checks for the maintainer/reporter allowlists |
-    | Commit statuses / Checks | Read | Required for the deploy supervisor's green-CI merge gate |
+    | Commit statuses / Checks | Read | Required for the operator's green-CI merge gate |
 
     A classic `repo` token also works but is broader than necessary. No `admin:repo_hook`.
 
@@ -486,9 +450,10 @@ Generate the token from an authenticated Claude Code CLI (its setup-token / OAut
 not from the Anthropic console. The default model is unset: `spec.agent.model` has no built-in
 default, so set it explicitly per Project (the live fleet runs `claude-opus-4-8`).
 
-Plan capacity for `Project.spec.maxConcurrentTasks` simultaneous Claude Code sessions
-per enrolled Project. Each active Task holds one session for the duration of the task,
-which can span multiple turns over hours.
+Plan capacity for `Project.spec.maxConcurrentAgents` simultaneous Claude Code pods per
+enrolled Project. Each pod's life is capped by `Project.spec.agentPodTTLSeconds`
+(default 1h); a single Task can span many pods in sequence over hours or days, but
+holds at most one running pod at a time.
 
 Store the token under key `oauth-token` in a Secret and reference it via `anthropicSecretName`
 (chart value `anthropicOauthToken`).

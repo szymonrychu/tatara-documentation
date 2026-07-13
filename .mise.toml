@@ -12,3 +12,6 @@ run = "mkdocs serve"
 
 [tasks.build]
 run = "mkdocs build --strict"
+
+[tasks.lint]
+run = "./scripts/check-stale-terms.sh"

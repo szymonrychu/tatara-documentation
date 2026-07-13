@@ -24,8 +24,6 @@ values/
     common.yaml               # tatara Project + Repository CRs (tatara-project chart)
   project-infrastructure/
     common.yaml               # GitLab infrastructure Project + Repository CRs
-  tatara-chat/
-    default.yaml              # ingress host/path
 .github/workflows/
   diff.yaml                   # PR -> helmfile diff -> sticky comment (non-blocking)
   apply.yaml                  # push main -> helmfile apply (concurrency-guarded)
@@ -38,7 +36,8 @@ values/
 | `tatara-operator` | `oci://harbor.szymonrichert.pl/charts/tatara-operator` | `tatara` |
 | `project-tatara` | `oci://harbor.szymonrichert.pl/charts/tatara-project` | `tatara` |
 | `project-infrastructure` | `oci://harbor.szymonrichert.pl/charts/tatara-project` | `tatara` |
-| `tatara-chat` | `oci://harbor.szymonrichert.pl/charts/tatara-chat` | `tatara` |
+
+`tatara-chat` is decommissioned: its release, Postgres (a CNPG subchart with no retain annotation), Ingress path, and NetworkPolicy egress rule are all removed. <!-- stale-ok: tatara-chat -->
 
 `project-tatara` and `project-infrastructure` both use `needs: [tatara-operator]` so CRDs exist before the Project/Repository CRs are applied.
 
@@ -48,10 +47,11 @@ values/
 
 Since the semver push-CD migration (2026-07-05), deploys are normally cut and bumped by the release pipeline, not hand-edited:
 
-1. A component PR merges to its `main` with a `semver:{patch|minor|major}` label. Component CI cuts the corresponding `vX.Y.Z` image tag and `X.Y.Z` chart, pushes both to Harbor, and opens a `tatara-helmfile` PR that bumps the version pins (both `image.tag` and the chart `version:`).
-2. The bot PR is auto-merged on green CI. `diff.yaml` still posts the rendered `helmfile diff` as a sticky comment so the change is reviewable in the record.
-3. A deploy train coalesces sibling components merging close together into one cascade so the cluster is not churned per-component.
-4. On merge, `apply.yaml` runs `helmfile -e default apply` on the in-cluster runner; the operator observes the applied pins and closes the originating issue. Failures roll back via `helmDefaults.rollbackOnFailure`.
+1. A component PR (in that component's own repo, e.g. `tatara-operator`) merges to its `main` carrying a `semver:{patch|minor|major}` label (or an agent-declared `change_significance`). That merge is **not** a forge-native auto-merge: with one bot identity the platform cannot self-approve, so its own operator posts a `COMMENT`-type review carrying the verdict and merges directly once CI is green - see [tatara-operator: the review post and the merge](operator.md#the-review-post-and-the-merge). <!-- stale-ok: auto-merge -->
+2. Component CI, on that merge, cuts the corresponding `vX.Y.Z` image tag and `X.Y.Z` chart, pushes both to Harbor, and opens a `tatara-helmfile` PR here that bumps the version pins (both `image.tag` and the chart `version:`).
+3. **This pin-bump PR is an ordinary PR in this repo**, merged however this repo's own policy says - typically a human reviewing the sticky `helmfile diff` comment, or a CI-driven merge on green. It is not a claim this repo makes on the component's behalf. `diff.yaml` posts the rendered `helmfile diff` as a sticky comment so the change is reviewable in the record regardless of who merges it.
+4. A deploy train coalesces sibling components merging close together into one cascade so the cluster is not churned per-component.
+5. On merge, `apply.yaml` runs `helmfile -e default apply` on the in-cluster runner; the operator observes the applied pins and closes the originating issue. Failures roll back via `helmDefaults.rollbackOnFailure`.
 
 ### Manual PR bump (fallback / override)
 

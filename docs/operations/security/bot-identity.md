@@ -22,7 +22,7 @@ A dedicated account gives autonomous work its own attributable identity, a PAT y
 === "GitLab"
     | Scope | Purpose |
     |---|---|
-    | `api` | Full API access (MR create, comment, label, approve) |
+    | `api` | Full API access (MR create, comment, label, review, merge) |
     | `read_repository` + `write_repository` | Clone + push |
 
 ## Secret storage
@@ -43,7 +43,7 @@ The key within the Secret is exactly `token` (validated alongside `webhookSecret
 
 Two consumers read the `token` key:
 
-- **Operator (server-side):** reads `token` via the Kubernetes API for its own SCM write-backs (comments, labels, approvals, PR opens) and read scans.
+- **Operator (server-side):** reads `token` via the Kubernetes API for its own SCM write-backs (comments, labels, reviews, PR opens, merges) and read scans. Every SCM write on this platform is the operator's; agent pods hold the same token for `git` only.
 - **Wrapper pods:** the operator injects it as the `GIT_TOKEN` env var via a `SecretKeyRef` from the same `token` key, so the agent's `git`/SCM operations run as the bot. The token is never baked into the pod spec or image. The wrapper also re-exports it as `GITHUB_TOKEN` and `MISE_GITHUB_TOKEN` process env so `mise install` (and its aqua backend) authenticate as the bot when fetching tool releases from the GitHub API, avoiding unauthenticated rate limits during bootstrap. Both keys carry a `_TOKEN` suffix and are auto-redacted from logs.
 
 ## Bot as commit author
@@ -62,23 +62,60 @@ GitHub and GitLab have dedicated noreply commit email formats for bot accounts. 
 ## Bot exclusion from approval gates
 
 `spec.scm.maintainerLogins` must NOT include `botLogin` - but the guard does not depend on that
-convention. Approval is granted by exactly one action: a maintainer applying the `tatara-approved`
-label directly to the issue. Two independent checks keep the bot from ever satisfying it:
+convention. Approval is granted by a maintainer comment whose text matches
+`Project.spec.scm.approvalPhrases`. The bot is excluded **structurally**: every ingested comment
+carries `isBot`, set from `Project.spec.scm.botLogin`, and the grammar refuses a bot-authored
+comment before it reads the text.
 
-1. **Bot-actor label events are dropped before the maintainer check runs.** The webhook ignores
-   any `issues.labeled` event whose actor is `botLogin` outright - an agent/pod acting as the bot
-   that applies `tatara-approved` to its own (or any) issue never even reaches the maintainer
-   verification step.
-2. **The maintainer check itself excludes the bot.** `IsMaintainer` returns `false` for `botLogin`
-   even if it were mistakenly present in `maintainerLogins`, so a bot login can never satisfy the
-   actor check on its own merits either.
+Three independent checks keep the bot from ever satisfying the gate:
 
-Comments were never part of this check to begin with under the current model - only a verified
-label-apply event sets `Status.ApprovedByMaintainer`, so there is no comment-based path for the
-bot to exploit in the first place.
+1. **Bot-authored comments never enter the queue.** The event filter drops any comment whose author
+   is `botLogin` before it becomes a pending event, so the operator's own posts - including the
+   comment it writes when it parks a Task for a missing approval - can never re-drive the Task they
+   describe.
+2. **The grammar refuses `isBot` before it reads the body.** A comment carrying `isBot: true` is
+   rejected on identity, not on wording. An agent pod acting as the bot cannot approve its own work
+   by typing an approval phrase into a thread.
+3. **The maintainer check itself excludes the bot.** `IsMaintainer` returns `false` for `botLogin`
+   even if it were mistakenly present in `maintainerLogins`, so the bot cannot satisfy the identity
+   clause on its own merits either.
 
-This is enforced in code, not through configuration. See [Approval Gates](approval-gates.md) for
-how the maintainer-approval label check fits into the full merge-gate flow.
+This is enforced in code, not through configuration. See
+[Approval Gates](approval-gates.md#the-approval-grammar) for the full grammar, and for why approval
+is defined over comment text rather than over an event on a thread.
+
+## One identity, and what it costs
+
+The platform has exactly **one** bot identity. The operator and every agent pod act as the same
+account. That buys a single revocable credential and a clean audit trail, and it costs the platform
+one control it would otherwise have.
+
+A forge will not let an identity make a review **decision** on its own pull request. GitHub returns
+`422` for both `APPROVE` and `REQUEST_CHANGES` from the PR author; only a `COMMENT` review is
+permitted. So when a `review` pod submits an approving verdict, the operator posts it as a review
+comment and then merges. **The approval of record is the merge**, not a green review state on the PR.
+
+!!! danger "Accepted risk: the merge gate is operator logic, not a forge permission"
+    Two consequences follow, and both are accepted explicitly:
+
+    1. **Branch protection cannot require an approving review.** Nothing on this platform could
+       ever satisfy such a rule - the only account that could approve is the account that opened
+       the PR - so enabling it would deadlock every merge, permanently.
+    2. **An agent pod holds the same `GIT_TOKEN` the operator merges with.** The forge cannot
+       distinguish a merge call made by a pod from one made by the operator. A deliberately
+       malicious or catastrophically confused agent has a possible path to merging its own PR.
+
+    The residual risk is accepted, and answered with **detection rather than prevention**: a merge
+    the operator did not initiate is caught by the sweep and raises
+    `operator_unexpected_merge_total`, a critical alert.
+
+    What remains, and is worth having: branch protection **forbidding direct pushes to `main`** on
+    every enrolled repository (this needs no review requirement and is the highest-value control
+    available under one identity); a scoped installation token in place of an org-wide PAT; and
+    `gh`, `glab` and direct-to-forge-API `curl` on the agent pod's deny-list, so a compliant agent
+    has no ergonomic path to the merge endpoint. **That deny-list is an in-cluster rule only** -
+    workstation skills run by a human with their own credentials keep `gh` and keep human-driven
+    merge.
 
 ## Comment turn-taking gate
 

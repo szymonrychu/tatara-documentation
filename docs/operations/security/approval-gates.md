@@ -1,18 +1,18 @@
 ---
 title: Approval Gates
-description: How humans stay in control of tatara agents - intake allowlisting, the maintainer-approval label gate, and the deploy-supervisor merge gate.
+description: How humans stay in control of tatara agents - the intake gate, the comment-text approval grammar the operator runs, and the operator-owned merge gate.
 ---
 
 # Approval Gates
 
-Tatara is designed to be useful without being autonomous. Two independent gates
-prevent an agent from writing or merging code without explicit human intent: an
-intake gate that controls which issues the operator acts on, and a maintainer-approval
-gate that controls whether a front-half issue (still in `clarify`/brainstorming) advances
-into the autonomous implement->review->merge->deploy chain. A third gate -
-review approval plus the deploy supervisor - governs whether the resulting PR is
-merged automatically once a `review` pod approves it and required checks are
-green.
+Tatara is designed to be useful without being autonomous. Three gates stand
+between an issue arriving on a forge and code landing on `main`:
+
+| Gate | What it holds back | Who opens it |
+|---|---|---|
+| Intake | Whether an issue becomes a Task at all | The sweep's orphan predicate plus `Project.spec.scm.reporterLogins` |
+| Approval | Whether any code is written | The [approval grammar](#the-approval-grammar) below. The Task sits at `clarifying` until it passes, then moves to `approved` |
+| Merge | Whether reviewed code reaches `main` | The **operator**, on an accepted `submit_outcome(verdict=approve)` from a review pod. The forge's native merge-on-green is never armed, and no MCP tool exposes a merge action |
 
 ```mermaid
 sequenceDiagram
@@ -21,29 +21,29 @@ sequenceDiagram
     participant OP as Operator
     participant AG as Agent pod
 
-    OP->>SCM: brainstorm: open proposal issue<br/>(tatara-brainstorming label)
-    AG->>OP: clarify: issue_outcome(action=implement)
-    OP->>OP: check Status.ApprovedByMaintainer
-    Note over OP: not set -> park to brainstorming,<br/>keep polling for the label
-    M->>SCM: apply tatara-approved label
-    SCM->>OP: issues.labeled webhook (actor=M)
-    OP->>OP: verify actor in MaintainerLogins<br/>(and actor != bot)
-    OP->>OP: record Status.ApprovedByMaintainer
-    OP->>AG: spawn implement agent
-    AG->>SCM: open PR
-    OP->>AG: spawn review agent
-    AG->>SCM: approve-label + semver:<level> labels + native review
-    OP->>SCM: deploy supervisor merges (per mergePolicy)
+    OP->>SCM: open the issue thread, mirror it onto an Issue CR
+    AG->>OP: clarify: submit_outcome(decision=implement)
+    OP->>OP: run the approval grammar over every live owned Issue
+    Note over OP: no matching maintainer comment yet,<br/>park at identity-unverified
+    M->>SCM: comment "go ahead"
+    SCM->>OP: issue_comment webhook (sender=M)
+    OP->>OP: verify sender is a maintainer, not the bot,<br/>and that the comment TEXT matches an approval phrase
+    OP->>OP: pin ApprovalEvidence on the Issue CR,<br/>Issue.status.status = approved
+    OP->>AG: spawn the implement pod
+    AG->>SCM: push a branch, open a PR
+    OP->>AG: spawn the review pod
+    AG->>OP: review: submit_outcome(verdict=approve)
+    OP->>SCM: the OPERATOR posts the review, then merges
 ```
 
-## Gate 1: Intake - who can drive the lifecycle
+## Gate 1: Intake - who can drive a Task into existence
 
-The intake gate controls which issues and issue comments the operator acts on.
-By default the gate is **open**: the operator processes issues from any author.
-When `spec.scm.reporterLogins` is non-empty the gate becomes **restricted**:
-only these authors (plus the bot and any maintainer) may drive the lifecycle.
-Everything else is dropped at intake - cron scan and webhook alike - so
-unenrolled third parties cannot submit arbitrary work to agents.
+The intake gate controls which issues and comments the operator acts on at all.
+By default the gate is **open**: the operator mints Tasks from issues by any
+author. When `spec.scm.reporterLogins` is non-empty the gate becomes
+**restricted**: only these authors (plus the bot and any maintainer) may drive
+the platform. Everything else is dropped at intake - sweep and webhook alike -
+so unenrolled third parties cannot submit arbitrary work to agents.
 
 The effective reporter set for a given repository is:
 
@@ -52,7 +52,7 @@ The effective reporter set for a given repository is:
 3. Every login explicitly listed in `spec.scm.reporterLogins` - trusted when the
    list is non-empty.
 
-An empty `reporterLogins` disables the gate entirely (historical open behavior).
+An empty `reporterLogins` disables the gate entirely.
 
 !!! warning "Default: open intake"
     With an empty `reporterLogins`, any SCM user who can file an issue on an
@@ -78,148 +78,240 @@ spec:
       - bob
 ```
 
-## Gate 2: Maintainer-approval label - who can approve implementation
+Intake decides only whether the platform *listens*. It grants nothing. An
+allowlisted reporter who is not a maintainer can open an issue and talk to a
+`clarify` agent all day; they cannot cause a line of code to be written.
 
-Before an agent writes any code, the operator requires a verified, identity-checked
-approval fact recorded on the Task: `Status.ApprovedByMaintainer`. There is exactly
-**one** action that sets this field, and it is not a conversational one:
+## Gate 2: The approval grammar { #the-approval-grammar }
 
-!!! danger "The only approval action"
-    **A maintainer applies the `tatara-approved` label (`spec.scm.approvedLabel`) directly
-    to the issue.** That is the entire mechanism. Nothing else approves an issue for
-    implementation:
+Approval is not a label. **Approval is a comment, whose text the operator
+reads.**
 
-    - **A comment never approves**, regardless of its content or who wrote it. "Looks good,
-      ship it" in a comment thread does **not** release the gate - the old comment-based
-      approval model has been removed entirely.
-    - **A non-maintainer applying the label does not approve.** If the issue reporter, a
-      trusted `reporterLogins` account, or any other non-maintainer applies
-      `tatara-approved`, the operator observes the label-add event, verifies the actor
-      is not a maintainer, and **ignores it** - no approval is recorded.
-    - **An agent or bot applying the label does not approve.** Label-add events whose
-      actor is the configured `botLogin` are dropped before the maintainer check even
-      runs. An agent/pod acting as the bot structurally cannot self-approve its own (or
-      anyone else's) proposal by writing the label itself.
+The operator sets `Issue.status.status = approved` only when **all** of the
+following hold:
 
-`clarify` still runs its conversation - asking questions, proposing a plan, reading the
-full comment thread - but that conversation is informational and scoping only. When
-`clarify` calls `issue_outcome(action=implement)`, the operator does **not** treat the
-verdict itself as approval:
+1. A `clarify` Task for this Issue submitted `decision=implement`. That is the
+   agent's judgment on scope, and it is a precondition, never an approval.
+2. **Scope.** *Every* Issue the Task owns that is still live - `state == "open"`
+   and `status` not in (`done`, `rejected`) - carries valid evidence per clause
+   3. Not one of them. Every live one. One `lgtm` on one issue does not approve
+   a Task spanning six repositories. Narrowing to live issues is deliberate: a
+   human closing one issue of a multi-issue Task must not make approval require
+   a phrase on a closed thread, forever.
+3. For each such Issue there exists a comment `C` on its thread such that:
+    a. `C.author` is in the effective maintainer set, **and**
+       `C.author != Project.spec.scm.botLogin` - the bot is excluded
+       structurally, not by convention - **and** `IsMaintainer(project, repo,
+       C.author)` passes. That check is closed by default and fails closed.
+    b. `C` is the **most recent** maintainer-authored comment on that thread. An
+       older approval sitting behind a newer maintainer objection does not
+       approve.
+    c. The comment's normalised body carries the phrase as an **anchored,
+       whole-line match**. Normalisation lowercases the body, strips fenced code
+       blocks, strips quoted (`>`) lines, strips markdown emphasis around a run,
+       and strips trailing emoji and whitespace. Some line of the result must
+       then match `^\s*(<phrase>)[\s.!]*$` for a phrase in
+       `Project.spec.scm.approvalPhrases`. **The comment must consist of the
+       phrase, not merely contain it.**
+    d. `C.externalId` is not the comment id already recorded in
+       `Issue.status.approval.commentId`. **Approval evidence is single-use**: a
+       consumed comment cannot approve a second time.
+4. The operator then pins the evidence on the Issue CR, and once every owned
+   Issue is approved, moves the Task to the `approved` stage:
 
-| `clarify` verdict | Operator behavior |
-|---------|---------|
-| `implement` | Checks `Status.ApprovedByMaintainer`. **Set** -> proceeds to spawn `implement`. **Empty** -> fails closed: parks the issue back to `tatara-brainstorming` and keeps waiting for a maintainer to apply the label. |
-| `discuss` | More information or human input is needed; issue stays in `tatara-brainstorming`, `clarify` keeps polling |
-| `close` | Issue should be rejected and closed |
+```yaml
+status:
+  status: approved
+  approval:
+    login: szymonrychu
+    commentId: "1234567"
+    createdAt: "2026-07-12T10:02:00Z"
+    phrase: "go ahead"
+```
 
-### Who verifies the approval, and how
+`approvalPhrases` defaults, when unset, to `approve`, `approved`, `go ahead`,
+`lgtm`, `ship it`, `implement it`. **An empty list means the defaults; it can
+never mean "any text approves."**
 
-The webhook server is the sole writer of `Status.ApprovedByMaintainer`. On every
-`issues.labeled` event it applies this check, in order:
+### Why the match is anchored
 
-1. **Drop bot-actor label events.** If the event's actor is the project's `botLogin`,
-   the event is an echo of the operator's own SCM write (e.g. a phase-label swap) and is
-   ignored outright - it never reaches the approval check.
-2. **Match the changed label.** Only an add of exactly `spec.scm.approvedLabel` (default
-   `tatara-approved`) is considered; every other label change is irrelevant to this gate.
-3. **Verify the actor is a maintainer.** The actor login is checked against
-   `EffectiveMaintainerLogins` for the issue's repository (the Repository-level override,
-   falling back to the Project-level `spec.scm.maintainerLogins`) - and the bot login is
-   structurally excluded from that set even if it were mistakenly listed. Only a match
-   here counts as verified.
-4. **Record the fact.** On a match, the operator writes `Status.ApprovedByMaintainer` on
-   the owning Task to the maintainer's login (kept for audit) - not the raw label
-   presence. Every subsequent gate check reads this recorded fact, not the SCM label
-   state, so the approval cannot be spoofed by an agent re-adding a label the operator
-   itself might otherwise sweep or re-apply.
+A substring match is not a gate. Under one, every sentence below approves the
+work:
 
-!!! warning "Fail closed: empty `MaintainerLogins` approves nothing, ever"
-    `spec.scm.maintainerLogins` is **closed by default**. An empty (or unset) list means
-    the project has **no** maintainers - nobody's label-apply can ever satisfy the actor
-    check, so `Status.ApprovedByMaintainer` can never be set and no issue ever advances
-    past `clarify` into implementation. This is deliberate: a project must explicitly name
-    its maintainers before tatara will write any code against it. There is no "any human"
-    fallback for an unpopulated allowlist, unlike the intake gate (Gate 1).
+| Comment | Substring match | Anchored match |
+|---|---|---|
+| `go ahead` | approves | **approves** |
+| `LGTM` | approves | **approves** (emphasis and case are normalised away) |
+| `I can't approve this until the tests pass` | **approves** | rejected |
+| `don't go ahead with this` | **approves** | rejected |
+| `> go ahead` (quoting someone else) | **approves** | rejected - quoted lines are stripped |
+| ``` `go ahead` ``` inside a code fence | **approves** | rejected - fences are stripped |
 
-### Applying the label at any point in the conversation
+And because clause 3b takes the maintainer's *most recent* comment, under a
+substring match the maintainer's own corrective follow-up would approve the work
+they were objecting to.
 
-A maintainer does not need to wait for `clarify` to ask; the label can be applied at any
-time while the issue sits in `tatara-brainstorming` (including immediately on filing, to
-skip straight past discussion once `clarify` next reconciles). The webhook records the
-approval as soon as it sees the event, independent of whatever `clarify` verdict comes
-next - so a maintainer who applies the label while `clarify` is mid-conversation does not
-need to wait for the pod to finish; the next reconcile sees the recorded approval and
-proceeds.
+A negation blocklist was rejected outright. Blocklists lose: the same argument
+that makes the close-directive filter an allowlist applies here verbatim.
 
-### Systemic/grouped issue sets: approval is per-issue, not per-group
+Emphasis-stripping is not a nicety either. Without it, `**LGTM**` - which is how
+humans actually write it - fails the anchor, and the Task drops into a park it
+cannot leave without a second comment.
 
-A systemic-improvement group (see [Brainstorm](../../workflows/brainstorm.md#systemic-improvements))
-files one lead issue plus same-repo sibling issues that share a `tatara/systemic-<id>`
-label. Maintainer approval is **never group-wide**: each sibling issue requires its own,
-independently recorded `Status.ApprovedByMaintainer` before it is treated as approved.
+### When the grammar runs
 
-- An unapproved or explicitly declined sibling is **not force-closed** by the lead's PR.
-  The lead's implementation prompt only includes siblings that already carry a recorded
-  approval; siblings with no recorded approval are excluded from the combined-PR prompt
-  entirely.
-- If the lead PR body would otherwise auto-close an unapproved sibling (a `Closes #N`
-  directive for that sibling's issue number), the writeback step **downgrades it to
-  `refs #N`** before posting - the reference survives for traceability, but merging the
-  lead PR no longer closes that sibling's issue.
-- A sibling that is later approved co-resolves on a subsequent reconcile: the systemic
-  group carried on the lead Task is filtered fresh against currently-recorded approvals
-  every time, so a late maintainer approval is picked up without re-filing anything.
+The grammar is not a one-shot check at `clarify` outcome time. It is evaluated
+at **both** of:
 
-## Gate 3: Review approval + deploy-supervisor merge
+1. `clarify`'s `submit_outcome(decision=implement)`, and
+2. **every non-bot event on a Task parked at `identity-unverified`** - that is,
+   every time a human says something on a thread the platform is waiting on.
 
-Merge is no longer gated by an agent-declared `pr_outcome=merge` signal read against
-`mergePolicy`. It is gated by the [deploy supervisor](../../workflows/deploy-supervisor.md) -
-an operator-only loop, not an agent kind - which merges once **both** hold: required checks are
-green, and `tatara-approved` is present on the PR (set only by `review`'s approve action, never
-by `implement`). `review` never calls a merge API itself; it only sets the label and posts a
-native SCM approval.
+Evaluating it only at (1) would leave the normal path broken, not just an attack
+path: `clarify` asks for approval while the maintainer is asleep, the grammar
+fails, the Task parks - and the maintainer's "go ahead" the next morning would
+land on a Task that never re-reads its thread.
 
-!!! note "Same label name, different object, different check"
-    The PR-level `tatara-approved` label here is unrelated to the issue-level Gate 2 check:
-    `review` (a bot pod) sets this one itself as part of its approve action, and the deploy
-    supervisor trusts raw label presence on the **PR**. Gate 2's issue-level approval is never
-    self-set by a bot and is trusted only via the recorded `Status.ApprovedByMaintainer` fact,
-    never raw label presence on the **issue**. Do not conflate the two - Gate 2 exists precisely
-    because a bot-settable label cannot be trusted as a human-approval signal.
+### When it fails
 
-If `review` finds any MR under the Task unmergeable (a conflict, a failed pipeline), it withholds
-approval and re-adds `tatara-implementation`, invoking `implement` again rather than leaving the
-PR in a stuck state for a human to unblock.
+If any clause fails, the Task parks with `stageReason=identity-unverified` and
+the operator comments on the issue naming exactly what was missing. **That
+comment is bot-authored, so it can never un-park the Task the operator just
+parked.** The bot is filtered out of the event queue and out of the grammar,
+twice over.
 
-On the same `approve` action, `review` also assigns a per-MR `semver:<level>` label to every MR
-in the stream - human/maintainer-authored MRs included, not just tatara-created ones. This closes
-a real deploy gap: `change_significance` (declared via `change_summary`) is an `implement`-only
-signal, so a human-authored MR previously carried no semver label from anyone, and the push-CD
-pipeline refused to cut a release tag for it even after a clean merge. Review respects any
-`semver:*` label a human already set (never overwriting it) and otherwise falls back to that
-MR's own `change_significance`, then `patch`. See
-[Deploy Supervisor Component 1b](../../workflows/deploy-supervisor.md#component-1b-review-semver-stamping-human-mrs)
-for the full rubric.
+### Approval is not sticky
 
-!!! note "review structurally cannot approve its own diff"
-    Because `implement` and `review` are separate pods spawned on separate turns, the merge gate
-    is enforced by pod-boundary separation, not by a policy flag a misconfigured project could
-    silently disable. There is no `mergePolicy: afterApproval` equivalent that skips review.
+An Issue acquired *after* the Task reached `approved` - through `issue_write`
+creating one, or through a `refine` fold adopting one - **resets the Task out of
+`approved`** and back to `clarifying`, because clause 2 no longer holds. An
+agent cannot widen its own mandate by adopting work after the gate closed behind
+it.
 
-### Recommended branch protection (GitHub)
+!!! danger "Presence is not consent. Text is."
+    Before the 2026-07-11 hardening, the operator's `approvingMaintainer()`
+    returned a maintainer-authored comment **without reading it**. A maintainer
+    who commented "this looks like spam" on a thread thereby approved the work.
+    Clause 3c is the fix, and it is the reason approval is defined as a grammar
+    over text rather than as an event on a thread.
 
-For production repositories enrolled in tatara:
+!!! warning "Fail closed: an empty `maintainerLogins` approves nothing, ever"
+    `spec.scm.maintainerLogins` is **closed by default**. An empty or unset list
+    means the project has no maintainers, so no comment can ever satisfy clause
+    3a, no evidence is ever pinned, and no Issue ever advances into
+    implementation. A project must name its maintainers before tatara will write
+    a line of code against it. There is no "any human" fallback here, unlike the
+    intake gate.
 
-- Require at least 1 approving review (satisfied by `review`'s native PR approval).
-- Dismiss stale reviews on push.
-- Require status checks to pass before merging.
-- Restrict who can push to the protected branch to the bot account and maintainers.
+## Labels are write-only
+
+Labels are a **projection** of `Issue.status.status`, never a source of it. The
+operator writes them; nothing reads them back into a decision.
+
+```
+Issue.status.status   is written ONLY by the approval grammar above, and by the
+                      operator's own lifecycle writes (rejected, done).
+Labels                are a ONE-WAY PROJECTION of it, written by the operator.
+                      No label is EVER read to produce a status. A test in the
+                      operator's suite asserts it.
+```
+
+There is **no label-to-status path at all** - not from the sweep, not from a
+reconcile, and not from the webhook either. An earlier design kept a webhook-only
+path, on the reasoning that the webhook alone sees a verified `sender` and could
+therefore refuse a bot-written label, where a cron - which sees no sender - would
+launder one into an approval. That guard is gone along with the path it guarded:
+the three label-name fields the old model configured on `Project.spec` (the
+approval, idea and rejected label names) are **removed from the CRD**, and no
+label anywhere means "approved" to anything in the control path.
+
+The only label read anywhere in the control path is `tatara-parked`, and it
+decides **cost, not authority**: the sweep uses it to mint a parked Issue as a
+cheap, pod-less Task instead of an active one. Forging that label onto an issue
+buys an attacker a Task that stays parked. It fails safe. Forging a label that
+meant "approved" would have bought them production.
+
+`issue_write` has **no `labels` parameter and no `status` parameter**. An agent
+cannot stamp a label, so it cannot self-escalate by stamping one.
+
+## Gate 3: Merge - an operator action
+
+Merge is an **operator** action, triggered by a review agent's approval. It is
+never an agent action, and the forge's native merge-on-green is never armed on a
+tatara PR.
+
+A `review` pod reads the diff and submits `submit_outcome`. If the verdict is
+`approve`, the operator - not the agent - posts the SCM review, then walks
+`Task.spec.mergeOrder` and merges each repository in turn:
+
+1. It reads the **live** head SHA from the forge, never the mirror.
+2. If the live head no longer equals `MergeRequest.status.reviewedSHA`, the head
+   moved under the review. The MR is reset to unreviewed and the Task goes back
+   to `reviewing`. Reviewed code is what merges, or nothing does.
+3. It merges only on green CI at that exact SHA. A `409` or a "head sha changed"
+   from the merge call sends the Task back to `reviewing` too, which closes the
+   window between the check and the merge.
+
+Two things follow, and they are the whole design:
+
+- **No MCP tool exposes merge.** There is no merge action in any tool profile,
+  for any agent kind. A hallucinated merge has nothing to call.
+- **Agents never post SCM reviews either.** The operator writes the review from
+  the accepted verdict. The platform has one bot identity, and a forge will not
+  let an identity post an approving review on its own pull request - so the
+  review the operator posts is a comment carrying the verdict, and the
+  **approval of record is the merge itself**, not a green review check on the PR.
+
+!!! danger "Accepted risk: one bot identity means the merge gate is operator logic"
+    The merge gate is **operator logic, not a forge-enforced control.** An agent
+    pod holds `GIT_TOKEN` - the same bot credential the operator merges with -
+    and the forge cannot tell a merge request made by a pod apart from one made
+    by the operator. A deliberately malicious or catastrophically confused agent
+    could merge its own PR by calling the forge API directly.
+
+    This risk is **accepted explicitly**, and it is the direct consequence of
+    running one bot identity. It is not a defect awaiting a fix, and the obvious
+    countermeasure does not exist: **branch protection cannot require an
+    approving review**, because nothing on this platform could ever satisfy such
+    a rule, so enabling it would deadlock every merge.
+
+    The answer is detection, not prevention: a merge the operator did not
+    initiate is caught by the sweep - it finds a merged MR with no merge-cursor
+    advance - and raises `operator_unexpected_merge_total`, a critical alert.
+
+### What is in scope under one identity
+
+Three controls remain available and are all worth having:
+
+1. **Branch protection forbidding direct pushes to `main` on every repository.**
+   This stops `git push origin HEAD:main` outright and needs no review
+   requirement at all. It is the single highest-value control available under one
+   identity, and it is cheap.
+2. **A scoped installation token in place of an org-wide PAT**, so the blast
+   radius of a leaked pod token is one installation rather than the whole
+   organisation.
+3. **`gh`, `glab`, and direct-to-forge-API `curl` on the wrapper's deny-list**, so
+   a compliant agent has no ergonomic path to the merge endpoint even though a
+   determined one has a possible path.
+
+!!! note "The `gh` ban is an IN-CLUSTER ban"
+    **In-cluster agent pods** may not use `gh` or `glab`, and may not merge. That
+    is enforced structurally: the MCP profile exposes no merge action, and the
+    tools are denied in the pod.
+
+    **Workstation skills** - `start-development` and everything it drives, run by
+    a human at a terminal with their own forge credentials - **keep `gh` and keep
+    human-driven merge.** They do not go through MCP profile gating, and the
+    ban's enforcement mechanism does not reach them.
+
+    The rule is about what an autonomous pod may do with the platform's bot
+    identity, not about what a human may do with their own.
 
 ## Per-repository overrides
 
-Both allowlists can be overridden at the Repository CR level, independently of the
-Project. This lets you tighten gates on sensitive repositories without changing the
-project-wide defaults.
+Both allowlists can be overridden at the Repository CR level, independently of
+the Project. This lets you tighten gates on sensitive repositories without
+changing the project-wide defaults.
 
 ```yaml
 apiVersion: tatara.dev/v1alpha1
@@ -245,73 +337,36 @@ Override semantics:
 | Set to an explicit list (including empty `[]`) | Replaces the Project's list for this repository only |
 
 An explicit empty list `[]` **opens** intake for that repository to any SCM
-author (clears the project-level allowlist entirely), regardless of the
-project-level `reporterLogins`. To close intake to only the bot and
-maintainers, set `reporterLogins` to a non-empty list containing only the
-trusted accounts.
+author, regardless of the project-level `reporterLogins`. To close intake to only
+the bot and maintainers, set `reporterLogins` to a non-empty list containing only
+the trusted accounts.
 
-Setting `maintainerLogins` to an explicit empty list `[]` for a repository has the
-opposite effect from `reporterLogins`: it **closes** the approval gate for that
-repository (no maintainer, so nothing is ever approved there), even if the
+Setting `maintainerLogins` to an explicit empty list `[]` for a repository has
+the opposite effect: it **closes** the approval gate for that repository - no
+maintainer, so no comment there can ever approve anything - even if the
 project-level list is non-empty.
 
-## Label set reference
-
-The operator manages the following labels. Names are configurable via the
-`spec.scm.*Label` fields on the Project; defaults are shown.
-
-| Label | Default name | Color | Meaning |
-|-------|-------------|-------|-------|
-| Brainstorming | `tatara-brainstorming` | `#1d76db` (blue) | `clarify` conversing - proposal under discussion, awaiting maintainer approval |
-| Approved | `tatara-approved` | `#0e8a16` (green) | A maintainer applied this label and the operator verified it - ready for implementation |
-| Implementation | `tatara-implementation` | `#fbca04` (yellow) | `implement` agent active |
-| Declined | `tatara-declined` | `#9e9e9e` (gray) | Rejected - no implementation |
-| Incident | `tatara-incident` | `#d73a4a` (red) | Additive; incident-originated proposal |
-
-The operator enforces exactly one of the four managed labels per issue at any time.
-It adds the desired label and removes all other managed labels atomically.
-The `tatara-incident` label is additive and never swept by the phase reconciler -
-an incident proposal can carry both `tatara-incident` and `tatara-brainstorming`
-simultaneously.
-
-!!! warning "Label presence on the issue is not proof of approval"
-    The `tatara-approved` label being visibly present on an issue does not by itself mean
-    the operator has recorded an approval - a non-maintainer or a bot could have applied it
-    (the operator leaves a non-maintainer's label in place; it just never treats it as
-    approval) or the operator itself may not have finished reconciling the event yet. To
-    confirm approval was recorded, check the owning Task's
-    `status.approvedByMaintainer` field (non-empty = recorded; holds the approving login).
-
-!!! note "Legacy labels"
-    `tatara-idea` and `tatara-rejected` are deprecated aliases kept for migration
-    compatibility. The operator still recognizes them for dedup and backstop
-    purposes but no longer applies them to new issues. Migrate existing issues to
-    the current label names at your convenience.
-
-## Complete approval flow
+## The complete approval flow
 
 ```mermaid
 flowchart TD
-    A([Issue filed or brainstorm proposal]) --> B{Intake gate\nreporterLogins}
-    B -- author not allowed --> Z1([Dropped - no action])
-    B -- author allowed --> C[clarify agent reads\nfull comment thread]
-    C -- outcome: close --> D[tatara-declined label\nIssue closed]
-    C -- outcome: discuss --> E[tatara-brainstorming label\nclarify keeps polling]
-    C -- outcome: implement --> F{Status.ApprovedByMaintainer\nrecorded?}
-    F -- no --> E
-    F -- yes --> G[implement agent spawns]
-    E --> I{Maintainer applies\ntatara-approved label?}
-    I -- yes, verified maintainer actor --> J[Status.ApprovedByMaintainer\nrecorded]
-    I -- yes, non-maintainer or bot actor --> K[Ignored - not recorded]
-    K --> E
-    J --> G
-    E --> L{1h wall-clock\nelapsed, no label event?}
-    L -- yes --> M([Clarify pod killed - resumable])
-    L -- no --> E
-    G --> N[implement agent opens PR]
-    N --> O[review agent approves\nor requests changes]
-    O -- approve --> P{Required checks green?}
-    O -- request_changes --> G
-    P -- yes --> Q([Deploy supervisor merges])
-    P -- no --> R([Hold - awaiting CI])
+    A([Issue filed]) --> B{Intake gate\nreporterLogins}
+    B -- author not allowed --> Z1([Dropped - no Task minted])
+    B -- author allowed --> C[clarify pod reads the thread]
+    C -- decision: reject --> D([Issue closed, status rejected])
+    C -- decision: clarify --> E[Task stays at clarifying]
+    C -- decision: implement --> F{Approval grammar passes\non EVERY live owned Issue?}
+    F -- no --> P[parked: identity-unverified\noperator comments what is missing]
+    F -- yes --> G[ApprovalEvidence pinned\nstage: approved]
+    P --> H{Non-bot comment\narrives on the thread}
+    H --> F
+    E --> H
+    G --> I[implement pod opens a PR]
+    I --> J[review pod submits a verdict]
+    J -- request_changes --> I
+    J -- approve --> K{Live head SHA still\nequals reviewedSHA?}
+    K -- no --> J
+    K -- yes --> L{CI green at that SHA?}
+    L -- no --> M([Hold - awaiting CI])
+    L -- yes --> N([Operator merges, in mergeOrder])
 ```

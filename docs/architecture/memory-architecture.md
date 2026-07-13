@@ -27,9 +27,11 @@ tatara-memory (REST service, Go)
 LightRAG is configured with `LIGHTRAG_GRAPH_STORAGE=Neo4JStorage`, `PGKVStorage`,
 and `PGVectorStorage`. Neo4j holds the entity/relationship graph; Postgres holds the
 key-value store, vector embeddings, and document/ingest status. `tatara-memory` stores
-**no** conversation state: conversation pointers (S3 object key + session id) live on
-`Task.Status` in etcd and the transcripts themselves live in S3 (see
-[Conversation persistence](#conversation-persistence)).
+no live conversation state - there is no session-resume mechanism at all (see
+[Agent Execution](agent-execution.md#task-continuity-the-notes-journal)). What it
+does store is the **overflow** from `Task`, `Issue`, and `MergeRequest` objects in
+etcd, once those hit their own byte budgets: see
+[Task continuity spill](#task-continuity-spill) below.
 
 One stack is provisioned per `Project` CR by the operator. Sizes are tunable via `spec.memory`:
 
@@ -92,22 +94,35 @@ These are the real tool names (there is no `memory_query`, `code_graph_list`,
 tools. The LightRAG query mode (naive, local, global, hybrid) is chosen by the tool
 implementation based on query type; hybrid mode (vector + graph traversal) is the default.
 
-## Conversation persistence
+## Task continuity spill
 
-When S3 is configured (`spec.s3Bucket` on the Project), the wrapper stores the full Claude conversation transcript in S3 after each turn. The operator records the S3 object key and session ID in `Task.status` and injects them as env vars into the next pod.
+There is no session-resume mode: `--resume`, a stored session ID, and a stored S3 transcript object key are all gone (`Task.status.sessionID` and `Task.status.conversationObjectKey` no longer exist). <!-- stale-ok: sessionID, conversationObjectKey -->
+Every pod's turn-0 gets an
+identical, freshly rendered context bundle from current CR state; the state that
+actually carries forward between pods for the same `Task` is
+`Task.status.notes`, an append-only journal (see
+[Agent Execution](agent-execution.md#task-continuity-the-notes-journal)). Two
+things overflow etcd's per-object byte budget and spill into `tatara-memory`
+instead of being dropped:
 
-**Resume vs. compaction:**
+- **Notes beyond the 50-item Go-side cap** on `Task.status.notes`. The oldest
+  notes spill first; `Task.status.stats.notesSpilled` counts them and
+  `Task.status.stats.notesSpilledRefs` accumulates one `track_id` per spill
+  batch. They are read back via the `task_context(notes=all)` MCP tool - a
+  spilled note that could not be read back would be continuity silently lost,
+  so the read path always includes spilled notes.
+- **Evicted `Issue`/`MergeRequest` comments**, once the object's marshaled size
+  would exceed its byte budget (a pre-write guard, not a count cap: 200
+  comments of 40 KB each blows well past a count-only ceiling). The oldest
+  comments are spilled first, `status.commentsRetainedFrom` advances past
+  what was evicted, and the spill write happens once, outside any retry loop,
+  before the trimmed object is ever written - so a spill failure aborts the
+  write instead of silently losing comments.
 
-- If last-turn input tokens are below `handoverThresholdPercent` (default 25%) of the context window: the next pod replays the full transcript (full resume via `claude --resume <sessionId>`).
-- At or above the threshold: the pod starts fresh with a compacted text handover.
-
-The two paths are mutually exclusive - the context window never overflows regardless of session length.
-
-**Forked conversations:** brainstorm-derived issues get a forked S3 copy of the brainstorm conversation, so each sibling `clarify` task starts from the same context but diverges independently.
-
-**GC:** the reaper deletes S3 objects for a brainstorm batch once all sibling issues are closed (grace period: `s3ConversationRetentionHours`, default 72h).
-
-The feature is off and fully backward-compatible until `s3Bucket` is set. No S3 env is injected and pods behave exactly as before.
+Both spills are one-way: nothing pulls old notes or comments back out of
+`tatara-memory` into the CR. They exist so the agent-facing tools can still
+retrieve the full history on demand without the CR itself growing past its
+etcd object ceiling.
 
 ## Durability considerations
 

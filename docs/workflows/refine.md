@@ -5,9 +5,8 @@ title: Refine Workflow
 # Refine Workflow
 
 The `refine` workflow is a groom-only backlog peer of brainstorm and incident. It never creates
-new work and never implements anything - it tidies the existing backlog (closing duplicates,
-tightening vague issues, grooming stale handoffs) and recovers implementation Tasks that gave
-up recoverably, so brainstorm always runs against a clean, current backlog.
+new work and never implements anything: it folds duplicate Tasks together, closes stale issues,
+and links related work, so brainstorm always runs against a clean, current backlog.
 
 ## Trigger
 
@@ -27,25 +26,40 @@ spec:
 ## Groom-only contract
 
 Refine's goal prompt is explicit: it is a **peer** of brainstorm and incident, not a
-subordinate. It does **not** decide what gets built and carries no tool to create new work:
+subordinate. It does **not** decide what gets built, cannot open new issues via `submit_outcome`
+(brainstorm and incident are the only kinds whose outcome files one), and has no `code_*` tools
+at all - a backlog groomer reads issues, not code. Its tool set is `task_get` / `task_context` /
+`task_note` / `project_get` / `repo_list` / `report_internal_issue` (always-on), plus `task_list`,
+`scm_read`, `issue_write`, `memory_query` / `memory_describe`, and `mr_write` restricted to
+`action=comment` only - refine can reply on a member Task's MR thread but can never open one.
+13 tools total. See [MCP tools](../reference/mcp-tools.md#the-profile-gating-table) for the full
+per-kind gating table.
 
-- No `propose_issue` / `createProposal` - refine cannot open new issues.
-- No implement tool, no PR-opening path - refine cannot write code.
-- No trigger-label application, no moving an issue toward implementation, no escalation.
+## Output
 
-What it *can* do, via its tool set (`task_list`, `list_issues`, `list_commits`, `close_issue`,
-`edit_issue`, `comment_on_issue`, `list_handoffs`, `delete_handoff`):
+The pod's only path forward is `submit_outcome`:
 
-- Close duplicate issues.
-- Edit/tighten vague or stale proposal issues (better titles, scoped descriptions).
-- Groom the handoff backlog - list and delete stale or completed handoffs alongside the issue
-  backlog, so brainstorm's continuation-proposal pass (offering to continue a live handoff
-  before running a fresh-ideas research pass) works against current data.
-- Comment on issues with recovery guidance for Parked implementations (below).
+```json
+{"folds":[{"task":"tatara-clarify-2026-07-10-a1b2c"}],
+ "closes":[{"repo":"tatara-operator","number":288,"reason":"duplicate of #291"}],
+ "links":[{"repo":"tatara-operator","number":295,"isPR":true}]}
+```
 
-The operator stamps `TATARA_TOOL_PROFILE=refine` and `TATARA_SKILL_PROFILE=refine` on the
-refine Pod; the actual per-profile MCP tool allowlist that enforces this at the transport layer
-lives in `tatara-cli`, not the operator.
+All three arrays are optional and independent - a refine pass can fold, close, and link in any
+combination, including none of the three (a pure no-op sweep).
+
+- **`folds`** adopts a member Task's Issues/MRs onto the calling Task, then **deletes** the
+  member Task. A member with a running pod, or any live post-`approved` stage, is **refused with
+  a `409`** - a fold can never yank a stage machine out from under an in-flight pod.
+- **`closes`** closes an issue with a reason. Each target is **live-revalidated against SCM
+  immediately before the close** - refine may be acting on a mirror view up to an hour stale -
+  and refused with a `409` if the issue's controller owner is not this Task.
+- **`links`** cross-references an Issue or MR without adopting or closing it.
+
+Refine's fold is a **controller-ownership transfer**, not a copy: see
+[Ownership](../architecture/ownership.md#the-refine-fold) for the full protocol and its
+verification step - a `refining -> failed(fold-adoption-unverified)` transition exists precisely
+because that step can fail.
 
 ## Cron barrier semantics
 
@@ -75,34 +89,20 @@ flowchart TD
     B -->|yes| G
 ```
 
-## Recovering gave-up implementations
+## A stalled implement is not auto-rerolled
 
-Refine's other job is surfacing implement Tasks that parked recoverably so they get either
-auto-rerolled or escalated to a human - it does not perform the reroll itself; that is the
-operator's `recoverOrphans` backstop.
-
-`Task.Status.ImplementGiveUps` counts how many times an `Implement -> Parked` transition
-happened with a **recoverable** park reason (non-recoverable declines, e.g. an explicit refusal,
-never increment this counter and are never rerolled). The cap is `maxImplGiveUps = 3`:
-
-| `implementGiveUps` | Backstop behavior | Refine's role |
-|---|---|---|
-| `< 3` | `recoverOrphans` adopts the Parked Task in-place back to `Implement` (same Task object, no fresh spawn) | Refine comments a refined/tightened scope on the issue so the next auto-reroll has better direction |
-| `>= 3` | Reroll is skipped entirely; the Task stays `Parked` indefinitely | Refine comments a human-escalation summary and does **not** touch labels or close the issue |
-
-The counter resets to `0` when a human re-engages via a fresh Triage entry, but is preserved
-across `Implement` reroll cycles. A Parked Task with `0 < implementGiveUps <= maxImplGiveUps` is
-also exempted from time-based garbage collection by the reaper, so the counter survives while
-the issue stays open.
-
-The same `maxImplGiveUps` cap and counter are reused independently by
-[deploy supervisor](deploy-supervisor.md) deploy-supervision for its `Deploying -> Implement`
-reroll path - one shared bounded-retry primitive, two consumers.
+An `implementing` Task that blows its 6h stage-work budget parks at `parked(stage-deadline)` -
+not a recoverable retry loop. That park reason has **no re-entry**: it ages out at
+`parkRetention` (7 days), the operator posts its bot park comment, and the reaper reaps it. The
+next sweep re-mints the still-open Issue as a fresh `parked(backlog-sweep)` Task - owning it at
+zero agent cost - and it is only promoted back to `triaging` (as a **new** Task, not the zombie of
+the old one) once a human comments again. Refine plays no special role in this path: it grooms
+the backlog `submit_outcome`-side (fold/close/link), it does not reroll stalled work.
 
 ## Relationship to brainstorm and incident
 
 Refine, brainstorm, and incident are three peer backlog-facing kinds with a strict division of
 labor: incident *investigates and proposes* from live alerts, brainstorm *proposes* new work from
 the knowledge graph, refine *grooms* what already exists. None of the three implements; all three
-end in either `propose_issue`/`createProposal` (incident, brainstorm) or backlog edits
-(refine) - never a PR.
+end in a `submit_outcome` that either files an issue (incident's `file_issue`, brainstorm's
+`propose`) or edits the backlog (refine's `folds`/`closes`/`links`) - never opens an MR.

@@ -296,10 +296,17 @@ port 8080 (the wrapper's HTTP API). No other ingress is permitted.
 |-------------|------|---------|
 | `kube-dns` (any namespace) | 53 UDP + TCP | DNS resolution |
 | `tatara-memory` pods | 8080 TCP | Memory graph reads/writes |
-| `tatara-chat` pods | 8080 TCP | Chat context (configurable name via `chatServiceName`) |
 | Operator pods (same selector) | 8080 TCP | REST API (MCP tools, turn submission) |
 | Operator pods (same selector) | 8082 TCP | Turn-complete callback (`/internal/turn-complete`) |
 | Any namespace | 443 TCP | SCM API (GitHub/GitLab), Anthropic API, Keycloak |
+
+An agent pod talks to the forge over that last rule. The operator's own read path
+to the forge is **rate-limited**: a per-project egress token bucket, shared by
+every reader and writer, with `Retry-After` and `X-RateLimit-Reset` honoured and
+a typed rate-limit error that requeues a Task rather than failing it. It is the
+last line of defence against a sweep, a reconcile storm and an agent poll loop
+coinciding on the same forge. Breaches are counted by
+`operator_scm_ratelimited_total{provider,path,limit_type}`.
 
 The external HTTPS rule (`443` to any namespace) is intentionally broad. CIDR
 tightening for GitHub/Anthropic/Keycloak endpoints is deferred because the IP
@@ -351,13 +358,13 @@ spec:
 
 This policy is additive: it grants internet egress on top of the baseline
 `tatara-operator-managed-pods` policy. Brainstorm pods that do not carry the
-`internet` label are unaffected. Pods without any label (memory, neo4j, chat)
+`internet` label are unaffected. Pods without any label (memory, neo4j, CNPG)
 are not selected by either policy and retain open egress until the namespace
 receives a default-deny rule.
 
 !!! warning "Applying a namespace-wide default-deny egress policy requires auditing all pods"
     The `tatara-egress-internet` policy does not introduce a default-deny rule.
-    Adding one would newly restrict memory, neo4j, CNPG, and chat pods that
+    Adding one would newly restrict the memory, neo4j and CNPG pods that
     currently have open egress. Harden the namespace only after mapping the
     required egress for every workload it contains.
 

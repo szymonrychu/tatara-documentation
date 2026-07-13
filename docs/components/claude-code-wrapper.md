@@ -45,23 +45,43 @@ All `/v1/*` require an OIDC bearer token (audience `tatara-claude-code-wrapper`)
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/messages` | Submit a turn `{text, callbackUrl?}` → `202 {turnId}` |
-| `POST` | `/v1/interject` | Inject `{text}` into the turn in flight → `202` |
+| `POST` | `/v1/messages` | Submit a turn `{text, callbackUrl?, handoff?}` -> `202 {turnId}`; `409` turn in flight; **`410 Gone`** past the pod's TTL deadline |
 | `GET` | `/v1/messages` | Turn history `[{turnId, state, startedAt, completedAt}]` |
 | `GET` | `/v1/messages/{turnId}` | Full turn result: `{state, finalText, usage, stopReason, error?}` |
-| `GET` | `/v1/session` | `{state, turnsCompleted, model, repo}` |
+| `GET` | `/v1/session` | The six existing fields (`state`, `turnsCompleted`, `model`, `repo`, ...) **plus `contractVersion`** <!-- stale-ok: turnsCompleted --> |
 | `GET` | `/v1/transcript` | Full JSONL session transcript (debug) |
 | `DELETE` | `/v1/session` | Graceful shutdown, pod exits |
 | `GET` | `/healthz` `/readyz` `/metrics` | Operator endpoints (not exposed via ingress) |
 
-## Conversation persistence
+!!! danger "`POST /v1/interject` is deleted, not deprecated"
+    The endpoint raced the Stop hook against the ring-buffer tailer: injecting text mid-turn had no ordering guarantee against the hook reading the transcript at turn-end, so a well-timed interject could be silently lost or attributed to the wrong turn. It was live in production until this release (the operator drove it from a `PendingInterjections` drain loop). It is removed in the same change that removes the operator's drain loop, operator first, so the wrapper never 404s a call the operator is still making. `Session.Interject` and `ErrNotBusy` are deleted with it. <!-- stale-ok: /v1/interject, PendingInterjections -->
 
-The wrapper is a consumer here, not the decision maker. The operator owns the fork/replay choice: `Project.spec.agent.handoverThresholdPercent` (default 25) as a share of `Project.spec.agent.contextWindowTokens`, measured against the last turn's input tokens. Based on that, the operator injects env into the pod and the wrapper reacts:
+## Contract-version handshake
 
-- Under threshold: the operator emits both `CONVERSATION_OBJECT_KEY` and `CONVERSATION_SESSION_ID`, and the wrapper does a full transcript replay (`claude --resume`) of the prior session.
-- At or above threshold: the operator emits `CONVERSATION_OBJECT_KEY` but **omits** `CONVERSATION_SESSION_ID`, and instead injects a compacted `## Resume from handover` block into the turn-0 prompt. The wrapper starts a fresh session seeded from that summary rather than replaying.
+The wrapper image and the operator image ship in different helm releases and can apply concurrently, so a window where a new operator pairs with an old agent image is reachable. To fail that fast instead of burning a full turn budget against a 404ing tool surface:
 
-The threshold, the context-window size, and the handover text are all operator concerns. The wrapper only reads the injected env and either resumes or starts fresh. Conversation persistence is gated on the operator having an S3 bucket configured (`S3_BUCKET`); with no bucket the operator injects no conversation env and every pod starts empty.
+1. `contractVersion` is a compile-time constant in the wrapper binary (`const ContractVersion = 2`), bumped in the same release that ships a new tool surface. It is reported on every `GET /v1/session` response.
+2. The operator injects `TATARA_CONTRACT_VERSION=2` into every agent pod's env (read by tatara-cli, not by the wrapper itself).
+3. Before submitting a pod's turn-0, the operator reads `GET /v1/session` and compares the reported `contractVersion` against its own expectation. On a mismatch, or a response with no `contractVersion` field at all (an old wrapper), the operator fails the Task instantly with `stageReason=agent-contract-mismatch` and never submits a turn - zero tokens burned.
+
+See [tatara-cli](cli.md#contract-version-handshake) for the third defense: the cli's MCP server refusing to start on a mismatched `TATARA_CONTRACT_VERSION`.
+
+## Continuity across pods: no session resume
+
+There is no `--resume`, no session replay, and no transcript persisted to S3. `CONVERSATION_SESSION_ID`, `CONVERSATION_OBJECT_KEY`, and `HANDOFF_KEY` are all deleted, and the wrapper makes no fork/replay decision at all. <!-- stale-ok: CONVERSATION_SESSION_ID, CONVERSATION_OBJECT_KEY, HANDOFF_KEY, --resume -->
+
+Every pod's turn-0 context bundle is rendered fresh by the operator, identically every time. Continuity between one pod and the next pod of the same Task comes entirely from `Task.status.notes` - the append-only journal every pod reads at turn 0 - not from replaying a transcript. When a pod is stopped (TTL, crash, or graceful shutdown), the thing that must survive is a note in that journal, not a resumable session; see [Pod TTL: the stop sequence](#pod-ttl-the-stop-sequence) below for how the operator guarantees one is always written.
+
+## Pod TTL: the stop sequence
+
+`AGENT_POD_TTL_SECONDS` (from `Project.spec.agentPodTTLSeconds`, default 3600) bounds one pod's life, not the Task - the Task persists across as many pods as it needs. The wrapper computes `t0 = pod start + AGENT_POD_TTL_SECONDS`; the operator (the wrapper's only client) drives the rest of the sequence around that clock:
+
+1. **The wrapper stops admitting normal turns past `t0`.** Any `POST /v1/messages` with `handoff` unset or `false` after `t0` gets `410 Gone`. It still accepts exactly one turn with `handoff: true` - without that carve-out, the handoff turn in step 3 would be refused by this same rule, and `Task.status.notes` would end up empty on every TTL stop.
+2. **The operator waits for any in-flight turn's callback**, bounded by `TURN_TIMEOUT_SECONDS`. A pod is mid-turn at TTL expiry essentially always, and `POST /v1/messages` already `409`s while a turn is in flight, so the handoff turn cannot simply be submitted immediately.
+3. **The operator submits exactly one `handoff: true` turn**, asking the agent to call `task_note(kind=handoff)` with everything the next pod needs, bounded by `TURN_TIMEOUT_SECONDS`.
+4. **Hard cap at `t0 + 2*TURN_TIMEOUT_SECONDS + 60s`.** On that cap, or on any `410`/`409`/5xx from step 3, the operator writes a synthetic handoff note in-process from the last turn's final text plus which repos were pushed, then force-deletes the pod.
+
+`Task.status.notes` is never empty after a TTL stop: either the agent wrote a handoff note, or the operator wrote a synthetic one.
 
 ## Lifecycle hooks
 
@@ -91,8 +111,9 @@ All scalars via env (from chart ConfigMap `envFrom`):
 | `MODEL` | `""` (empty) | Claude model ID. The wrapper bakes **no** default; the operator sets the model per Task from `Project.spec.agent.model` / `modelByKind`. |
 | `PERMISSION_MODE` | `bypassPermissions` | Claude permission mode |
 | `REPO_URL` / `REPO_BRANCH` | - | Repository to clone (optional) |
-| `TURN_TIMEOUT_SECONDS` | `1800` | Per-turn inactivity timeout |
+| `TURN_TIMEOUT_SECONDS` | `1800` | Per-turn inactivity timeout; also bounds each step of the [pod TTL stop sequence](#pod-ttl-the-stop-sequence) |
 | `BOOT_TIMEOUT_SECONDS` | `60` | Max wait for boot quiescence |
+| `AGENT_POD_TTL_SECONDS` | `3600` (from `Project.spec.agentPodTTLSeconds`) | Bounds this pod's life; the wrapper computes `t0` from it and enforces the [stop sequence](#pod-ttl-the-stop-sequence) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | - | Claude subscription OAuth token. This is what the operator actually injects (from the `anthropicSecretName` Secret, key `oauth-token`); Claude Code reads it directly. |
 | `ANTHROPIC_API_KEY` | - | Alternative metered Anthropic API key. Supported (used to pre-seed the trust dialog) but **not** what the deployed platform injects. |
 

@@ -1,255 +1,353 @@
 ---
-title: MCP Tool Profiles
+title: MCP Tools by Agent Kind
+description: The 20-tool, per-profile-gated MCP surface every agent pod calls.
 ---
 
-# MCP Tool Profiles
+# MCP tools by agent kind
 
-Authoritative reference for which MCP tools each agent kind can call, derived
-from the real gating code in `tatara-cli` (`internal/mcp/profiles.go`,
-`server.go`, `tools.go`) and the pod-injection code in `tatara-operator`
-(`internal/agent/pod.go`). This supersedes any per-kind tool tables in other
-docs if they disagree - re-derive from the source files listed under
-[Where profiles live](#where-profiles-live) rather than trusting a second copy.
+**Twenty tools.** The pre-redesign surface was 74, and a clarify pod could see
+all of them and legally call four.
 
----
+Tools **not in the pod's profile are not registered at all**. `tools/list` is
+per-profile, so an agent cannot see a tool it may not call. (This
+deliberately breaks the byte-identical-`tools/list` prompt-cache
+optimisation. That is an accepted cost.)
 
-## How gating works
+`resolveProfile` **fails closed.** An empty or unknown `TATARA_TOOL_PROFILE`
+serves only the always-on set and logs WARN - and it does not register
+`submit_outcome`, which means the pod has no terminal tool and the failure is
+loud rather than silent.
 
-- The operator (`tatara-operator`, `internal/agent/pod.go`) sets
-  `TATARA_TOOL_PROFILE` in the agent pod's env, derived from the Task's
-  `spec.kind` via `toolProfileForKind`. This is the only place the env var is
-  actually assigned in the running platform.
-- `tatara mcp` (the CLI, `internal/cmd/mcp.go`) reads `TATARA_TOOL_PROFILE`
-  (or `--tool-profile`) and passes it into `mcp.NewServer`.
-- **`tools/list` is profile-invariant** (Component 4a / G15): `NewServer`
-  registers every tool, for every profile, unconditionally. This keeps the
-  `tools/list` response byte-identical across all agent kinds so every pod
-  shares one Anthropic prompt-cache prefix - a per-kind filtered list would
-  fragment the cache (tools render first in cache order).
-- Gating is enforced at **call time** instead, in the `register()` dispatch
-  closure: before invoking a tool's handler, the server checks the resolved
-  per-profile allow-set. A denied call never reaches the backend; it returns
-  `tool "<name>" is not permitted for profile "<profile>"` and increments
-  `tool_calls_total{status="denied"}`.
-- **Fail-open**: `TATARA_TOOL_PROFILE` unset/empty -> `allow == nil` -> every
-  registered tool is callable. This is the local-dev / no-profile path and
-  logs a WARN.
-- **Fail-closed**: a non-empty but unrecognized profile string resolves to
-  the `alwaysOn` set only (4 tools) and logs a WARN. Profile gating is the
-  sole authz boundary here - a typo must never silently grant the full
-  surface.
-- **Identity note**: every agent pod authenticates as the same OIDC client
-  (`tatara-agent`). Authorization cannot key on caller identity, so it keys
-  on tool profile plus env-scoped task/project context (`TATARA_TASK`,
-  `TATARA_PROJECT`) instead.
+`TATARA_TOOL_PROFILE` is the **agent** kind (`Task.status.agentKind`), one of
+seven: `brainstorm`, `incident`, `clarify`, `implement`, `review`, `refine`,
+`documentation`.
 
----
+## The five tool groups
 
-## Tool groups
-
-72 tools are registered in total, from five Go functions in
-`tatara-cli/internal/mcp/tools.go`:
-
-| Group | Count | Function | Target backend |
-|---|---:|---|---|
-| Memory | 13 | `AllTools()` (memory half) | tatara-memory |
-| Code-graph | 19 | `AllTools()` (code_* half) | tatara-memory |
-| Operator | 25 | `OperatorTools()` | tatara-operator |
-| Chat | 10 | `ChatTools()` | tatara-chat |
-| Handoff | 4 | `HandoffTools()` | tatara-chat |
-| Platform | 1 | `PlatformTools()` | local (no backend call) |
-
-Memory (`create_memory`, `get_memory`, `delete_memory`,
-`bulk_create_memories`, `get_ingest_job`, `query`, `describe`, `get_entity`,
-`search_entities`, `patch_entity`, `list_edges`, `create_edge`,
-`delete_edge`) and code-graph (`code_search`, `code_entity`,
-`code_neighbors`, `code_callers`, `code_callees`, `code_dependents`,
-`code_dependencies`, `code_file_imports`, `code_resource_graph`,
-`code_cross_repo`, `code_path`, `code_important`, `code_stats`,
-`code_ambiguous_edges`, `code_explain`, `code_related`, `code_hyperedges`,
-`code_communities`, `code_bridges`) are unconditional: every named profile
-gets all 32 of them, unfiltered.
-
-### alwaysOn (all 7 named profiles, plus fail-closed unknown)
-
-| Tool | Description |
-|---|---|
-| `report_internal_issue` | Report a platform-internal issue (tool error, directive contradiction, workspace/memory/graph inconsistency, auth). Structured log + metric only, no SCM issue. |
-| `project_get` | Read the current project |
-| `repo_list` | List repositories in a project |
-| `task_get` | Read the current task |
-
-### Chat (10) - `chat` flag profiles only
-
-`chat_create_room`, `chat_list_rooms`, `chat_get_room`, `chat_close_room`,
-`chat_add_participant`, `chat_list_participants`, `chat_remove_participant`,
-`chat_send_message`, `chat_poll_messages`, `chat_get_log`.
-
-### Handoff (4) - continuity-carrying profiles only
-
-Added after the tool surface was last widely documented; not yet reflected
-everywhere else in the docs tree.
-
-| Tool | Gate |
-|---|---|
-| `write_handoff` | `handoff` flag profiles |
-| `get_handoff` | `handoff` flag profiles |
-| `list_handoffs` | `handoff` flag profiles |
-| `delete_handoff` | `handoffDelete` flag - **`refine` only**. Refine is the handoff groomer; every other continuity-carrying profile can write/read but never delete another pod's handoff. |
-
----
-
-## Per-kind profile table
-
-`toolProfileForKind` maps a Task `kind` to a profile name. Under the 7-kind model the profile
-name matches the kind name for all seven live kinds - `clarify` gets its own profile rather than
-diverging from its kind name the way the retired `triageIssue -> triage` /
-`issueLifecycle -> lifecycle` mapping did (confirm this against source at execution time per the
-warning below).
-
-| Profile | Task kind(s) | Chat | Handoff (r/w) | Handoff delete | Operator tools | Total allowed |
-|---|---|:---:|:---:|:---:|---:|---:|
-| `refine` | `refine` | no | yes | **yes** | 6 | 46 |
-| `brainstorm` | `brainstorm` | yes | yes | no | 7 | 56 |
-| `implement` | `implement` | no | yes | no | 8 | 47 |
-| `review` | `review` | no | no | no | 4 | 40 |
-| `clarify` | `clarify` | ? | ? | no | ? | ? |
-| `incident` | `incident` | yes | yes | no | 10 | 59 |
-| `documentation` | `documentation` | no | ? | no | ? | ? |
-| *(empty)* | fail-open, local dev | - | - | - | all 22 (+`project_list`) | 72 |
-| *(unrecognized string)* | fail-closed | no | no | no | 0 | 4 |
-
-!!! warning "Do not invent tool counts"
-    `clarify` and `documentation` are new profiles with no shipped tool-set yet as of this
-    plan. The spec names a new `clarify` profile "from old lifecycle/triage" (implying it
-    inherits most of the retired `triage`/`lifecycle` profiles' operator-tool surface) and
-    leaves `documentation`'s tool set unspecified. **Re-derive both from
-    `tatara-cli/internal/mcp/profiles.go` once that change merges** - do not publish a
-    fabricated tool count. `brainstorm` also drops its `healthCheck` dual-kind row since
-    `healthCheck` no longer exists as a kind sharing the profile, and the `selfImprove` profile
-    is removed outright (the kind was already dead before this redesign).
-
-Total = 32 (memory + code-graph, unconditional) + chat (0 or 10) + handoff
-(0, 3, or 4) + profile-specific operator tools + 4 (alwaysOn).
-
-`refine`'s 6-tool operator surface is deliberately deny-by-default: it omits
-`create_issue` (issue creation is an escalation vector) and every SCM-mutation
-or merge-escalation tool. Historical notes elsewhere describe refine as
-"~42 tools" - that count predates the `handoff` group being added (32 + 6 +
-4 = 42); with `handoff` + `delete_handoff` now included, refine is 46.
-
-`project_list` and `create_issue` are registered (`OperatorTools()`) but
-**not granted to any named profile** - they are reachable only in fail-open
-mode (empty `TATARA_TOOL_PROFILE`, e.g. local dev without the operator
-injecting a profile).
-
----
-
-## Operator tool matrix
-
-All 25 `OperatorTools()` (`project_get`, `repo_list`, `task_get` are the
-alwaysOn 3 of these and are omitted below since every profile has them).
-
-!!! warning "clarify and documentation columns are not yet shipped"
-    The `clarify` and `documentation` columns below are placeholders (`?`), not confirmed grants
-    - see the [Do not invent tool counts](#per-kind-profile-table) warning above. `clarify`
-    absorbs the retired `triage`/`lifecycle` profiles' responsibilities per the spec; do not
-    assume it gets their exact per-tool grants without checking `profiles.go` once merged. The
-    `selfImprove` profile is dropped from this matrix entirely (retired kind, no longer wired).
-
-| Tool | refine | brainstorm | implement | review | clarify | incident | documentation |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| `project_list` | | | | | | | |
-| `task_list` | x | x | | | ? | x | ? |
-| `task_update` | | | x | x | ? | x | ? |
-| `subtask_list` | | x | x | x | ? | x | ? |
-| `subtask_create` | | x | x | | ? | x | ? |
-| `subtask_update` | | x | x | | ? | x | ? |
-| `propose_issue` | | x | | | ? | x | ? |
-| `review_verdict` | | | | x | ? | | ? |
-| `pr_outcome` | | | | | ? | | ? |
-| `change_summary` | | | x | | ? | x | ? |
-| `submit_handover` | | | x | x | ? | x | ? |
-| `issue_outcome` | | | | | ? | | ? |
-| `decline_implementation` | | | x | | ? | x | ? |
-| `already_done` | | | x | | ? | | ? |
-| `skip_research` | | x | | | ? | | ? |
-| `comment` | | | | | ? | | ? |
-| `list_issues` | x | | | | ? | | ? |
-| `list_commits` | x | | | | ? | | ? |
-| `close_issue` | x | | | | ? | | ? |
-| `edit_issue` | x | | | | ? | | ? |
-| `create_issue` | | | | | | | |
-| `comment_on_issue` | x | x | | | ? | x | ? |
-
-### By category
-
-| Category | Tools |
-|---|---|
-| Task/subtask ledger | `task_list`, `task_get`\*, `task_update`, `subtask_list`, `subtask_create`, `subtask_update` |
-| Project/repo | `project_list` (fail-open only), `project_get`\*, `repo_list`\* |
-| Issues (SCM) | `propose_issue`, `comment_on_issue`, `comment`, `list_issues`, `close_issue`, `edit_issue`, `create_issue` (fail-open only), `issue_outcome` |
-| PR/MR | `review_verdict`, `pr_outcome`, `change_summary` |
-| Refusal/terminal outcome | `decline_implementation`, `already_done`, `skip_research`, `submit_handover` |
-| Platform self-report | `report_internal_issue`\* |
-| Memory/graph | see [Tool groups](#tool-groups), 32 tools, unconditional |
-| Conversation (agent-to-agent) | `chat_*` (10), conditional on `chat` |
-| Continuity | `write_handoff`, `get_handoff`, `list_handoffs`, `delete_handoff` (refine only) |
-
-\* alwaysOn - present in every profile including fail-closed unknown.
-
-### Notable fields
-
-- `change_summary` requires `change_significance` (`major` \| `minor` \|
-  `patch`) as of the semver push-CD cutover - the tool call is rejected
-  server-side if omitted or not one of the three enum values. This is what
-  drives the auto-merge -> semver tag -> `tatara-helmfile` cascade; humans
-  set the equivalent via a `semver:<level>` PR label.
-- `review_verdict`'s `approve` action carries an additional `semver` list
-  (`SemverAssignment{repo, number, level}` per MR). On approve, review
-  stamps a `semver:<level>` label on every MR in the stream - human-authored
-  MRs included, not just tatara-created ones - respecting any label a human
-  already set and otherwise falling back to that MR's own
-  `change_significance`, then `patch`. This is the only semver-labeling path
-  for human MRs, closing the gap where a human-authored MR merged with no
-  label and never released; see [Deploy Supervisor Component
-  1b](../workflows/deploy-supervisor.md#component-1b-review-semver-stamping-human-mrs).
-- `edit_issue` patches only `title` and `body`. Labels are intentionally not
-  editable through this tool - the four managed labels drive kind handoffs
-  and stay operator/maintainer-controlled, so no profile (including
-  `refine`, the groomer) can set them.
-- `decline_implementation` / `already_done` / `skip_research` all require a
-  non-empty `reason`; a silent finish with no PR and no outcome call is
-  rejected as an unexplained refusal.
-
----
-
-## Where profiles live
-
-| What | File | Notes |
+| Group | Count | Tools |
 |---|---|---|
-| Profile -> tool-set definitions (`groupMemory`, `groupCodeGraph`, `groupChat`, `groupHandoff`, `groupHandoffDelete`, `alwaysOn`, `profiles` map, `resolveProfile`) | `tatara-cli/internal/mcp/profiles.go` (whole file, ~253 lines) | Source of truth for what each profile allows. |
-| Tool registration + call-time authz | `tatara-cli/internal/mcp/server.go` (`NewServer` ~L36-73, `register()` dispatch closure ~L112-165) | Registers all tools unconditionally; gates at call time per Component 4a. |
-| Tool definitions (name/description/schema/handler per group) | `tatara-cli/internal/mcp/tools.go`: `AllTools()` L45, `OperatorTools()` L334, `ChatTools()` L788, `HandoffTools()` L933, `PlatformTools()` L1016 | Edit here to add/rename a tool or change its schema. |
-| CLI flag/env wiring | `tatara-cli/internal/cmd/mcp.go` (`tatara mcp` command, ~L145 reads `TATARA_TOOL_PROFILE`/`--tool-profile`) | |
-| Kind -> profile mapping used by the CLI's own tests | `tatara-cli/internal/mcp/profiles.go` `toolProfileForKind` (top of file) | Test-locked mirror of the operator's mapping; not called by the running `tatara mcp` serve path itself. |
-| **Kind -> profile mapping actually applied to pods** | `tatara-operator/internal/agent/pod.go`: env injection at L655, `toolProfileForKind` at L838 | This is the authoritative mapping - the operator, not the CLI, decides which profile a pod gets. |
+| Platform | 7 | `task_get`, `task_list`, `task_context`, `task_note`, `project_get`, `repo_list`, `report_internal_issue` |
+| SCM | 3 | `scm_read`, `issue_write`, `mr_write` |
+| Code graph | 4 | `code_search`, `code_context`, `code_graph`, `code_explain` |
+| Memory | 5 | `memory_query`, `memory_describe`, `memory_write`, `memory_entity`, `memory_edges` |
+| Outcome | 1 | `submit_outcome` (one name, seven schemas) |
 
-### How to change a kind's tool surface
+## The profile gating table
 
-1. To change **which tools a profile grants**: edit the `profiles` map (or a
-   `group*` slice) in `tatara-cli/internal/mcp/profiles.go`.
-2. To **add a new tool**: add it to the relevant `*Tools()` function in
-   `tatara-cli/internal/mcp/tools.go`, then add its name to the profile(s)
-   that should get it in `profiles.go`.
-3. To **remap which profile a Task kind gets**: edit `toolProfileForKind` in
-   `tatara-operator/internal/agent/pod.go` (this is the one that matters at
-   runtime; keep the `tatara-cli` copy in sync since its test asserts the
-   same mapping contract).
-4. Both repos deploy via the standard semver push-CD path: merge to `main`
-   with the required `change_significance` on `change_summary` (or a
-   `semver:<level>` PR label for a human change) -> CI builds and tags ->
-   `tatara-helmfile` auto-applies the new image/chart pin to the cluster.
-   Never hand-edit a deploy pin; a `tatara-cli` change also needs the
-   `tatara-claude-code-wrapper` image's `TATARA_CLI_VERSION` bumped forward
-   before agent pods pick it up.
+Always-on for every profile, including the fail-closed empty one: `task_get`,
+`task_context`, `task_note`, `project_get`, `repo_list`,
+`report_internal_issue`.
+
+| tool | brainstorm | incident | clarify | implement | review | refine | documentation |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| `submit_outcome` | yes | yes | yes | yes | yes | yes | yes |
+| `task_get` / `task_context` / `task_note` | yes | yes | yes | yes | yes | yes | yes |
+| `project_get` / `repo_list` / `report_internal_issue` | yes | yes | yes | yes | yes | yes | yes |
+| `task_list` | yes | yes | - | - | - | yes | - |
+| `scm_read` | yes | yes | yes | yes | yes | yes | yes |
+| `issue_write` | - | - | yes | - | - | yes | - |
+| `mr_write` | - | - | - | yes | yes | comment-only* | yes |
+| `code_search` | yes | yes | yes | yes | yes | - | yes |
+| `code_context` | yes | yes | yes | yes | yes | - | yes |
+| `code_graph` | yes | yes | - | yes | yes | - | yes |
+| `code_explain` | yes | yes | yes | yes | yes | - | yes |
+| `memory_query` / `memory_describe` | yes | yes | yes | yes | yes | yes | yes |
+| `memory_write` | yes | yes | - | yes | - | - | yes |
+| `memory_entity` | yes | yes | - | - | - | - | yes |
+| `memory_edges` | - | yes | - | - | - | - | yes |
+
+\* `refine`'s `mr_write` is restricted to `action=comment` by a cli-side and
+operator-side check, not by the schema. It is the only non-uniform cell in
+the table.
+
+Counts are derived from the table above, not quoted from a summary line: each
+profile is 20 minus the cells the table marks `-` for it (the always-on row
+and `submit_outcome` are never denied, so they never subtract).
+
+| profile | denied cells | count |
+|---|---|:--:|
+| brainstorm | `issue_write`, `mr_write`, `memory_edges` | 17 |
+| incident | `issue_write`, `mr_write` | 18 |
+| clarify | `task_list`, `mr_write`, `code_graph`, `memory_write`, `memory_entity`, `memory_edges` | 14 |
+| implement | `task_list`, `issue_write`, `memory_entity`, `memory_edges` | 16 |
+| review | `task_list`, `issue_write`, `memory_write`, `memory_entity`, `memory_edges` | 15 |
+| refine | `code_search`, `code_context`, `code_graph`, `code_explain`, `memory_write`, `memory_entity`, `memory_edges` | 13 |
+| documentation | `task_list`, `issue_write` | 18 |
+
+Counts: brainstorm 17, incident 18, clarify 14, implement 16, review 15,
+refine 13, documentation 18.
+
+`task_list` goes to the broad-context trio only, because a clarify / implement
+/ review pod that can list every Task can wander into another Task's work.
+`issue_write` is clarify plus refine; brainstorm and incident file issues
+through `submit_outcome`, so the proposal cap and dedup still apply. `code_*`
+is denied to refine - a backlog groomer reads issues, not code.
+Graph-mutating memory tools are denied to conversational and reviewing pods.
+And the one non-uniform cell, honestly: refine's `mr_write` is restricted to
+`action=comment` by a cli-side and operator-side check, not by the schema.
+
+## The three tools whose absences are the point
+
+### `mr_write` has three actions: `open`, `comment`, `reply`
+
+**No `merge`. No `approve`. No `request_changes`.**
+
+The platform has **one** bot identity, so an implement pod holding
+`mr_write(approve)` can approve its own MR. And two writers of a review - the
+agent via `mr_write`, the operator via `submit_outcome` - forced a head-SHA
+reconciliation gate that was itself a wedge. So: the operator posts every SCM
+review, from the accepted review `submit_outcome`. **One writer per medium.**
+The agent writes conversation; the operator writes reviews, merges, labels
+and status. A hallucinated merge call has nowhere to land.
+
+`action=open` is **idempotent**: an existing open MR on the same
+`task/<task-name>` head branch returns
+`{"status":"ok","existing":true,...}` without calling the forge. It is
+**refused with 409** when the Task already owns a *merged* MR for that repo -
+the structural stop on the duplicate-PR path after a partial merge.
+
+### `issue_write` has no `status` and no `labels` parameter
+
+Approval and every lifecycle label are operator-owned. A `labels` key would
+let an agent stamp the trigger label and self-escalate.
+
+### `scm_read(kind=ci)` is the only live forge read
+
+`kind=issues`, `kind=mr` and `kind=comments` are served from the CR mirror
+and never touch the forge. `repo` is required on every kind.
+
+`kind=ci` is the `gh run watch` / `gh pr checks` replacement, and it is a
+**polled point read, not a blocking watch** - because `turnTimeoutSeconds` is
+an *inactivity* window, so a single blocking call longer than it terminally
+fails the turn. The operator paces it server-side to one forge fetch per 20
+seconds per `(repo, number)`; a call inside the window is served from the
+last result with `"cached": true`. `logTail` (last 4000 bytes) is served only
+for a check whose conclusion is `failure`, `timed_out` or `cancelled` - a
+green run's logs are never fetched.
+
+## `submit_outcome`
+
+One name, seven schemas. REST: `POST /tasks/{task}/outcome`, body
+`{"kind":"<profile>","payload":{...}}`.
+
+`kind` must equal `Task.status.agentKind` (409 on mismatch - the pod's claim
+is not trusted). The call is idempotent for the same
+`(task, agentKind, stage)`, and it 409s when the Task is in a terminal
+stage.
+
+=== "implement / documentation"
+
+    Identical schema for both profiles.
+
+    ```json
+    {"type":"object","properties":{
+      "task":{"type":"string"},
+      "action":{"type":"string","enum":["submitted","declined"]},
+      "title":{"type":"string","description":"MR title. Required when action=submitted."},
+      "body":{"type":"string","description":"MR body. Required when action=submitted."},
+      "change_significance":{"type":"string","enum":["major","minor","patch"],
+        "description":"Required when action=submitted. major=backward-incompatible; minor=backward-compatible feature; patch=fix. YOU own this level - a reviewer may raise it but can never lower it."},
+      "merge_order":{"type":"array","items":{"type":"string"},
+        "description":"REQUIRED when this task's MRs span more than one repo: the Repository CR names in dependency order, first-merged first. There is NO default. Get it wrong and a downstream repo ships against an API that has not merged yet."},
+      "decline_reason":{"type":"string","description":"Required when action=declined."}},
+     "required":["action"],"additionalProperties":false}
+    ```
+
+=== "review"
+
+    ```json
+    {"type":"object","properties":{
+      "task":{"type":"string"},
+      "verdict":{"type":"string","enum":["approve","request_changes"]},
+      "change_significance":{"type":"string","enum":["major","minor","patch"],
+        "description":"Optional. It may only RAISE the level the implementer declared, never lower it."},
+      "reviewed_shas":{"type":"array","minItems":1,"items":{"type":"object","properties":{
+          "repo":{"type":"string"},"number":{"type":"integer"},"sha":{"type":"string"}},
+        "required":["repo","number","sha"]},
+        "description":"REQUIRED. The head SHA you ACTUALLY CHECKED OUT AND READ, per MR. The operator re-reads the live head and REFUSES your verdict if it moved while you were reviewing - anything pushed after your checkout would otherwise merge unreviewed under your approval."},
+      "findings":{"type":"array","items":{"type":"object","properties":{
+          "repo":{"type":"string"},"number":{"type":"integer"},
+          "path":{"type":"string"},"line":{"type":"integer"},"body":{"type":"string"},
+          "severity":{"type":"string","enum":["critical","high","medium","low"]}},
+        "required":["repo","number","body","severity"]},
+        "description":"Required (at least 1) when verdict=request_changes. The OPERATOR posts these as the SCM review and its inline comments - you do not post them yourself."}},
+     "required":["verdict","reviewed_shas"],"additionalProperties":false}
+    ```
+
+    There is no `comment` verdict: a review either approves (merge proceeds)
+    or requests changes (loop back). A non-decision has no stage to go to.
+
+    `verdict=approve` does not post an approving review. The platform has one
+    bot identity, so the forge rejects a self-approve; the operator posts a
+    COMMENT review carrying the verdict and then merges. The merge is the
+    approval of record.
+
+=== "clarify"
+
+    ```json
+    {"type":"object","properties":{
+      "task":{"type":"string"},
+      "decision":{"type":"string","enum":["implement","close","discuss"]},
+      "reason":{"type":"string","description":"Required. For decision=implement, cite WHO approved and WHERE - the operator independently re-reads the thread and verifies both the identity AND the wording."}},
+     "required":["decision","reason"],"additionalProperties":false}
+    ```
+
+=== "brainstorm"
+
+    ```json
+    {"type":"object","properties":{
+      "task":{"type":"string"},
+      "action":{"type":"string","enum":["propose","skip"]},
+      "proposals":{"type":"array","minItems":1,"maxItems":5,"items":{"type":"object","properties":{
+          "repo":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},
+          "kind":{"type":"string","enum":["bug","improvement"]}},
+        "required":["repo","title","body","kind"]}},
+      "reason":{"type":"string","description":"Required when action=skip."}},
+     "required":["action"],"additionalProperties":false}
+    ```
+
+=== "incident"
+
+    ```json
+    {"type":"object","properties":{
+      "task":{"type":"string"},
+      "action":{"type":"string","enum":["file_issue","false_positive"]},
+      "alert_rules":{"type":"array","minItems":1,"items":{"type":"string"}},
+      "issue":{"type":"object","properties":{
+          "repo":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"}},
+        "required":["repo","title","body"],
+        "description":"Required when action=file_issue."},
+      "reason":{"type":"string"}},
+     "required":["action","alert_rules","reason"],"additionalProperties":false}
+    ```
+
+=== "refine"
+
+    ```json
+    {"type":"object","properties":{
+      "task":{"type":"string"},
+      "folds":{"type":"array","items":{"type":"object","properties":{"task":{"type":"string"}},
+        "required":["task"]},
+        "description":"Member Tasks to fold in: their Issues/MRs are adopted, then the member Task is deleted. A member with a running pod is REFUSED."},
+      "closes":{"type":"array","items":{"type":"object","properties":{
+          "repo":{"type":"string"},"number":{"type":"integer"},"reason":{"type":"string"}},
+        "required":["repo","number","reason"]}},
+      "links":{"type":"array","items":{"type":"object","properties":{
+          "repo":{"type":"string"},"number":{"type":"integer"},"isPR":{"type":"boolean"}},
+        "required":["repo","number"]}}},
+     "required":[],"additionalProperties":false}
+    ```
+
+## The other tools
+
+### SCM (3)
+
+**`scm_read`** - `repo` is required on every kind:
+
+```json
+{"type":"object","properties":{
+  "kind":{"type":"string","enum":["issues","mr","comments","commits","ci"],
+    "description":"issues|mr|comments are served from tatara's own mirror of the forge (fast, free, at most one hour stale). ci is a live read of the forge and is paced server-side to one fetch per 20s per PR."},
+  "project":{"type":"string"},
+  "repo":{"type":"string","description":"Repository CR name, e.g. tatara-operator. REQUIRED."},
+  "number":{"type":"integer","description":"Required for kind=ci and kind=comments."},
+  "is_pr":{"type":"boolean","description":"kind=comments only: read the MR thread instead of the issue thread."},
+  "state":{"type":"string","enum":["open","closed","merged","all"],
+    "description":"kind=issues (open|closed|all) and kind=mr (open|merged|closed|all)."},
+  "since":{"type":"string","description":"kind=issues|mr only. RFC3339."},
+  "labels":{"type":"string","description":"kind=issues only. Comma-separated."},
+  "since_days":{"type":"integer","description":"kind=commits only. Default 30."},
+  "limit":{"type":"integer"}},
+ "required":["kind","repo"],"additionalProperties":false}
+```
+
+**`issue_write`** - no `status`, no `labels`:
+
+```json
+{"type":"object","properties":{
+  "action":{"type":"string","enum":["create","edit","close","comment"]},
+  "project":{"type":"string"},"repo":{"type":"string"},
+  "number":{"type":"integer"},"title":{"type":"string"},"body":{"type":"string"},
+  "comment":{"type":"string","description":"Required for action=close: every close cites its reason."}},
+ "required":["action","repo"],"additionalProperties":false}
+```
+
+**`mr_write`** - no `merge`, no `approve`, no `request_changes`:
+
+```json
+{"type":"object","properties":{
+  "action":{"type":"string","enum":["open","comment","reply"]},
+  "project":{"type":"string"},"repo":{"type":"string"},
+  "number":{"type":"integer"},"title":{"type":"string"},"body":{"type":"string"},
+  "in_reply_to":{"type":"string","description":"Required for action=reply: the externalId from scm_read(kind=comments)."}},
+ "required":["action","repo"],"additionalProperties":false}
+```
+
+### Code graph (4)
+
+- `code_search` - `GET /code/entities?repo=&q=&type=&limit=`; required `repo`, `q`.
+- `code_context` - `rel` enum
+  `entity|neighbors|callers|callees|dependents|dependencies|file_imports|related|cross_repo`;
+  required `repo`, `rel`; `id` is the entity id from `code_search`; `depth`
+  default 1, max 4; extra args `relation` and `direction` (`out|in`) for
+  `rel=neighbors`; `limit`.
+- `code_graph` - `op` enum
+  `path|important|stats|ambiguous|communities|hyperedges|bridges|resource_graph`;
+  required `repo`, `op`; `from`/`to` for `op=path` only; `community` for
+  `op=communities` (reads one community instead of the list); `id` for
+  `op=hyperedges` (reads one hyperedge instead of the list); `limit`.
+- `code_explain` - `GET /code-graph/explain?repo=&id=`; required `repo`, `id`.
+
+### Memory (5)
+
+- `memory_query` (`POST /queries`) / `memory_describe` (`POST /queries:describe`)
+  - required `mode` (enum `local|global|hybrid|naive`), `text`; optional `top_k`.
+- `memory_write` (`POST /memories`) - required `text`; optional `metadata`
+  (string-valued object). Returns the `track_id`.
+- `memory_entity(op=get|search|patch)` - `op` required.
+  `op=get`/`op=patch` require `id`; `op=patch` also requires `patch` (the
+  fields to change); `op=search` requires `q`; `limit` applies to `op=search`.
+- `memory_edges(op=list|create|delete)` - `op` required. `op=list` takes
+  optional `from`, `to`, `relation`, `limit`; `op=create` takes `from`, `to`,
+  `relation`; `op=delete` requires `id`.
+
+### Platform (7)
+
+`task_get`, `task_list`, `task_context(task?, index?, notes?)`,
+`task_note(kind, body)` (no `agent` argument - the operator stamps the
+writer), `project_get`, `repo_list`. `task_note` replaces the entire chat
+and handoff surface.
+
+`report_internal_issue(category, description, severity?, offending_tool?,
+resource_id?)` - required `category` (enum `tool_error`,
+`directive_contradiction`, `workspace_broken`, `memory_inconsistent`,
+`graph_inconsistent`, `auth`, `other`) and `description` (non-empty);
+optional `severity` (`warn|error`, defaults `error`), `offending_tool`, and
+`resource_id`. Emits a structured ERROR log and increments a metric; it does
+NOT create a durable SCM issue.
+
+`task_context`'s `notes` argument:
+
+```json
+{"type":"object","properties":{
+  "task":{"type":"string","description":"Any Task in this project. Defaults to your own."},
+  "index":{"type":"boolean","description":"Return the compact project-wide Task index instead of one Task's full bundle."},
+  "notes":{"type":"string","enum":["recent","all"],
+    "description":"recent (default) renders the notes in the bundle; all rehydrates the full note history, including notes spilled to memory. Use it when the <notes> marker says notes were elided."}},
+ "additionalProperties":false}
+```
+
+## The `gh` / `glab` ban, with the workstation carve-out
+
+!!! danger "In-cluster agent pods may not use `gh` or `glab`, and may not merge"
+    This is enforced structurally: the pod has no forge token of its own for
+    these paths, and the MCP profile exposes no merge action.
+    `validate_skills.py` greps for `gh ` and `glab ` in any skill body.
+
+!!! note "Workstation skills keep `gh` and keep human-driven merge"
+    `start-development` and everything it drives is run by a human at a
+    terminal with their own `gh` auth. It does not go through MCP profile
+    gating, and the ban's enforcement mechanism does not reach it - so the
+    ban does not apply to it. The rule is about what an autonomous pod may
+    do with the platform's bot identity, not about what a human may do with
+    their own.

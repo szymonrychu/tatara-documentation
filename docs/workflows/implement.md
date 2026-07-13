@@ -4,25 +4,26 @@ title: Implement Workflow
 
 # Implement Workflow
 
-`implement` writes the code. It replaces the Implement/MRCI portion of the old `issueLifecycle`
-state machine as its own discrete kind, spawned by a label swap or an MCP action from
-`clarify` or `review` - never self-initiated.
+`implement` writes the code. It is an **agent kind only, never a Task origin kind** - no webhook,
+cron, or human action ever mints a Task with `kind: implement`. It is the stage every approved
+Task passes through, driven entirely by the operator, never self-initiated.
 
 ## 1. Trigger
 
 Either of:
 
-1. A `clarify` pod hands off (`tatara-approved` -> `tatara-implementation` label swap).
-2. A `review` pod finds an unmergeable MR (conflict, failed pipeline) under the Task and
-   re-invokes implement.
+1. `approved -> implementing`: a `clarify` Task's `submit_outcome(decision=implement)` passed
+   the [approval grammar](../operations/security/approval-gates.md#the-approval-grammar) and a
+   `QueuedEvent` for the implement pod was admitted.
+2. `reviewing -> implementing`: a `review` pod submitted `verdict=request_changes` on a
+   **non-`review`-kind** Task (i.e. the platform's own MR), bounded by `maxReviewRounds` (3).
 
 ## 2. Full Task-umbrella context
 
-Implement picks up the **whole Task CR**: every linked issue and comment, every already-open PR
-or MR and its conversation, across every repo in scope - not just the one issue that triggered
-it. It works with all repos under the Task and opens PRs across every affected one, all under
-the same project-scoped Task (see
-[Task reference](../reference/task.md#task-umbrella-and-the-workitem-ledger)). Implement may
+Implement picks up the **whole Task CR**: every linked Issue and MergeRequest and their
+conversation, across every repo in scope - not just the one issue that triggered it. It works
+with all repos under the Task and opens PRs across every affected one, all under the same
+project-scoped Task (see the [context bundle](../reference/context-bundle.md)). Implement may
 check out branches or existing MRs directly rather than always starting from a fresh clone.
 
 !!! warning "Implement may never reject for insufficient context"
@@ -55,17 +56,40 @@ effort tier, anywhere in this dispatch.
 
 1. Clones (or checks out an existing branch/MR for) every repo in scope.
 2. Writes code, commits, pushes to the deterministic task branch.
-3. Calls `change_summary` with a PR title/body, delivered scope, remaining scope, and a
-   **required** `change_significance` (`major`/`minor`/`patch`) - this is what makes the merged
-   change push-CD-eligible; see [Deploy Supervisor](deploy-supervisor.md).
-4. Opens (or updates) a PR per affected repo, referencing the issue(s) it closes.
+3. Opens (or updates) an MR per affected repo, referencing the issue(s) it closes.
+4. Calls `submit_outcome`:
 
-Implement never merges its own PR and never approves its own diff - that is `review`'s job, in
-a separate pod, on a separate turn.
+```json
+{"action":"submitted","title":"...","body":"...",
+ "change_significance":"major|minor|patch",
+ "merge_order":["tatara-operator","tatara-cli"]}
+```
 
-## Reference: labels
+`change_significance` is **required** on `submitted` and is **implement-owned**: a reviewer may
+only raise it, never lower it - see [semver push-CD](merge-and-deploy.md#semver-push-cd).
+`merge_order` is **required** whenever the Task's MRs span more than one repo, and there is **no
+lexical default** - lexical order over this platform's own repos merges `cli` before `operator`,
+which is precisely the fleet outage this field exists to prevent.
 
-| Label | Applied when |
-|---|---|
-| `tatara-implementation` | Implement is actively running |
-| (handoff to `review`) | PR/MR-create webhook fires when implement opens a PR - no label change needed to trigger review |
+On success, `implementing -> reviewing` (at least one owned MR must be open). Implement never
+merges its own PR and never approves its own diff - that is `review`'s job, in a separate pod, on
+a separate turn, and no MCP tool exposes a merge action to any agent kind.
+
+```json
+{"action":"declined","decline_reason":"..."}
+```
+
+`decline_reason` is required and non-empty. This parks the Task at
+`parked(implement-declined)` - a terminal park with no re-entry; it ages out at `parkRetention`
+and is reaped.
+
+## The `maxTurnsPerPod` exemption
+
+**`implement` is the one agent kind exempt from `Project.spec.agent.maxTurnsPerPod`** (default
+40, which caps every other kind's single pod run). A long healthy coding run must not be cut off
+mid-implementation. It is bounded instead by two other things, both of which apply to every kind
+including `implement`:
+
+- `Task.spec.maxTurnsPerTask` / `Project.spec.agent.maxTurnsPerTask` (default 300) - the
+  **lifetime** turn cap across every pod of the Task, regardless of kind.
+- The `implementing` stage's own 6h work-budget - on elapse, `parked(stage-deadline)`.

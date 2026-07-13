@@ -14,9 +14,9 @@ Tatara addresses both by running a continuous, autonomous loop: it reads your is
 
 ## What you get
 
-**Autonomous implementation loop.** Issues labeled `tatara` are picked up automatically. The agent triages the issue (posting questions or a plan when it needs a human decision, and parking until you respond), implements once cleared, opens a PR, and babysits CI. Under the default merge policy the operator then squash-merges the PR on green CI on its own; add a review-gated branch-protection rule if you want to review each PR before it lands. You review code and the triage decision, not prompts.
+**Autonomous implementation loop.** Issues labeled `tatara` are picked up automatically. The agent clarifies the issue (posting questions or a plan when it needs a human decision, and parking until you respond), implements once approved, opens a PR, and babysits CI. A separate review pod then approves the change and the operator itself merges it on green CI - there is no configuration that arms the forge's own merge-when-green feature on a tatara-opened PR. You review code and the approval decision, not prompts.
 
-**Periodic brainstorm.** A cron-driven brainstorm agent queries the codebase knowledge graph and proposes improvements as GitHub/GitLab issues. Proposals are filed, not implemented - a maintainer approves a proposal by applying the `tatara-approved` label directly to it; nothing else releases it. The agent caps proposal volume (`maxOpenProposals`) so the tracker does not flood.
+**Periodic brainstorm.** A cron-driven brainstorm agent queries the codebase knowledge graph and proposes improvements as GitHub/GitLab issues. Proposals are filed, not implemented - a maintainer approves a proposal the same way as any other issue: a comment matching one of `Project.spec.scm.approvalPhrases`; nothing else releases it. The agent caps proposal volume (`maxOpenProposals`) so the tracker does not flood.
 
 **Incident response.** A Grafana alert fires a webhook to the operator. An incident investigation agent starts within seconds, queries Grafana (metrics, logs, annotations), diagnoses the issue, and files a structured incident issue with findings and remediation proposals. Escalation and follow-up implementation happen through the normal clarify -> implement -> review handoff.
 
@@ -38,21 +38,29 @@ Tatara addresses both by running a continuous, autonomous loop: it reads your is
 
 **Not a hosted service.** You deploy tatara to your own Kubernetes cluster, connect it to your own GitHub or GitLab organization, supply your own OIDC issuer (the reference deployment uses Keycloak; any compliant issuer works), and supply your own Claude Code credential. As shipped the operator injects that credential to the agent pod as `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription OAuth token); see [Prerequisites](../getting-started/prerequisites.md) for exact provisioning.
 
-**Not a monolith.** Eight independent component repos, each with its own packaging, CI pipeline, and release lifecycle. Packaging is per-component, not uniformly a Helm chart: the Go services (operator, memory, chat) ship Helm charts, but `tatara-cli` ships via a Homebrew tap and is baked into the wrapper image, `tatara-helmfile` is Helmfile plus YAML, and `tatara-observability` is Terraform plus YAML. You can adopt components incrementally.
+**Not a monolith.** Nine independent component repos, each with its own packaging, CI pipeline, and release lifecycle. Packaging is per-component, not uniformly a Helm chart: the Go services (operator, memory, claude-code-wrapper, memory-repo-ingester) ship Helm charts or run as Kubernetes Jobs, `tatara-cli` ships via a Homebrew tap and is baked into the wrapper image, `tatara-agent-skills` is a Claude Code plugin bundle, `tatara-helmfile` is Helmfile plus YAML, and `tatara-observability` is Terraform plus YAML. You can adopt components incrementally.
 
 **Not autonomous with unchecked write access - but the write access is real.** A maintainer
-decides whether an issue gets worked, and decides it in exactly one way: applying the
-`tatara-approved` label directly to the issue (a comment never approves, and neither the issue
-reporter nor the bot can grant it). After that, the default is autonomous: `review` approves the bot's own PR from a separate pod, and the deploy supervisor squash-merges once required checks are green and that approval is present, with no human merge step. The agent pod never runs `git merge` - the operator does - but "the agent cannot merge its own code" should not be read as "a human merges every PR." To require a human review before merge in addition to `review`'s own approval, configure an SCM branch-protection rule mandating an approving review; that gate is enforced by the forge, not by tatara's default. See [The Agentic Operating Model](agentic-model.md#gate-2-review-approval-approve-label-native-review-never-a-merge-call).
+decides whether an issue gets worked, and decides it in exactly one way: a comment on the
+issue whose text matches one of `Project.spec.scm.approvalPhrases`, posted by an account in
+`maintainerLogins` and never the bot (the bot is structurally excluded from ever satisfying its
+own gate). After that, the default is autonomous: `review` approves the bot's own PR from a
+separate pod by calling `submit_outcome(approve)` - never a native forge approval, since GitHub
+blocks a PR's own author from approving it either way - and the operator itself merges once
+required checks are green and that verdict is recorded, with no human merge step. The agent pod
+never runs `git merge` - the operator does - but "the agent cannot merge its own code" should not
+be read as "a human merges every PR." There is no SCM branch-protection rule you can add to
+require a human review on top of this: the platform's single bot identity means a rule requiring
+an approving review would deadlock every merge (the operator can never satisfy it on its own PR).
+See [The Agentic Operating Model](agentic-model.md#gate-2-review-approval-then-an-operator-driven-merge).
 
 ## Trade-offs to consider
 
 | Consideration | Detail |
 |---|---|
-| Anthropic API cost | Every agent session consumes Claude tokens; a busy brainstorm or complex implementation run can be expensive. Monitor with the wrapper's real per-turn series `ccw_turn_tokens_total{type,model}` and `ccw_turn_cost_usd_total`, plus the operator's `operator_task_tokens_total`. The actual cost/runaway levers are: **`spec.agent.maxTaskTokens`** (per-Task cumulative *output*-token ceiling - a runaway backstop for the turn-uncapped `implement` kind, disabled at 0 by default), **`spec.tokenBudget`** (a proactive/emergency-percent admission gate that pauses the normal or alert pool at a share of a usage window; off by default), and **per-kind tiering** via `spec.agent.modelByKind` / `effortByKind` (run cheap kinds on a smaller model/effort). `maxTurnsPerTask` only bounds the turn-capped kinds; it is not the primary cost control for implementation work. |
+| Anthropic API cost | Every agent session consumes Claude tokens; a busy brainstorm or complex implementation run can be expensive. Monitor with the wrapper's real per-turn series `ccw_turn_tokens_total{type,model}` and `ccw_turn_cost_usd_total`, plus the operator's `operator_task_tokens_total`. The actual cost/runaway levers are: **`spec.agent.maxTurnsPerPod`** (caps a single pod's run; the turn-uncapped `implement` kind is exempt), **`spec.agent.maxTurnsPerTask`** (the lifetime ceiling across every pod of a Task, all kinds included - this is what bounds `implement`), **`spec.tokenBudget`** (a proactive/emergency-percent admission gate that pauses the normal or alert pool at a share of a usage window; off by default), and **per-kind tiering** via `spec.agent.modelByKind` / `effortByKind` (run cheap kinds on a smaller model/effort). |
 | Keycloak dependency | tatara requires an OIDC provider. The reference deployment uses Keycloak. Replacing this with a different IdP is possible but requires configuration changes across multiple components. |
 | Ceph / PVC dependency | tatara-memory uses Neo4j (PVC) and CNPG Postgres (PVC). On bare-metal Kubernetes this typically means Ceph or another block/file storage provider. |
-| S3 dependency | Conversation persistence requires an S3-compatible object store. Without it, pod restarts begin fresh sessions. |
 | Agent trust boundaries | Agent pods have read-write access to enrolled repositories and can post comments as the bot account. The blast radius is bounded by the bot PAT's scopes and the `reporterLogins` allowlist, but it is non-zero. |
 
 ## Minimum viable adoption
@@ -66,4 +74,4 @@ The smallest useful tatara deployment:
 5. The `tatara-helmfile` repository forked and configured for your cluster
 6. One `Project` CR and one or more `Repository` CRs
 
-You do not need Grafana alerting or the brainstorm cron to start. The minimal loop is: label an issue -> agent triages and implements -> the PR merges on green CI (add a review-gated branch-protection rule if you want a human merge step first).
+You do not need Grafana alerting or the brainstorm cron to start. The minimal loop is: label an issue -> a maintainer comments an approval phrase -> agent implements and a review pod approves -> the operator merges on green CI.
