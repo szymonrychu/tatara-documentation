@@ -351,3 +351,35 @@ NOT create a durable SCM issue.
     ban does not apply to it. The rule is about what an autonomous pod may
     do with the platform's bot identity, not about what a human may do with
     their own.
+
+## The tool-manifest drift lint
+
+`validate_skills.py`'s checks (frontmatter, the `gh`/`glab` ban, one
+hand-crafted merge-instruction regex) never verified that a documented call
+like `submit_outcome(decision="implement")` or `mr_write(action="open")`
+still matches this page's schema. A renamed tool or a stale enum value read
+fine to a human reviewer and failed only at agent runtime.
+
+`tatara-cli` closes that gap by publishing a `tool-manifest.json` release
+asset (`tatara tool-manifest`, see [tatara-cli](../components/cli.md#tatara-tool-manifest))
+- every registered tool's name and top-level enum fields, generated straight
+from the `internal/mcp/outcome.go` / `internal/mcp/tools_scm.go` schema
+consts. `tatara-agent-skills` CI runs `.github/scripts/validate_tool_calls.py`
+alongside `validate_skills.py`, fetching the manifest version pinned in
+`.github/tool-manifest-version` and checking every literal
+`tool_name(field="value")` token in a `SKILL.md` or agent file against it.
+
+Scope is deliberately narrow: only complete `field="literal"` tokens are
+checked. Bare signatures (`code_search(repo, q, type, limit)`) and elided
+prose (`body=...`) have no `="literal"` shape and are silently skipped, and a
+line naming a value only to forbid it (`Do NOT attempt
+mr_write(action="approve"|"request_changes"|"merge")`) is exempted by a
+negation-word heuristic shared with `validate_skills.py`. This avoids the
+false-positive storm a full JSON-schema conformance check would cause on
+skills' many illustrative, non-literal examples - at the cost of not
+catching required-field or shape errors, only unknown tool names and stale
+enum values.
+
+A manifest fetch failure (network, 404, no release published yet) is a soft
+warning, not a CI failure - a missing manifest never blocks an unrelated
+skill PR.

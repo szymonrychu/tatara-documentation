@@ -211,6 +211,23 @@ The generated entry:
 preserving any other `mcpServers` entries and any extra fields (env, cwd,
 timeout) on an existing `tatara` entry. Only `command` and `args` are updated.
 
+### `tatara tool-manifest`
+
+Prints the MCP tool surface - every registered tool's name and its top-level
+enum fields (`action`, `kind`, `decision`, `verdict`, ...) - as JSON on
+stdout. `submit_outcome`'s seven per-kind schemas are unioned into one
+manifest entry since the tool name is shared across all seven profiles.
+
+```sh
+tatara tool-manifest
+```
+
+Not meant for interactive use. `release.yml` runs it after the semver tag
+cut and uploads the output as a `tool-manifest.json` release asset - the
+source of truth `tatara-agent-skills` CI fetches to lint skill-documented
+tool calls against the real schema; see
+[The tool-manifest drift lint](../reference/mcp-tools.md#the-tool-manifest-drift-lint).
+
 ---
 
 ## MCP tool surface
