@@ -480,6 +480,74 @@ hundred notes of 40 KB is 8 MB. Only bytes are bytes.
 
 ---
 
+---
+
+## MR Ownership
+
+MR ownership is the **push/merge agency** of a merge request - distinct from
+the Kubernetes owner-reference "who owns what" structure above. Every
+`MergeRequest` carries an `ownership` field: `tatara` (the platform may push,
+review, and merge) or `external` (review rounds only; the operator never
+pushes, awaiting a human hand). The distinction is not author-ship - even a
+tatara-authored MR can be external - it is agency.
+
+### Ownership signals
+
+The machine signal is the last bot-pushed head SHA, stored on the `MergeRequest`
+CR's `status.lastBotHeadSHA`. If the MR's current head resolves to the same
+commit, ownership is `tatara`. If a human pushed a different commit, ownership
+is `external`.
+
+Ownership is **not** authoritative until the operator writes it to the
+`MergeRequest` CR's `status.ownership` field, together with a `status.ownershipReason`
+(one of: `initial` - MR was never delegated to tatara; `takeover-requested-by:<user>` -
+a maintainer requested takeover; `external-push:<sha>` - a human pushed after tatara
+had ownership). The field is read-only from the agent's perspective: only the
+operator sets it, on every reconcile loop, by comparing the head SHA to
+`lastBotHeadSHA`. The `status.lastMirroredCommentID` field tracks the sweep's
+comment-redelivery cursor, ensuring bot comments are not re-posted on every sync.
+
+### Flipping ownership: human push
+
+A push of any commit other than `lastBotHeadSHA` to the MR's head branch flips
+ownership from `tatara` to `external` with reason `external-push:<sha>`. The
+operator detects it on the next webhook or reconcile and posts a stand-down
+announcement: "I detect that you have pushed to this MR. I am standing down and
+will keep reviewing, but I will not push." The bot stops pushing commits, but
+the review continues, and the operator will still merge on an approved review.
+
+### Flipping ownership back: maintainer comment
+
+A **project maintainer** (an account in the project or repository `maintainerLogins`
+set, closed by default) can hand an external MR back to tatara by posting a
+natural-language comment requesting a takeover, for example "please take over,
+resolve the conflicts, and merge once green". There is no fixed command syntax.
+The review agent reads the comment, judges whether it is a hand-over request, and
+if so, calls the MCP tool `mr_takeover_request(repo, number, comment_external_id)`
+to recommend takeover to the operator.
+
+The operator receives the recommendation and **re-checks the comment author
+server-side** against the effective maintainer set (Project/Repository
+`maintainerLogins`). The agent's judgment alone can never change ownership. If
+the author is a maintainer, the operator posts an announcement comment, stamps
+`status.ownership = tatara` with reason `takeover-requested-by:<user>`, bumps
+`lastBotHeadSHA` to the current head, and mints a new takeover Task bound to the
+MR's head branch to resume work. From that point on, the agent may push and merge.
+
+If the author is not a maintainer, the operator logs the denied request and posts
+a comment: "This account is not authorized to hand over this MR." Nothing changes.
+
+### The merge gate
+
+The merge gate merges when `status.ownership == tatara` **or** `status.ownership
+== external` with a reason prefix `external-push:`. The first case is a fully
+delegated MR; the second is an MR that tatara previously owned and a human
+paused, but may resume pushing and merging it. An MR with ownership `external`
+and reason `initial` (never delegated to tatara) will not be merged by the
+operator.
+
+---
+
 ## Where to go next
 
 - [Issue](../reference/issue.md) and [MergeRequest](../reference/merge-request.md)
@@ -488,3 +556,5 @@ hundred notes of 40 KB is 8 MB. Only bytes are bytes.
   reasons, and which of them have a re-entry path.
 - [Task](../reference/task.md) covers `foldInFlight`, `documentedBy`, and the
   rest of the status surface this page relies on.
+- [Handing an MR to tatara](../workflows/mr-takeover.md) is the maintainer's
+  how-to for requesting a takeover.

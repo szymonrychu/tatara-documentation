@@ -5,7 +5,7 @@ description: The 20-tool, per-profile-gated MCP surface every agent pod calls.
 
 # MCP tools by agent kind
 
-**Twenty tools.** The pre-redesign surface was 74, and a clarify pod could see
+**Twenty-one tools.** The pre-redesign surface was 74, and a clarify pod could see
 all of them and legally call four.
 
 Tools **not in the pod's profile are not registered at all**. `tools/list` is
@@ -27,7 +27,7 @@ seven: `brainstorm`, `incident`, `clarify`, `implement`, `review`, `refine`,
 | Group | Count | Tools |
 |---|---|---|
 | Platform | 7 | `task_get`, `task_list`, `task_context`, `task_note`, `project_get`, `repo_list`, `report_internal_issue` |
-| SCM | 3 | `scm_read`, `issue_write`, `mr_write` |
+| SCM | 4 | `scm_read`, `issue_write`, `mr_write`, `mr_takeover_request` |
 | Code graph | 4 | `code_search`, `code_context`, `code_graph`, `code_explain` |
 | Memory | 5 | `memory_query`, `memory_describe`, `memory_write`, `memory_entity`, `memory_edges` |
 | Outcome | 1 | `submit_outcome` (one name, seven schemas) |
@@ -47,6 +47,7 @@ Always-on for every profile, including the fail-closed empty one: `task_get`,
 | `scm_read` | yes | yes | yes | yes | yes | yes | yes |
 | `issue_write` | - | - | yes | - | - | yes | - |
 | `mr_write` | - | - | - | yes | yes | comment-only* | yes |
+| `mr_takeover_request` | - | - | - | yes | yes | - | - |
 | `code_search` | yes | yes | yes | yes | yes | - | yes |
 | `code_context` | yes | yes | yes | yes | yes | - | yes |
 | `code_graph` | yes | yes | - | yes | yes | - | yes |
@@ -61,20 +62,20 @@ operator-side check, not by the schema. It is the only non-uniform cell in
 the table.
 
 Counts are derived from the table above, not quoted from a summary line: each
-profile is 20 minus the cells the table marks `-` for it (the always-on row
+profile is 21 minus the cells the table marks `-` for it (the always-on row
 and `submit_outcome` are never denied, so they never subtract).
 
 | profile | denied cells | count |
 |---|---|:--:|
-| brainstorm | `issue_write`, `mr_write`, `memory_edges` | 17 |
-| incident | `issue_write`, `mr_write` | 18 |
-| clarify | `task_list`, `mr_write`, `code_graph`, `memory_write`, `memory_entity`, `memory_edges` | 14 |
-| implement | `task_list`, `issue_write`, `memory_entity`, `memory_edges` | 16 |
-| review | `task_list`, `issue_write`, `memory_write`, `memory_entity`, `memory_edges` | 15 |
-| refine | `code_search`, `code_context`, `code_graph`, `code_explain`, `memory_write`, `memory_entity`, `memory_edges` | 13 |
-| documentation | `task_list`, `issue_write` | 18 |
+| brainstorm | `issue_write`, `mr_write`, `mr_takeover_request`, `memory_edges` | 17 |
+| incident | `issue_write`, `mr_write`, `mr_takeover_request` | 18 |
+| clarify | `task_list`, `mr_write`, `mr_takeover_request`, `code_graph`, `memory_write`, `memory_entity`, `memory_edges` | 14 |
+| implement | `task_list`, `issue_write`, `memory_entity`, `memory_edges` | 17 |
+| review | `task_list`, `issue_write`, `memory_write`, `memory_entity`, `memory_edges` | 16 |
+| refine | `code_search`, `code_context`, `code_graph`, `code_explain`, `memory_write`, `memory_entity`, `memory_edges`, `mr_takeover_request` | 13 |
+| documentation | `task_list`, `issue_write`, `mr_takeover_request` | 18 |
 
-Counts: brainstorm 17, incident 18, clarify 14, implement 16, review 15,
+Counts: brainstorm 17, incident 18, clarify 14, implement 17, review 16,
 refine 13, documentation 18.
 
 `task_list` goes to the broad-context trio only, because a clarify / implement
@@ -240,7 +241,7 @@ stage.
 
 ## The other tools
 
-### SCM (3)
+### SCM (4)
 
 **`scm_read`** - `repo` is required on every kind:
 
@@ -281,6 +282,16 @@ stage.
   "number":{"type":"integer"},"title":{"type":"string"},"body":{"type":"string"},
   "in_reply_to":{"type":"string","description":"Required for action=reply: the externalId from scm_read(kind=comments)."}},
  "required":["action","repo"],"additionalProperties":false}
+```
+
+**`mr_takeover_request`** (`implement`, `review` only) - request ownership takeover of an external MR:
+
+```json
+{"type":"object","properties":{
+  "repo":{"type":"string"},
+  "number":{"type":"integer"},
+  "comment_external_id":{"type":"string","description":"The external comment ID (from scm_read(kind=comments)) that contains the takeover request."}},
+ "required":["repo","number","comment_external_id"],"additionalProperties":false}
 ```
 
 ### Code graph (4)
