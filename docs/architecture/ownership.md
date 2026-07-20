@@ -480,8 +480,6 @@ hundred notes of 40 KB is 8 MB. Only bytes are bytes.
 
 ---
 
----
-
 ## MR Ownership
 
 MR ownership is the **push/merge agency** of a merge request - distinct from
