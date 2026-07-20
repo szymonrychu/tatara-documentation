@@ -162,6 +162,7 @@ nav:
     - Refine: workflows/refine.md
     - Deep Architectural Research: workflows/research.md
     - Merge & Deploy: workflows/merge-and-deploy.md
+    - Handing an MR to tatara: workflows/mr-takeover.md
   - Operations:
     - operations/index.md
     - Deployment & GitOps: operations/deployment.md

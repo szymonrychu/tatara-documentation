@@ -64,11 +64,21 @@ lookup, never a label selector.
 | `pendingReview` | [`*PendingReview`](#pendingreview) | The durable intent to post a review. See below |
 | `pendingComments` | `[]PendingComment` (max 20) | Durable comment/reply intents from `mr_write(action=comment\|reply)`. Same shape as [`Issue.status.pendingComments`](issue.md#issuestatus) <!-- stale-ok: pendingComments --> |
 | `lastSyncedAt` | `*Time` | When the mirror last synced against the forge |
+| `ownership` | `tatara` \| `external` | Whether the platform has push/merge agency over this MR. See [MR Ownership](../architecture/ownership.md#mr-ownership) |
+| `ownershipReason` | `string` | The reason for the current ownership state: `initial` (never delegated), `takeover-requested-by:<user>`, or `external-push:<sha>` |
+| `ownershipChangedAt` | `*Time` | When ownership last flipped |
+| `lastBotHeadSHA` | `string` | The last head commit SHA this platform pushed; compared to the current head to detect human pushes and ownership changes |
+| `lastMirroredCommentID` | `string` | Cursor for sweep comment syncing; the external ID of the last bot comment mirrored |
 | `conditions` | `[]metav1.Condition` | Standard Kubernetes conditions |
 
-Ownership follows the same rule as Issue: a MergeRequest is owned by 1..N
-`Task`s, and exactly one carries `controller: true`. See
-[Who owns what](../architecture/ownership.md#who-owns-what).
+**Kubernetes ownership** (who owns/deletes this CR): a MergeRequest is owned by 1..N `Task`s,
+and exactly one carries `controller: true` - the Task responsible for it right now. That owner
+is what the `Task` print column renders. See [Who owns what](../architecture/ownership.md#who-owns-what)
+for the full rule, including how ownership moves during a [refine fold](../architecture/ownership.md#the-refine-fold).
+
+**MR ownership** (push/merge agency): distinct from Kubernetes ownership above. Whether the
+platform has the authority to push commits and merge. Tracked in `status.ownership` and
+`status.ownershipReason`. See [MR Ownership](../architecture/ownership.md#mr-ownership).
 
 ### `headSHA` is never trusted
 
