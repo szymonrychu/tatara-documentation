@@ -60,7 +60,7 @@ Controls every agent pod spawned by this project.
 | `effort` | `string` | `xhigh` | Reasoning-effort level forwarded to the wrapper as the `EFFORT` env var. Maps to Claude's extended thinking intensity. One of: `low`, `medium`, `high`, `xhigh`, `max`. |
 | `modelByKind` | `map[string]string` | `{}` | Per-**agent-kind** override of `model`, keyed on `Task.status.agentKind` (not the Task origin kind). Valid keys: `brainstorm`, `incident`, `clarify`, `implement`, `review`, `refine`, `documentation`. Locked defaults: `brainstorm`/`incident`/`clarify`/`implement`/`review` = `claude-opus-*`; `documentation`/`refine` = `claude-sonnet-*`. Values must start with `claude-` (max 64 chars). A missing/empty entry falls back to `model`. |
 | `effortByKind` | `map[string]string` | `{}` | Per-agent-kind override of `effort`. Same 7-key set as `modelByKind`. Values must be one of `low`, `medium`, `high`, `xhigh`, `max`. A missing/empty entry falls back to `effort`. |
-| `skillsRef` | `string` | `main` | Git ref (branch, tag, or SHA) of the `tatara-agent-skills` repo the wrapper clones at boot. Pin to a SHA to avoid drift from `main`. |
+| `skillsRef` | `string` | `main` | Git ref (branch, tag, or SHA) of the `tatara-agent-skills` repo the wrapper clones at boot. Pin to a released tag (e.g. `v1.5.2`) to avoid drift from `main` - on the `tatara` and `infrastructure` projects this pin is CD-managed by `tatara-agent-skills`' own release pipeline, which rewrites it to each freshly cut tag on every release; do not hand-edit it there or a manual bump will just be overwritten (and, worse, a stale hand-pin silently freezes out every skills release cut after it - see [tatara-operator#421](https://github.com/szymonrychu/tatara-operator/issues/421)). |
 | `hooks` | [`LifecycleHooks`](#lifecyclehooks) | - | Optional shell commands run at fixed points in the session. |
 | `extraEnvs` | `[]EnvVar` | - | Additional environment variables appended to the wrapper container after the operator's required variables. A stray extra cannot shadow an operator-required variable. |
 | `extraEnvsFrom` | `[]EnvFromSource` | - | ConfigMap or Secret refs whose keys are bulk-loaded into the wrapper container's environment. |
@@ -373,7 +373,7 @@ spec:
     effortByKind:
       documentation: low
       refine: medium
-    skillsRef: 395713a0ef849fde8df5e27121840e043276eccf
+    skillsRef: v1.5.2
     hooks:
       # (3)!
       postClone: "mise install --quiet"
@@ -477,7 +477,7 @@ spec:
 8. `maintainerLogins` + `reporterLogins` form the security perimeter. `maintainerLogins` is not optional hardening here - it is **required** for anything to ever be approved: empty means no login can ever satisfy the approval-grammar check, so no issue advances out of `clarifying`.
 9. MR scan every 15 minutes, issue scan hourly, brainstorm weekly on Monday morning, documentation nightly.
 10. `agentPodTTLSeconds` bounds one pod's life, not the Task. `maxNewTasksPerSweep` and `maxOpenTasks` are separate Task-minting budgets from the pod-concurrency budget (`maxConcurrentAgents`) above. `maxBundleBytes` is the hard byte cap on every rendered context bundle.
-11. `maxTurnsPerPod` bounds one pod run (the `implement` agent kind is exempt); `maxTurnsPerTask` is the lifetime backstop across every pod, all kinds included. `maxReviewRounds`/`maxHumanReviewRounds` bound the two distinct review re-entry cycles; `maxPodRecreations` bounds respawns within one stage. `modelByKind`/`effortByKind` tier specific **agent** kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a SHA to avoid `main` drift.
+11. `maxTurnsPerPod` bounds one pod run (the `implement` agent kind is exempt); `maxTurnsPerTask` is the lifetime backstop across every pod, all kinds included. `maxReviewRounds`/`maxHumanReviewRounds` bound the two distinct review re-entry cycles; `maxPodRecreations` bounds respawns within one stage. `modelByKind`/`effortByKind` tier specific **agent** kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a released tag to avoid `main` drift; on the `tatara`/`infrastructure` projects it is rewritten automatically by the `tatara-agent-skills` release pipeline, not hand-bumped.
 12. `tokenBudget` is off unless this block is present with `enabled: true`. `customWindow` mode meters absolute tokens against `tokenLimit` inside the cron-anchored `resetSchedule`/`windowDuration` window; `claudeSubscription` mode gates on wrapper-reported Claude usage percentages instead (see [TokenBudgetSpec](#tokenbudgetspec)).
 13. `approvalPhrases` is the closed wordlist an approving maintainer comment must anchor-match. Omit to use the built-in default list.
 14. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `maxOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
