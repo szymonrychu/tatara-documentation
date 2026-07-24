@@ -19,7 +19,7 @@ This gives agent sessions the full Claude Code harness: skills, slash commands, 
 1. **Load config** from env (scalars) and mounted ConfigMap files.
 2. **Bootstrap** renders all files claude reads at startup:
    - Clone `REPO_URL@REPO_BRANCH` into `/workspace` (optional)
-   - `/workspace/.mcp.json` (tatara-cli + any overlays)
+   - `/workspace/.mcp.json` (tatara-cli + any overlays), then any `TATARA_EXTRA_MCP_SERVERS` entries merged in - see [Configuration](#configuration)
    - `~/.claude/settings.json` (Stop hook path, `bypassPermissions`, MCP auto-enable, denied interactive pickers)
    - `~/.claude.json` (seeds onboarding flags so no interactive dialogs appear)
    - `~/.claude/CLAUDE.md` and `/workspace/CLAUDE.md`
@@ -118,6 +118,8 @@ All scalars via env (from chart ConfigMap `envFrom`):
 | `ANTHROPIC_API_KEY` | - | Alternative metered Anthropic API key. Supported (used to pre-seed the trust dialog) but **not** what the deployed platform injects. |
 
 File/list config is mounted under `/etc/wrapper` (chart values: `globalClaudeMd`, `projectClaudeMd`, `baseMcp`, `extraMcpServers`, `allowedTools`, custom skills).
+
+`TATARA_EXTRA_MCP_SERVERS` (from `Project.spec.agent.mcpServers`, see [`MCPServerSpec`](../reference/project.md#mcpserverspec)) is a compact-JSON array of `{name, url, type}`, absent entirely when the project sets no extra servers. The wrapper parses it and merges each entry into the rendered `.mcp.json` after the overlay-dir fragments and before the platform-owned servers (`tatara`, `grafana`, `serena`), so a project-supplied entry can never shadow one of those. An entry using a reserved name is skipped with a warning; malformed JSON or an incomplete entry fails open (warn and continue) rather than failing pod boot - a bad `Project` value can never block agent startup. This is distinct from the chart-level `extraMcpServers` value above, which is static and baked in at deploy time; `TATARA_EXTRA_MCP_SERVERS` is per-Project and set by the operator at pod-build time.
 
 ## Metrics
 
