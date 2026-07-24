@@ -66,8 +66,9 @@ Controls every agent pod spawned by this project.
 | `extraEnvsFrom` | `[]EnvFromSource` | - | ConfigMap or Secret refs whose keys are bulk-loaded into the wrapper container's environment. |
 | `extraVolumeMounts` | `[]VolumeMount` | - | Additional volume mounts appended to the wrapper container. |
 | `extraVolumes` | `[]Volume` | - | Additional volumes appended to the agent pod's volume list. |
-| `extraSidecarContainers` | `[]Container` | - | Additional containers appended after the wrapper in the agent pod. Useful for MCP servers or local proxies. |
+| `extraSidecarContainers` | `[]Container` | - | Additional containers appended after the wrapper in the agent pod. Useful for a local proxy, or for an MCP server that isn't already reachable as a service - for an existing HTTP/SSE MCP endpoint, prefer [`mcpServers`](#mcpserverspec) below. |
 | `extraInitContainers` | `[]Container` | - | Init containers added to the agent pod. Run to completion before the wrapper starts. |
+| `mcpServers` | [`[]MCPServerSpec`](#mcpserverspec) | `[]` | Additional MCP servers to merge into this project's agent pods, on top of the platform-owned servers and any overlay-dir fragments baked into the image. Serialized to the wrapper as the `TATARA_EXTRA_MCP_SERVERS` env var (compact JSON; omitted entirely when empty). The operator validates shape only - reserved-name enforcement and the merge itself happen in the wrapper, see [tatara-claude-code-wrapper](../components/claude-code-wrapper.md#configuration). |
 
 !!! danger "There is no resume mode"
     `contextWindowTokens` and the old compacted-handover threshold field are gone. <!-- stale-ok: handover --> Every pod's turn-0 gets the identical [context bundle](context-bundle.md) render, bounded by `Project.spec.maxBundleBytes` - there is no partial-resume calculation and nothing carries a Claude session id across a pod boundary. What carries forward between pods is [`Task.status.notes`](task-notes.md).
@@ -84,6 +85,21 @@ Each field is a shell command string passed to `sh -c`. An empty field is skippe
 | `conversationRestart` | Each time the wrapper process is relaunched after a pod recreation | Same as `conversationStart` |
 | `agentTurnFinished` | After each agent turn (after work is committed and pushed) | Same as `conversationStart` |
 | `conversationFinished` | Once, during session teardown | Same as `conversationStart` |
+
+---
+
+#### MCPServerSpec
+
+One entry per additional MCP server to make available to this project's agent pods, alongside the platform-owned servers (`tatara`, `grafana` when enabled, `serena`) and any overlay-dir fragments baked into the image.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | `string` | - | **Required.** Server name as it appears in `.mcp.json` and in tool names (`mcp__<name>__*`). Must match the operator's name pattern. A reserved platform name is rejected - that check lives in the wrapper, not here, so a bad value fails open (skipped with a warning) rather than blocking pod boot. |
+| `url` | `string` | - | **Required.** MCP server endpoint URL. |
+| `type` | `string` | `http` | Transport. One of `http`, `sse`. |
+
+!!! note "Fully generic - no product-specific code in tatara"
+    The operator validates shape only; it has no knowledge of what any given MCP server does. The first consumer is the `mtg` Project's in-cluster `spellslinger` MCP service, wired up entirely through this field - see [tatara-helmfile](../components/helmfile.md).
 
 ---
 
@@ -382,6 +398,11 @@ spec:
     extraEnvs:
       - name: CUSTOM_REGISTRY
         value: harbor.example.com
+    # (16)!
+    mcpServers:
+      - name: internal-search
+        url: http://internal-search.svc.cluster.local:8080/mcp
+        type: http
 
   memory:
     # (4)!
@@ -482,3 +503,4 @@ spec:
 13. `approvalPhrases` is the closed wordlist an approving maintainer comment must anchor-match. Omit to use the built-in default list.
 14. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `maxOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
 15. `documentation.enabled` + `documentation.repo` is the real on-switch and docs-target repo for the nightly documentation agent; `scm.cron.documentation.schedule` (above) is a separate, also-required gate - the cron `CronActivity` has no `enabled` field of its own.
+16. `mcpServers` bring-your-own-MCPs into this project's agent pods, on top of the platform-owned servers. The operator only checks shape (`name` pattern, `type` enum); the wrapper does the actual merge and drops any entry that collides with a reserved platform name.
