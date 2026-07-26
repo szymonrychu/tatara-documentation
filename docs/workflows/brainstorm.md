@@ -144,8 +144,10 @@ survive.
     This is a deliberate tradeoff, not an oversight.
 
 This is a different gate from `action: skip`: a skip is a spawned pod choosing to yield nothing
-after it looked, not the operator refusing to spawn one - the operator now only refuses to spawn
-when the deficit is zero or the skip breaker is tripped.
+after it looked, not the operator refusing to spawn one. The operator refuses to spawn on the
+**event path** when the deficit is zero or the breaker is tripped; the **cron backstop** ignores
+the breaker entirely and spawns whenever the deficit is positive - that is what lets it reset the
+breaker and repair a backlog the event path stopped refilling.
 
 ## Staleness reaper
 
