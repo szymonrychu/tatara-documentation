@@ -81,9 +81,7 @@ gone with the fields it swept). Documentation is now **one nightly batch Task
 per project**, covering everything delivered in the last 24h - not a
 per-delivery spawn and not a "did anything meaningful change?" judgment call.
 
-Both live projects currently run `mrScan` every 2h and `issueScan` every 4h
-(stretched from hourly for token conservation; push webhooks cover real-time
-activity, so these are backstops, not the primary trigger path).
+The live projects run `issueScan` every 4 hours.
 
 ---
 
@@ -93,18 +91,42 @@ activity, so these are backstops, not the primary trigger path).
 default: `<= 0` (including unset) keeps the reaper off. A positive value
 auto-closes bot-authored proposals with no human engagement (no human
 comment, no live work) after that many days, freeing backlog space under
-`maxOpenProposals`.
+`targetOpenProposals`.
 
 ```yaml
 scm:
   cron:
     brainstorm:
       enabled: true
-      maxOpenProposals: 10
+      targetOpenProposals: 3
       staleProposalDays: 14   # 0 or omit to disable the reaper
 ```
 
-Both live projects run `staleProposalDays: 14`.
+All three live projects run `staleProposalDays: 14` (project-mtg went live 2026-07-24).
+
+---
+
+## Tune the brainstorm backlog
+
+`scm.cron.brainstorm.targetOpenProposals` is the level, not a ceiling: the
+operator refills toward it the moment a maintainer approves or discards a
+proposal. Raise it for more standing choice, lower it to reduce review load.
+Lowering it does not close anything - the backlog drains as you decide.
+
+```yaml
+scm:
+  cron:
+    brainstorm:
+      enabled: true
+      targetOpenProposals: 3
+      historyWindow: 20
+      maxConsecutiveSkips: 3
+```
+
+There is deliberately **no cooldown or hourly rate limit** between refills: the
+maintainer wants the backlog topped up the instant they act. If sessions start
+burning tokens without producing, `maxConsecutiveSkips` is the brake - and
+`operator_brainstorm_breaker_trip_total` is the metric that says so.
 
 ---
 

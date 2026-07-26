@@ -261,8 +261,11 @@ Opt-in self-driven issue-proposal cycle. Disabled unless `enabled: true`.
 |---|---|---|---|
 | `enabled` | `bool` | `false` | Must be `true` to activate. |
 | `schedule` | `string` | - | 5-field cron expression. |
-| `maxOpenProposals` | `int` | `5` | If the total number of open, unapproved agent proposals across all repos in the project meets or exceeds this value, the brainstorm cycle is skipped entirely. Controls backlog pressure. |
-| `staleProposalDays` | `int` | `0` (reaper off) | Opts in the staleness reaper: a positive value auto-closes bot-authored proposals with no human engagement (no human comment, no live work) for at least that many days, clearing dead proposals out of the `maxOpenProposals` backlog. `<=0` (the unset default) disables the reaper entirely. This is an explicit opt-in sentinel, not a kubebuilder default - "unset" must never be indistinguishable from an active value. |
+| `targetOpenProposals` | `int` | `3` | The backlog TARGET: how many proposals the operator keeps open and awaiting a maintainer decision across all repos in the project. It refills toward this level and never closes a proposal to reconcile downward. `0` disables refill. |
+| `maxOpenProposals` | `int` | `5` | **Deprecated.** The pre-target ceiling, retained as an alias: honoured as the target only when `targetOpenProposals` is unset, so an unmigrated `Project` keeps working. Set `targetOpenProposals` instead. |
+| `historyWindow` | `int` | `20` | How many recent brainstorm proposals are rendered into the session's turn-0 prompt as the `<proposal_history>` block, with their outcome and maintainer comments. `0` omits the block. |
+| `maxConsecutiveSkips` | `int` | `3` | Circuit-breaker threshold. After this many consecutive sessions ending in `action: skip`, the event-driven refill path is suppressed until a cron tick resets the counter. `0` disables the breaker. |
+| `staleProposalDays` | `int` | `0` (reaper off) | Opts in the staleness reaper: a positive value auto-closes bot-authored proposals with no human engagement (no human comment, no live work) for at least that many days, clearing dead proposals out of the `targetOpenProposals` backlog. `<=0` (the unset default) disables the reaper entirely. This is an explicit opt-in sentinel, not a kubebuilder default - "unset" must never be indistinguishable from an active value. |
 | `sources` | `[]string` | - | Knowledge sources the brainstorm agent may consult. Allowed values: `docs`, `memory`, `internet`. An empty list uses only repository contents. |
 
 !!! note "One brainstorm per project per cycle"
@@ -475,7 +478,8 @@ spec:
       brainstorm:
         enabled: true
         schedule: "0 9 * * 1"
-        maxOpenProposals: 8
+        targetOpenProposals: 3
+        historyWindow: 20
         # (14)!
         staleProposalDays: 14
         sources:
@@ -501,6 +505,6 @@ spec:
 11. `maxTurnsPerPod` bounds one pod run (the `implement` agent kind is exempt); `maxTurnsPerTask` is the lifetime backstop across every pod, all kinds included. `maxReviewRounds`/`maxHumanReviewRounds` bound the two distinct review re-entry cycles; `maxPodRecreations` bounds respawns within one stage. `modelByKind`/`effortByKind` tier specific **agent** kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a released tag to avoid `main` drift; on the `tatara`/`infrastructure` projects it is rewritten automatically by the `tatara-agent-skills` release pipeline, not hand-bumped.
 12. `tokenBudget` is off unless this block is present with `enabled: true`. `customWindow` mode meters absolute tokens against `tokenLimit` inside the cron-anchored `resetSchedule`/`windowDuration` window; `claudeSubscription` mode gates on wrapper-reported Claude usage percentages instead (see [TokenBudgetSpec](#tokenbudgetspec)).
 13. `approvalPhrases` is the closed wordlist an approving maintainer comment must anchor-match. Omit to use the built-in default list.
-14. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `maxOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
+14. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `targetOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
 15. `documentation.enabled` + `documentation.repo` is the real on-switch and docs-target repo for the nightly documentation agent; `scm.cron.documentation.schedule` (above) is a separate, also-required gate - the cron `CronActivity` has no `enabled` field of its own.
 16. `mcpServers` bring-your-own-MCPs into this project's agent pods, on top of the platform-owned servers. The operator only checks shape (`name` pattern, `type` enum); the wrapper does the actual merge and drops any entry that collides with a reserved platform name.

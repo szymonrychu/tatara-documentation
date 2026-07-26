@@ -10,8 +10,20 @@ review. No human initiates it - a cron schedule fires it automatically.
 
 ## Trigger
 
-- **Cron:** `spec.scm.cron.brainstorm.schedule` on the `Project` CR.
-- **Manual:** create a `Task` with `kind: brainstorm` against the project.
+Brainstorm is a **maintained backlog**, not a scheduled batch. The operator keeps
+`targetOpenProposals` proposals open and awaiting a maintainer decision, and
+refills toward that level from three triggers:
+
+- **Maintainer verdict (primary).** The moment a proposal is approved, declined,
+  or closed, it leaves the pending set and the operator launches the next
+  session immediately - no cooldown, no rate limit, no refine barrier.
+- **Cron (backstop).** `spec.scm.cron.brainstorm.schedule` still fires, still
+  behind the [refine barrier](refine.md), and repairs the backlog after a
+  dropped event or a tripped skip breaker. It also resets the breaker.
+- **Periodic resync.** The Project reconciler re-evaluates the backlog every 15
+  minutes, so a lost watch event costs refill *latency*, never correctness.
+
+Manual: create a `Task` with `kind: brainstorm` against the project.
 
 ## One task per project per cycle
 
@@ -58,16 +70,82 @@ entering the stage machine at `triaging` like any other newly filed issue. The b
 that proposed it and the `clarify` Task that inherits it are two separate Task objects from that
 point on.
 
-## Proposal limits
+## Backlog target, not a cap
 
-`Project.spec.scm.cron.brainstorm.maxOpenProposals` is an **operator-side pre-admission gate**,
-not an agent decision: on a due brainstorm tick the operator sums the open-proposal backlog
-across the project's repos and, at or over the cap, skips the cycle entirely - no Task is
-minted, no pod spawns, no tokens are spent. See [Project reference](../reference/project.md) for
-the field's current default and scope.
+`Project.spec.scm.cron.brainstorm.targetOpenProposals` (default 3) is the number
+of proposals the operator keeps open and awaiting a decision across the whole
+project. On every trigger it computes
 
-This is a different gate from `action: skip`: the cap is the operator refusing to spawn a pod at
-all; `skip` is a spawned pod choosing to yield nothing after it looked.
+```
+deficit = max(0, target - pending - inflight)
+```
+
+and spawns one session with `deficit` as its quota when the deficit is positive.
+
+- **pending** counts `Issue` CRs whose provenance is a brainstorm proposal, whose
+  forge issue is open, and whose platform status is not `approved`, `rejected` or
+  `done`. An **approved** proposal frees its slot immediately, even though its
+  forge issue stays open through implementation: it is no longer awaiting a
+  decision. Proposals sharing a systemic group count as one slot.
+- **inflight** is 1 while a non-terminal brainstorm `Task` exists for the project.
+  One brainstorm session runs at a time, project-wide; only the trigger and the
+  quota changed.
+- The deficit is **clamped at zero.** If pending exceeds the target - after
+  lowering the target, or a long stretch with no verdicts - the operator simply
+  stops refilling and lets the backlog drain. It never closes a proposal to
+  reconcile downward.
+
+The count reads the `Issue` CR mirror in etcd, never the forge, so webhook
+delivery lag and search-index staleness cannot cause a double-create.
+
+`maxOpenProposals` is **deprecated**. It is still honoured as a target when
+`targetOpenProposals` is unset, so an unmigrated `Project` keeps working; set
+`targetOpenProposals` instead.
+
+### Session quota
+
+The spawned session's goal carries `PROPOSAL QUOTA: file AT MOST N proposal(s)`,
+where N is the deficit clamped to the `submit_outcome` ceiling of 5. Enforcement
+is two-sided: the `tatara-brainstorm-guardrails` skill states the quota to the
+agent, and the operator **truncates** the submitted array to N. Operator-side
+truncation is the authority, so an agent that ignores the quota cannot overshoot
+the target.
+
+### Skip circuit breaker
+
+Consecutive sessions that end in `action: skip` increment a counter;
+`action: propose` resets it. At `maxConsecutiveSkips` (default 3) the
+event-driven refill path is suppressed until a cron tick resets the counter. This
+is a liveness brake, not pacing: without it, a genuinely exhausted idea space
+would loop skip -> unchanged deficit -> reconcile -> spawn -> skip forever. As
+long as sessions keep producing, refill stays instant.
+
+### Proposal history in the prompt
+
+Each session's turn-0 bundle carries a `<proposal_history>` block: the last
+`historyWindow` (default 20) brainstorm proposals, newest first, each with a
+status of `open`, `approved` or `declined`, its body, and its comments. The
+comments carry *why* a maintainer declined a proposal, which a bare status flag
+loses.
+
+This is what stops a killed idea coming back. A discarded proposal is closed, so
+the agent's own scan of open issues cannot see it and would happily re-propose
+it. The block renders under the `maxBundleBytes` budget, evicting bot comments
+first and then whole proposals oldest-first, so the most recent verdicts always
+survive.
+
+!!! warning "Declined history is bounded by Task retention, not `historyWindow`"
+    Declined proposals are retained as `Issue` CRs so their rejection comments
+    can feed this history block, but the retained CR still carries its owner
+    reference and cascades when its `rejected` owner `Task` is reaped at 7
+    days. A decline older than that reap window disappears from
+    `<proposal_history>` regardless of `historyWindow` - declined entries are
+    bounded by the 7-day Task-retention clock first, `historyWindow` second.
+    This is a deliberate tradeoff, not an oversight.
+
+This is a different gate from `action: skip`: a skip is a spawned pod choosing to yield nothing
+after it looked, not the operator refusing to spawn one - the operator now only refuses to spawn
+when the deficit is zero or the skip breaker is tripped.
 
 ## Staleness reaper
 
@@ -97,12 +175,15 @@ spec:
   scm:
     cron:
       brainstorm:
-        schedule: "0 9 * * 1"
+        enabled: true
+        schedule: "0 9 * * 1"      # the backstop, not the primary trigger
+        targetOpenProposals: 3
+        historyWindow: 20
+        maxConsecutiveSkips: 3
         sources:
           - memory    # knowledge graph (always recommended)
           - docs      # docs/ directory content
           - internet  # outbound internet egress (requires NetworkPolicy)
-        maxOpenProposals: 5
         staleProposalDays: 14
 ```
 
