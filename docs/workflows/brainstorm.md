@@ -104,12 +104,17 @@ delivery lag and search-index staleness cannot cause a double-create.
 
 ### Session quota
 
-The spawned session's goal carries `PROPOSAL QUOTA: file AT MOST N proposal(s)`,
-where N is the deficit clamped to the `submit_outcome` ceiling of 5. Enforcement
-is two-sided: the `tatara-brainstorm-guardrails` skill states the quota to the
-agent, and the operator **truncates** the submitted array to N. Operator-side
-truncation is the authority, so an agent that ignores the quota cannot overshoot
-the target.
+The spawned session's goal carries the frozen string, verbatim:
+
+```
+PROPOSAL QUOTA: file AT MOST <K> proposal(s) in this session. The operator truncates anything beyond <K>.
+```
+
+where `<K>` is the deficit clamped to `[1, 5]` - the `submit_outcome` ceiling.
+Enforcement is two-sided: the `tatara-brainstorm-guardrails` skill states the
+quota to the agent, and the operator **truncates** the submitted array to `<K>`.
+Operator-side truncation is the authority, so an agent that ignores the quota
+cannot overshoot the target.
 
 ### Skip circuit breaker
 
@@ -134,13 +139,22 @@ it. The block renders under the `maxBundleBytes` budget, evicting bot comments
 first and then whole proposals oldest-first, so the most recent verdicts always
 survive.
 
-!!! warning "Declined history is bounded by Task retention, not `historyWindow`"
-    Declined proposals are retained as `Issue` CRs so their rejection comments
-    can feed this history block, but the retained CR still carries its owner
-    reference and cascades when its `rejected` owner `Task` is reaped at 7
-    days. A decline older than that reap window disappears from
+!!! warning "Declined history is bounded by 14 days, not `historyWindow`"
+    A declined proposal's `Issue` CR is retained rather than deleted on close,
+    so its rejection comments stay queryable and can feed this history block.
+    Its owner `Task` is held from reaping by a dedicated
+    `DeclinedProposalRetention` of **14 days** - distinct from the generic
+    `RejectedRetention` (24 hours) and from `ParkRetention` (7 days). Without
+    this exception the owner `Task` would have been collected at 24 hours, not
+    7 days. Every decline is normalised onto this retained shape, including a
+    proposal closed while its owner `Task` is `parked(backlog-sweep)` - so it
+    does not matter whether you comment before closing.
+
+    After 14 days the mirror is collected and that decline drops out of
     `<proposal_history>` regardless of `historyWindow` - declined entries are
-    bounded by the 7-day Task-retention clock first, `historyWindow` second.
+    bounded by the 14-day retention clock first, `historyWindow` second. If
+    you decline more than `historyWindow` proposals inside 14 days you see
+    only the newest ones; a decline older than 14 days is gone regardless.
     This is a deliberate tradeoff, not an oversight.
 
 This is a different gate from `action: skip`: a skip is a spawned pod choosing to yield nothing
