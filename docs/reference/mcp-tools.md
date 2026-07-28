@@ -189,9 +189,18 @@ stage.
     {"type":"object","properties":{
       "task":{"type":"string"},
       "decision":{"type":"string","enum":["implement","close","discuss"]},
-      "reason":{"type":"string","description":"Required. For decision=implement, cite WHO approved and WHERE - the operator independently re-reads the thread and verifies both the identity AND the wording."}},
+      "reason":{"type":"string","description":"Required. For decision=implement, say in plain words WHO approved and WHY you read their comment as approval."},
+      "approval_citations":{"type":"array","items":{"type":"object","properties":{
+          "id":{"type":"string"},"quote":{"type":"string"}},
+        "required":["id","quote"]},
+        "description":"Required for decision=implement whenever a maintainer has commented: ONE entry per issue this task owns. id is that issue's approving comment's external_id, copied verbatim from the <comment external_id=\"...\"> attribute already in your turn-0 bundle - do NOT re-crawl to find it. quote is a VERBATIM substring of that same comment's body. YOU judge whether the comment approves, including whether a later maintainer comment withdraws an earlier one - the operator does not check recency. The operator re-reads the comment itself and refuses if it does not exist, if the author is not a verified non-bot maintainer, if your quote is not genuinely in it, or if it already approved once. Omit only when no human has commented at all."}},
      "required":["decision","reason"],"additionalProperties":false}
     ```
+
+    There is no `most_recent` clause anywhere in this schema or in the operator's check: the
+    operator verifies the citation exists, its author, and the quote - never sequence. Reading
+    whether a later maintainer comment withdraws an earlier approval is entirely on you; cite the
+    withdrawal (`decision=discuss`), do not cite the stale approval.
 
 === "brainstorm"
 

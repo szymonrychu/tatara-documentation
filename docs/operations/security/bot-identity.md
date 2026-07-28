@@ -62,10 +62,11 @@ GitHub and GitLab have dedicated noreply commit email formats for bot accounts. 
 ## Bot exclusion from approval gates
 
 `spec.scm.maintainerLogins` must NOT include `botLogin` - but the guard does not depend on that
-convention. Approval is granted by a maintainer comment whose text matches
-`Project.spec.scm.approvalPhrases`. The bot is excluded **structurally**: every ingested comment
-carries `isBot`, set from `Project.spec.scm.botLogin`, and the grammar refuses a bot-authored
-comment before it reads the text.
+convention. The clarify agent judges whether a maintainer's comment approves and cites it; the
+operator grants nothing on that judgment alone - `restapi.verifyApprovalScope` independently
+verifies **who** posted the cited comment and **when**. The bot is excluded **structurally**:
+every ingested comment carries `isBot`, set from `Project.spec.scm.botLogin`, and the operator
+refuses a bot-authored citation before it even compares the quoted text.
 
 Three independent checks keep the bot from ever satisfying the gate:
 
@@ -73,16 +74,17 @@ Three independent checks keep the bot from ever satisfying the gate:
    is `botLogin` before it becomes a pending event, so the operator's own posts - including the
    comment it writes when it parks a Task for a missing approval - can never re-drive the Task they
    describe.
-2. **The grammar refuses `isBot` before it reads the body.** A comment carrying `isBot: true` is
-   rejected on identity, not on wording. An agent pod acting as the bot cannot approve its own work
-   by typing an approval phrase into a thread.
+2. **The operator refuses `isBot` before it checks the quote.** A cited comment carrying
+   `isBot: true` is rejected on identity, not on wording. An agent pod acting as the bot cannot
+   approve its own work by citing its own comment - even a genuine approval-shaped one - as
+   evidence.
 3. **The maintainer check itself excludes the bot.** `IsMaintainer` returns `false` for `botLogin`
    even if it were mistakenly present in `maintainerLogins`, so the bot cannot satisfy the identity
    clause on its own merits either.
 
 This is enforced in code, not through configuration. See
-[Approval Gates](approval-gates.md#the-approval-grammar) for the full grammar, and for why approval
-is defined over comment text rather than over an event on a thread.
+[Approval Gates](approval-gates.md#the-approval-grammar) for the full grammar, and for why the
+operator re-derives WHO and WHEN itself rather than trusting the agent's read of the comment.
 
 ## One identity, and what it costs
 

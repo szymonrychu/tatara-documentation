@@ -1,6 +1,6 @@
 ---
 title: Approval Gates
-description: How humans stay in control of tatara agents - the intake gate, the comment-text approval grammar the operator runs, and the operator-owned merge gate.
+description: How humans stay in control of tatara agents - the intake gate, the agent-judged and operator-verified approval gate, and the operator-owned merge gate.
 ---
 
 # Approval Gates
@@ -11,7 +11,7 @@ between an issue arriving on a forge and code landing on `main`:
 | Gate | What it holds back | Who opens it |
 |---|---|---|
 | Intake | Whether an issue becomes a Task at all | The sweep's orphan predicate plus `Project.spec.scm.reporterLogins` |
-| Approval | Whether any code is written | The [approval grammar](#the-approval-grammar) below. The Task sits at `clarifying` until it passes, then moves to `approved` |
+| Approval | Whether any code is written | The [approval grammar](#the-approval-grammar) below. The clarify agent judges the thread and cites evidence; the operator independently verifies it. The Task sits at `clarifying` until that verification passes, then moves to `approved` |
 | Merge | Whether reviewed code reaches `main` | The **operator**, on an accepted `submit_outcome(verdict=approve)` from a review pod. The forge's native merge-on-green is never armed, and no MCP tool exposes a merge action |
 
 ```mermaid
@@ -22,12 +22,14 @@ sequenceDiagram
     participant AG as Agent pod
 
     OP->>SCM: open the issue thread, mirror it onto an Issue CR
-    AG->>OP: clarify: submit_outcome(decision=implement)
-    OP->>OP: run the approval grammar over every live owned Issue
-    Note over OP: no matching maintainer comment yet,<br/>park at identity-unverified
-    M->>SCM: comment "go ahead"
+    AG->>OP: clarify: submit_outcome(decision=implement, no citation yet)
+    OP->>OP: verifyApprovalScope over every live owned Issue
+    Note over OP: no comment to cite yet,<br/>park at identity-unverified
+    M->>SCM: comment "go ahead, I approve!"
     SCM->>OP: issue_comment webhook (sender=M)
-    OP->>OP: verify sender is a maintainer, not the bot,<br/>and that the comment TEXT matches an approval phrase
+    OP->>OP: sync the comment mirror,<br/>un-park the Task to conversing
+    AG->>OP: clarify: submit_outcome(decision=implement,<br/>approval_citations=[{id, quote}])
+    OP->>OP: verify structurally: citation exists, author is a<br/>verified non-bot maintainer, quote occurs verbatim,<br/>not already consumed
     OP->>OP: pin ApprovalEvidence on the Issue CR,<br/>Issue.status.status = approved
     OP->>AG: spawn the implement pod
     AG->>SCM: push a branch, open a PR
@@ -84,35 +86,47 @@ allowlisted reporter who is not a maintainer can open an issue and talk to a
 
 ## Gate 2: The approval grammar { #the-approval-grammar }
 
-Approval is not a label. **Approval is a comment, whose text the operator
-reads.**
+Approval is not a label, and it is not a wordlist match either. **A maintainer
+comment is always required. The clarify agent judges whether it approves; the
+operator independently verifies the structural facts the agent's judgment
+rests on.** The operator has no wordlist and does no text matching of its own -
+it never decides what a comment *means*. It only checks that the comment the
+agent cited is real, whose it is, and that the quoted text is genuinely there.
+
+The agent's side, `submit_outcome(decision=implement, ...)`:
+
+- `reason` says in plain words **who** approved and **why** the agent read
+  their comment that way.
+- `approval_citations` carries, for every Issue the Task owns, one
+  `{id, quote}` pair: `id` is that Issue's approving comment's forge
+  `external_id`, copied verbatim from the turn-0 bundle; `quote` is a verbatim
+  substring of that comment's body.
 
 The operator sets `Issue.status.status = approved` only when **all** of the
-following hold:
+following hold, run by `restapi.verifyApprovalScope` over **every** owned
+Issue - this is the single grant path; there is no other:
 
-1. A `clarify` Task for this Issue submitted `decision=implement`. That is the
-   agent's judgment on scope, and it is a precondition, never an approval.
+1. A `clarify` Task for this Issue submitted `decision=implement` with a
+   citation. That is the agent's judgment on scope and meaning, and it is a
+   precondition, never itself an approval.
 2. **Scope.** *Every* Issue the Task owns that is still live - `state == "open"`
-   and `status` not in (`done`, `rejected`) - carries valid evidence per clause
-   3. Not one of them. Every live one. One `lgtm` on one issue does not approve
-   a Task spanning six repositories. Narrowing to live issues is deliberate: a
-   human closing one issue of a multi-issue Task must not make approval require
-   a phrase on a closed thread, forever.
-3. For each such Issue there exists a comment `C` on its thread such that:
-    a. `C.author` is in the effective maintainer set, **and**
+   and `status` not in (`done`, `rejected`) - carries a citation that passes
+   clause 3. Not one of them. Every live one. One citation on one issue does
+   not approve a Task spanning six repositories. Narrowing to live issues is
+   deliberate: a human closing one issue of a multi-issue Task must not make
+   approval require fresh evidence on a closed thread, forever.
+3. For the cited comment `C` on that Issue's thread:
+    a. `C` **exists** on that Issue - the operator looks it up by
+       `external_id` in its own mirror (`Issue.status.comments`), never by
+       trusting the agent's say-so.
+    b. `C.author` is in the effective maintainer set, **and**
        `C.author != Project.spec.scm.botLogin` - the bot is excluded
        structurally, not by convention - **and** `IsMaintainer(project, repo,
        C.author)` passes. That check is closed by default and fails closed.
-    b. `C` is the **most recent** maintainer-authored comment on that thread. An
-       older approval sitting behind a newer maintainer objection does not
-       approve.
-    c. The comment's normalised body carries the phrase as an **anchored,
-       whole-line match**. Normalisation lowercases the body, strips fenced code
-       blocks, strips quoted (`>`) lines, strips markdown emphasis around a run,
-       and strips trailing emoji and whitespace. Some line of the result must
-       then match `^\s*(<phrase>)[\s.!]*$` for a phrase in
-       `Project.spec.scm.approvalPhrases`. **The comment must consist of the
-       phrase, not merely contain it.**
+    c. The `quote` the agent cited **really occurs**, verbatim, as a substring
+       of `C.body` as the operator itself holds it. No normalisation, no
+       fuzzy match: the operator does not need to understand the text, only
+       to confirm the agent did not fabricate it.
     d. `C.externalId` is not the comment id already recorded in
        `Issue.status.approval.commentId`. **Approval evidence is single-use**: a
        consumed comment cannot approve a second time.
@@ -126,59 +140,59 @@ status:
     login: szymonrychu
     commentId: "1234567"
     createdAt: "2026-07-12T10:02:00Z"
-    phrase: "go ahead"
+    phrase: "go ahead, I approve!"
 ```
 
-`approvalPhrases` defaults, when unset, to `approve`, `approved`, `go ahead`,
-`lgtm`, `ship it`, `implement it`. **An empty list means the defaults; it can
-never mean "any text approves."**
+`phrase` here is the agent's cited quote, not a match against any configured
+wordlist - the `Project.spec.scm` field that used to hold a closed phrase
+list is gone, and there is no replacement: what approves is the maintainer's
+comment as the agent read it and the operator verified it, not membership in
+a closed set of strings.
 
-### Why the match is anchored
+### There is no most-recent-comment requirement, and that is deliberate
 
-A substring match is not a gate. Under one, every sentence below approves the
-work:
+Clause 3 does **not** require the cited comment to be the thread's most recent
+maintainer comment. Requiring that would deadlock an ordinary thread: a
+maintainer who writes "go ahead, I approve!" and later adds "thanks - ping me
+when the PR is up" has given unambiguous consent, but that later comment is not
+itself a go-ahead, so a most-recent-only check could never be satisfied and the
+Task would park forever with no path out.
 
-| Comment | Substring match | Anchored match |
-|---|---|---|
-| `go ahead` | approves | **approves** |
-| `LGTM` | approves | **approves** (emphasis and case are normalised away) |
-| `I can't approve this until the tests pass` | **approves** | rejected |
-| `don't go ahead with this` | **approves** | rejected |
-| `> go ahead` (quoting someone else) | **approves** | rejected - quoted lines are stripped |
-| ``` `go ahead` ``` inside a code fence | **approves** | rejected - fences are stripped |
+Whether a later maintainer comment actually **withdraws** an earlier approval
+is an intent question, and intent is the agent's job under this design, not the
+operator's - the operator only checks structure. A clarify pod that reads a
+later maintainer comment as a withdrawal or qualification of an earlier
+approval must submit `decision=discuss`, not cite the stale approval. This is a
+real, accepted narrowing of the operator's backstop relative to the old
+wordlist grammar's "most recent wins" rule: a misjudging agent that cites a
+genuinely-superseded approval is not caught structurally. See
+[Prompt-Injection Defenses](prompt-injection.md#residual-risk-in-the-approval-gate-accepted)
+for the full accounting of what is and is not covered.
 
-And because clause 3b takes the maintainer's *most recent* comment, under a
-substring match the maintainer's own corrective follow-up would approve the work
-they were objecting to.
+### When the citation check runs
 
-A negation blocklist was rejected outright. Blocklists lose: the same argument
-that makes the close-directive filter an allowlist applies here verbatim.
-
-Emphasis-stripping is not a nicety either. Without it, `**LGTM**` - which is how
-humans actually write it - fails the anchor, and the Task drops into a park it
-cannot leave without a second comment.
-
-### When the grammar runs
-
-The grammar is not a one-shot check at `clarify` outcome time. It is evaluated
-at **both** of:
+The check is not a one-shot at `clarify` outcome time. It runs at **both** of:
 
 1. `clarify`'s `submit_outcome(decision=implement)`, and
-2. **every non-bot event on a Task parked at `identity-unverified`** - that is,
-   every time a human says something on a thread the platform is waiting on.
+2. **every non-bot event on a Task parked at `identity-unverified`** un-parks
+   the Task to `conversing`, spawning a fresh clarify pod - it does not grant
+   approval by itself. That pod reads the refreshed thread and submits its own
+   `decision=implement` with a fresh citation through the same gate.
 
-Evaluating it only at (1) would leave the normal path broken, not just an attack
-path: `clarify` asks for approval while the maintainer is asleep, the grammar
-fails, the Task parks - and the maintainer's "go ahead" the next morning would
-land on a Task that never re-reads its thread.
+The webhook path never grants approval on its own any more: it only puts a
+live agent back in front of the human who just commented. There used to be two
+grant paths - one at `clarify` outcome time, one on the webhook comment path -
+and they have collapsed into the single `restapi.verifyApprovalScope` call.
+Collapsing them removes a whole class of the two paths ever disagreeing with
+each other.
 
 ### When it fails
 
-If any clause fails, the Task parks with `stageReason=identity-unverified` and
-the operator comments on the issue naming exactly what was missing. **That
-comment is bot-authored, so it can never un-park the Task the operator just
-parked.** The bot is filtered out of the event queue and out of the grammar,
-twice over.
+If any check fails, the Task parks with `stageReason=identity-unverified` -
+**HTTP 200, not an error** - and the operator comments on the issue naming
+exactly what was missing. **That comment is bot-authored, so it can never
+un-park the Task the operator just parked.** The bot is filtered out of the
+event queue and out of the check, twice over.
 
 ### Approval is not sticky
 
@@ -188,20 +202,35 @@ creating one, or through a `refine` fold adopting one - **resets the Task out of
 agent cannot widen its own mandate by adopting work after the gate closed behind
 it.
 
-!!! danger "Presence is not consent. Text is."
+!!! danger "Presence is not consent. A citation is not a grant."
     Before the 2026-07-11 hardening, the operator's `approvingMaintainer()`
     returned a maintainer-authored comment **without reading it**. A maintainer
     who commented "this looks like spam" on a thread thereby approved the work.
-    Clause 3c is the fix, and it is the reason approval is defined as a grammar
-    over text rather than as an event on a thread.
+    The fix that followed added a literal phrase-match wordlist; this design
+    replaces the wordlist itself. The agent now reads the comment and judges
+    its meaning, and the operator verifies the structural facts underneath
+    that judgment - who posted the cited comment, and that the quoted text is
+    genuinely there - rather than matching text against a closed vocabulary.
 
 !!! warning "Fail closed: an empty `maintainerLogins` approves nothing, ever"
     `spec.scm.maintainerLogins` is **closed by default**. An empty or unset list
     means the project has no maintainers, so no comment can ever satisfy clause
-    3a, no evidence is ever pinned, and no Issue ever advances into
+    3b, no evidence is ever pinned, and no Issue ever advances into
     implementation. A project must name its maintainers before tatara will write
     a line of code against it. There is no "any human" fallback here, unlike the
     intake gate.
+
+### The one carve-out with no comment to cite: `autoApproveTataraProposals`
+
+`autoApproveTataraProposals` is **unchanged** by this design. It is the one
+path where `ApprovalEvidence` is pinned with no maintainer comment at all: a
+bot-authored proposal issue (from `brainstorm` or an `incident` filing), on a
+project that opts in, is auto-approved with `login: <tatara:auto>` and
+`commentId: ""`, and `auto: true` is stamped so the transition is queryable
+without log-scraping. It exists alongside the citation check above, not
+instead of it - a maintainer comment on an auto-approvable issue still routes
+through the normal citation path, and the carve-out only fires when there is no
+maintainer comment for the agent to cite in the first place.
 
 ## Labels are write-only
 
@@ -355,11 +384,12 @@ flowchart TD
     B -- author allowed --> C[clarify pod reads the thread]
     C -- decision: reject --> D([Issue closed, status rejected])
     C -- decision: clarify --> E[Task stays at clarifying]
-    C -- decision: implement --> F{Approval grammar passes\non EVERY live owned Issue?}
-    F -- no --> P[parked: identity-unverified\noperator comments what is missing]
+    C -- "decision: implement\n+ approval_citations" --> F{verifyApprovalScope:\ncitation checks pass\non EVERY live owned Issue?}
+    F -- no --> P[parked: identity-unverified\noperator comments what is missing\nHTTP 200, not an error]
     F -- yes --> G[ApprovalEvidence pinned\nstage: approved]
     P --> H{Non-bot comment\narrives on the thread}
-    H --> F
+    H --> R[un-park to conversing,\nfresh clarify pod re-decides]
+    R --> C
     E --> H
     G --> I[implement pod opens a PR]
     I --> J[review pod submits a verdict]

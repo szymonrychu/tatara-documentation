@@ -29,7 +29,7 @@ Every `Repository` CR must reference a Project. Every `Task`, `QueuedEvent`, `Is
 | `maxBundleBytes` | `int` | `400000` | no | Hard byte budget for a rendered [context bundle](context-bundle.md#the-byte-budget) (~100k tokens). Oldest comments elide first, behind an explicit marker; no summarization, no model call. Minimum `50000`. |
 | `agent` | [`AgentSpec`](#agentspec) | see below | no | Configuration for the claude-code-wrapper agent pods this project spawns. |
 | `memory` | [`MemorySpec`](#memoryspec) | see below | no | Size of the per-project memory stack (Postgres + Neo4j). |
-| `scm` | [`ScmSpec`](#scmspec) | - | no | SCM provider binding, approval phrases, labels, and cron schedules. |
+| `scm` | [`ScmSpec`](#scmspec) | - | no | SCM provider binding, maintainer/reporter allowlists, labels, and cron schedules. |
 | `grafana` | [`GrafanaSpec`](#grafanaspec) | disabled | no | Optional Grafana integration for incident-response tasks. |
 | `documentation` | [`DocumentationSpec`](#documentationspec) | disabled | no | On-switch and docs-target repo for the nightly documentation agent. Requires `scm.cron.documentation.schedule` to also be set - see [`scm.cron.documentation`](#scmcrondocumentation). |
 | `queue` | [`QueueSpec`](#queuespec) | derived | no | Fine-grained admission queue tuning. |
@@ -202,9 +202,8 @@ Binds the project to an SCM provider and configures the full set of operational 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `maintainerLogins` | `[]string` | `[]` | Trusted human maintainer accounts. The operator's **only** approval path is a maintainer's comment whose text matches `approvalPhrases` - see [Approval gates](../operations/security/approval-gates.md#the-approval-grammar) for the full grammar. **Closed by default:** an empty list means no login is a maintainer, so nothing can ever be approved and no issue advances out of `clarifying`. Overridable per-repository via `RepositorySpec.maintainerLogins`. |
+| `maintainerLogins` | `[]string` | `[]` | Trusted human maintainer accounts. The operator's **only** approval path is a maintainer's comment: the clarify agent judges whether it approves and cites it (a comment id plus a verbatim quote), and the operator independently verifies the citation - see [Approval gates](../operations/security/approval-gates.md#the-approval-grammar) for the full grammar. **Closed by default:** an empty list means no login is a maintainer, so nothing can ever be approved and no issue advances out of `clarifying`. Overridable per-repository via `RepositorySpec.maintainerLogins`. |
 | `reporterLogins` | `[]string` | `[]` | Allowlist of accounts whose issues and issue comments the operator will act on. When non-empty, issues or comments from any account not in this list (and not a bot or maintainer) are silently dropped at intake. Prevents unknown third parties from driving the lifecycle via prompt injection. When empty, any author is accepted. Overridable per-repository via `RepositorySpec.reporterLogins`. |
-| `approvalPhrases` | `[]string` | `lgtm`, `approve`, `approved`, `ship it`, `go ahead`, `go`, `implement it` | The closed wordlist an approving maintainer comment must match. The match is **anchored whole-line**, not a substring: some line of the normalised comment body must consist of the phrase (`^\s*(<phrase>)[\s.!]*$`), not merely mention it - "I can't approve this until tests pass" does not match `approve`. Empty means the default list; it can **never** mean "any text approves". Max 20 entries, min length 2. |
 
 !!! warning "Prompt-injection defense"
     Set `reporterLogins` in any project exposed to untrusted contributors. Without it, anyone who can open an issue can drive agent behavior.
@@ -401,7 +400,7 @@ spec:
     extraEnvs:
       - name: CUSTOM_REGISTRY
         value: harbor.example.com
-    # (16)!
+    # (15)!
     mcpServers:
       - name: internal-search
         url: http://internal-search.svc.cluster.local:8080/mcp
@@ -419,7 +418,7 @@ spec:
     url: https://grafana.example.com
     secretRef: grafana-tatara-credentials
 
-  # (15)!
+  # (14)!
   documentation:
     enabled: true
     repo: https://github.com/my-org/my-docs
@@ -453,11 +452,6 @@ spec:
       - alice
       - bob
       - charlie
-    # (13)!
-    approvalPhrases:
-      - lgtm
-      - approved
-      - ship it
     prReactionScope: labeledOrMentioned
     guidance: |
       This project runs the platform team's infrastructure repos.
@@ -480,7 +474,7 @@ spec:
         schedule: "0 9 * * 1"
         targetOpenProposals: 3
         historyWindow: 20
-        # (14)!
+        # (13)!
         staleProposalDays: 14
         sources:
           - memory
@@ -499,12 +493,11 @@ spec:
 5. Grafana integration provisions a `grafana-mcp` sidecar for incident-response tasks. The `secretRef` Secret must contain `serviceAccountToken` and `webhookSecret` keys.
 6. `capacity` overrides the `maxConcurrentAgents` default for queue admission. `alertCapacity` reserves dedicated slots so incident tasks are never starved by a backlog of normal-priority work.
 7. `botLogin` must match the SCM account whose token is in `scmSecretRef`. Mismatches cause the operator to misidentify its own comments as human input.
-8. `maintainerLogins` + `reporterLogins` form the security perimeter. `maintainerLogins` is not optional hardening here - it is **required** for anything to ever be approved: empty means no login can ever satisfy the approval-grammar check, so no issue advances out of `clarifying`.
+8. `maintainerLogins` + `reporterLogins` form the security perimeter. `maintainerLogins` is not optional hardening here - it is **required** for anything to ever be approved: empty means no login can ever be cited as a maintainer approval, so no issue advances out of `clarifying`.
 9. MR scan every 15 minutes, issue scan hourly, brainstorm weekly on Monday morning, documentation nightly.
 10. `agentPodTTLSeconds` bounds one pod's life, not the Task. `maxNewTasksPerSweep` and `maxOpenTasks` are separate Task-minting budgets from the pod-concurrency budget (`maxConcurrentAgents`) above. `maxBundleBytes` is the hard byte cap on every rendered context bundle.
 11. `maxTurnsPerPod` bounds one pod run (the `implement` agent kind is exempt); `maxTurnsPerTask` is the lifetime backstop across every pod, all kinds included. `maxReviewRounds`/`maxHumanReviewRounds` bound the two distinct review re-entry cycles; `maxPodRecreations` bounds respawns within one stage. `modelByKind`/`effortByKind` tier specific **agent** kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a released tag to avoid `main` drift; on the `tatara`/`infrastructure` projects it is rewritten automatically by the `tatara-agent-skills` release pipeline, not hand-bumped.
 12. `tokenBudget` is off unless this block is present with `enabled: true`. `customWindow` mode meters absolute tokens against `tokenLimit` inside the cron-anchored `resetSchedule`/`windowDuration` window; `claudeSubscription` mode gates on wrapper-reported Claude usage percentages instead (see [TokenBudgetSpec](#tokenbudgetspec)).
-13. `approvalPhrases` is the closed wordlist an approving maintainer comment must anchor-match. Omit to use the built-in default list.
-14. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `targetOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
-15. `documentation.enabled` + `documentation.repo` is the real on-switch and docs-target repo for the nightly documentation agent; `scm.cron.documentation.schedule` (above) is a separate, also-required gate - the cron `CronActivity` has no `enabled` field of its own.
-16. `mcpServers` bring-your-own-MCPs into this project's agent pods, on top of the platform-owned servers. The operator only checks shape (`name` pattern, `type` enum); the wrapper does the actual merge and drops any entry that collides with a reserved platform name.
+13. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `targetOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
+14. `documentation.enabled` + `documentation.repo` is the real on-switch and docs-target repo for the nightly documentation agent; `scm.cron.documentation.schedule` (above) is a separate, also-required gate - the cron `CronActivity` has no `enabled` field of its own.
+15. `mcpServers` bring-your-own-MCPs into this project's agent pods, on top of the platform-owned servers. The operator only checks shape (`name` pattern, `type` enum); the wrapper does the actual merge and drops any entry that collides with a reserved platform name.

@@ -11,10 +11,12 @@ conversation, write code, open pull requests, review the diff, and hand off to a
 deploy sequence the operator drives on its own.
 
 Be precise about where the human sits in that loop. The one hard human gate is **maintainer
-approval**, and it is expressed as **comment text**, not a label: a project maintainer's most
-recent comment on every issue the Task owns must match one of `Project.spec.scm.approvalPhrases`.
-Labels are a write-only projection of that state, never a source of it - nothing reads a label to
-decide whether work proceeds. After that comment-driven approval is recorded, the
+approval**, and it is expressed as a **comment**, not a label: a project maintainer must comment
+on every issue the Task owns, the clarify agent judges whether that comment approves and cites it
+(a comment id plus a verbatim quote), and the operator independently verifies the citation before
+any code is written. Labels are a write-only projection of that state, never a source of it -
+nothing reads a label to decide whether work proceeds. After that comment-driven approval is
+recorded, the
 implement-review-merge-deploy path is autonomous, but the merge step itself is not agent-driven:
 the **operator** merges, from a review pod's accepted verdict, never from a native SCM approval
 the agent posted itself - agents never call a merge API and never post an `APPROVE`/`REQUEST_CHANGES`
@@ -134,25 +136,30 @@ read it for what actually gates a merge, not for an aspirational stronger postur
 
 ### Gate 1: The approval grammar
 
-The load-bearing human gate is a comment, matched by a precise grammar, never a label. For a Task
-to leave `clarifying` and enter `approved`, **every** Issue it owns that is still open and not
-already `done`/`rejected` must have a most-recent maintainer comment whose normalized body
-*consists of* one of `Project.spec.scm.approvalPhrases` - not merely contains it. The match is
-anchored and whole-line, after stripping fenced code, quoted lines, markdown emphasis, and
-trailing whitespace/emoji, so `**LGTM**` on its own line approves and `I can't approve this until
-the tests pass` does not. The comment's author must be in the effective maintainer set and must
-not be the bot - an agent can never approve its own proposal. Each approval comment is single-use:
-a Task cannot be re-approved off a comment ID it already consumed. On a successful match, the
-operator stamps `Issue.status.approval` with the matched comment's author, ID, and phrase, and
-once every owned Issue is approved, `Task.status.stage` moves to `approved`.
+The load-bearing human gate is a comment, judged by the agent and independently verified by the
+operator, never a label and never a wordlist match. For a Task to leave `clarifying` and enter
+`approved`, **every** Issue it owns that is still open and not already `done`/`rejected` must have
+a citation - a comment `external_id` plus a verbatim quote from its body - that the operator's
+`restapi.verifyApprovalScope` accepts. The clarify agent judges whether a comment approves and
+supplies the citation; the operator then checks, for that cited comment: does it exist on the
+Issue, is its author in the effective maintainer set and not the bot, does the quoted text really
+occur in the body the operator itself holds, and has it not already been consumed. There is no
+requirement that the cited comment be the thread's most recent maintainer comment - reading
+whether a later comment withdraws an earlier approval is the agent's job, not a structural check
+the operator runs. Each approval comment is single-use: a Task cannot be re-approved off a comment
+ID it already consumed. On a successful check, the operator stamps `Issue.status.approval` with
+the cited comment's author, ID, and quote, and once every owned Issue is approved,
+`Task.status.stage` moves to `approved`.
 
 `clarify` is a **live polling pod**: on a new issue or a comment on an existing one, the operator
-spawns a clarify pod that converses on the thread. That conversation shapes the plan and can be as
-persuasive as it likes, but it is informational - even when clarify concludes the issue is
-implement-ready and calls `submit_outcome(decision=implement)`, the operator evaluates the
-approval grammar independently. No matching comment on every owned Issue means the Task parks at
-`parked(identity-unverified)`, and the grammar is re-evaluated on every subsequent non-bot comment
-until it passes or the Task ages out.
+spawns a clarify pod that converses on the thread. That conversation shapes the plan and its
+judgment decides *which* comment to cite as approval, but the judgment does not itself release
+the gate - even when clarify concludes the issue is implement-ready and calls
+`submit_outcome(decision=implement, approval_citations=...)`, the operator evaluates the citation
+independently. No citation that passes on every owned Issue means the Task parks at
+`parked(identity-unverified)` (HTTP 200, not an error), and the next non-bot comment un-parks the
+Task to `conversing`, spawning a fresh clarify pod that reads the refreshed thread and submits its
+own fresh citation - the check itself is never re-run directly against a stale judgment.
 
 Approval is **not sticky**: a Task that acquires a new Issue after reaching `approved` - via a
 fresh `issue_write(create)` or a refine fold adopting one - drops back to `clarifying`, because
@@ -161,8 +168,10 @@ by adopting work after the gate.
 
 Brainstorm-authored proposals go through this exact same gate, not a separate one: each accepted
 proposal from a `brainstorm` Task becomes its own new `clarify` Task, and clarifying-to-approved
-requires the identical maintainer-comment match. There is no bot-writable label that substitutes
-for it.
+requires the identical agent-cited, operator-verified comment. There is no bot-writable label that
+substitutes for it. The one carve-out with no comment to cite at all is
+`autoApproveTataraProposals`, unchanged by this design - see
+[Approval Gates](../operations/security/approval-gates.md#the-one-carve-out-with-no-comment-to-cite-autoapprovetataraproposals).
 
 !!! warning "Clarify cannot answer its own comments"
     The self-comment guard lives in the permission layer, not skill prose: the MCP comment action
@@ -274,7 +283,7 @@ inert until configured - do not read the "Mechanism" column as an always-on guar
 | Concern | Mechanism | Default state |
 |---|---|---|
 | Third-party prompt injection | `reporterLogins` allowlist: only the bot, maintainers, and allowed reporters can drive agent intake | **Opt-in.** Empty `reporterLogins` (default) accepts any author. Populate the list to activate the filter. |
-| Unauthorized approve-to-implement | The C.6 approval grammar: anchored whole-line phrase match, from the effective maintainer set, structurally excluding the bot, single-use per comment | **Closed by default.** Empty `maintainerLogins` means no login is a maintainer, so no comment can ever satisfy the grammar and nothing advances past `clarifying`. Populate the list to allow any approvals at all. |
+| Unauthorized approve-to-implement | The approval grammar: the clarify agent cites a comment, and the operator independently verifies it exists, its author is a verified non-bot maintainer, and its quoted text is genuinely there - no wordlist, single-use per comment | **Closed by default.** Empty `maintainerLogins` means no login is a maintainer, so no comment can ever satisfy the check and nothing advances past `clarifying`. Populate the list to allow any approvals at all. |
 | Autonomous merge | The operator merges only once a review pod's `submit_outcome(approve)` is accepted and required checks are green - never from an agent-posted native review, and never via a merge API any agent can call | On by construction. `review` structurally cannot approve its own diff (separate pod, separate turn), and a `review`-kind Task (a human's own PR) can never reach `merging` at all. See [Gate 2](#gate-2-review-approval-then-an-operator-driven-merge). |
 | SCM write-back authorship | Egress verified operator-side against the live PR/MR state, not trusted from the webhook payload alone | Always on. |
 | Webhook authenticity | **GitHub:** HMAC-SHA256 over the body. **GitLab:** constant-time comparison of the shared-secret token header (a replayable bearer, not an HMAC over the payload - materially weaker). | Always on (both require a configured secret). |

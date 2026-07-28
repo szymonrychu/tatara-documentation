@@ -445,14 +445,18 @@ event is dropped at enqueue, so the comment the operator posts when it parks a
 Task cannot land in that Task's `pendingEvents` and un-park it. Without that
 filter, parking is a loop.
 
-**2. `identity-unverified` has a comment-driven release, and a comment alone
-never triggers it.** A non-bot comment triggers a fresh sync of that issue's
-comments from the forge, then a re-run of the anchored, whole-line
-[approval grammar](../operations/security/approval-gates.md#the-approval-grammar)
-against the refreshed thread. Only a comment that **passes the grammar** un-parks
-it - maintainer identity, anchored whole-line phrase, single-use evidence. That is
-a stronger gate than "the webhook wrote a status", because the operator re-reads
-and re-verifies the thread itself.
+**2. `identity-unverified` has a comment-driven release, but the release is a
+live agent, not a grant.** A non-bot comment triggers a fresh sync of that
+issue's comments from the forge, then un-parks the Task to `conversing`,
+spawning a fresh `clarify` pod against the refreshed thread. That pod forms its
+own judgment and submits its own citation through
+[the approval grammar](../operations/security/approval-gates.md#the-approval-grammar)
+- the operator independently verifies the citation exists, its author is a
+verified non-bot maintainer, the quoted text is genuinely there, and it has not
+already been consumed. The webhook path itself never grants approval; it only
+gets a live agent back in front of the human who just commented. That is a
+stronger gate than "the webhook wrote a status", because the operator re-reads
+and re-verifies the cited comment itself, on every `submit_outcome`.
 
 **3. A `review`-kind Task can never reach `implementing` or `merging`, by any
 path.** Not on the un-park edge, and not on the primary one:

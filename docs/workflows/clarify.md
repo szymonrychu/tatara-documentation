@@ -45,29 +45,43 @@ is bounded by the `clarifying` stage's own 24h budget: past that, the Task parks
 The pod's only path forward is `submit_outcome`:
 
 ```json
-{"decision":"implement","reason":"szymonrychu commented \"go ahead\" on tatara-operator#291"}
+{"decision":"implement","reason":"szymonrychu approved on tatara-operator#291",
+ "approval_citations":[{"id":"c-291-4","quote":"go ahead, ship it"}]}
 ```
 or `decision: close` or `decision: discuss`. `reason` is **required on every decision** - for
-`decision=implement` it must cite **who** approved and **where**, because the operator does not
-take the agent's word for it: it independently re-reads the live thread and re-runs the
-[approval grammar](../operations/security/approval-gates.md#the-approval-grammar) - maintainer
-identity, an anchored whole-line phrase, single-use evidence - against every live Issue the Task
-owns. **The agent's report of approval is not approval.** Clarify never writes code, and it
+`decision=implement` it must say in plain words **who** approved and **why** the agent read
+their comment that way, and `approval_citations` must carry, for every Issue the Task owns, that
+comment's forge `external_id` plus a verbatim quote from its body. The agent **judges meaning**;
+the operator does not take that judgment on faith. It independently re-reads the cited comment
+against its own mirror and checks
+[the facts, not the intent](../operations/security/approval-gates.md#the-approval-grammar): the
+comment exists on that Issue, its author is a verified non-bot maintainer, the quoted text truly
+occurs in the body the operator holds, and the comment has not already been consumed as evidence
+- for **every** live Issue the Task owns. The operator does **not** require the citation to be the
+thread's most recent maintainer comment - an earlier "go ahead" is still citable even if a later
+maintainer comment merely says "thanks, ping me when the PR is up." Reading whether a later
+comment actually *withdraws* an earlier approval is an intent question, and intent is squarely the
+agent's job: a clarify pod that sees a later maintainer comment retracting or qualifying an
+earlier approval must submit `decision=discuss`, not `decision=implement` citing the stale
+approval. **The agent's report of approval is not approval.** Clarify never writes code, and it
 never grants itself the approval it is waiting on.
 
 | From | Outcome | To |
 |---|---|---|
-| `clarifying` | `decision=implement`, grammar passes on every live owned Issue | `approved` |
-| `clarifying` | `decision=implement`, grammar fails | `parked(identity-unverified)` |
+| `clarifying` | `decision=implement`, the operator's citation check passes on every live owned Issue | `approved` |
+| `clarifying` | `decision=implement`, the citation check fails on any owned Issue | `parked(identity-unverified)` (HTTP 200, not an error) |
 | `clarifying` | `decision=discuss` | `parked(awaiting-human)` |
 | `clarifying` | `decision=close` | `rejected` - the operator closes the issue |
 | `clarifying` | stage-work budget (24h) elapses | `parked(awaiting-human)` |
 
 A Task parked at `identity-unverified` is not stuck forever: the **next** non-bot comment on the
-thread makes the operator re-sync that Issue's comments from the forge and re-run the grammar
-against the refreshed thread. It either passes - stamping approval and moving to `approved` - or
-the Task stays parked, silently, until the next human comment. The operator's own park comment
-can never satisfy this itself: bot-authored events are dropped before they ever reach the queue.
+thread makes the operator re-sync that Issue's comments from the forge and un-park the Task to
+`conversing`, spawning a fresh clarify pod against the refreshed thread. The webhook path itself
+never grants approval - it only gets a live agent back in front of the human who just commented.
+That pod reads the new comment, forms its own judgment, and submits `decision=implement` with a
+fresh citation through the same single gate (`restapi.verifyApprovalScope`) every other clarify
+pod goes through. The operator's own park comment can never satisfy this itself: bot-authored
+events are dropped before they ever reach the queue.
 
 !!! warning "Approval is not sticky"
     An Issue the Task acquires *after* reaching `approved` - via `issue_write(create)`, or a
@@ -83,5 +97,6 @@ can never satisfy this itself: bot-authored events are dropped before they ever 
     scope-change or already-delivered notices - see [Refine](refine.md).
 
 See [Approval Gates](../operations/security/approval-gates.md) for the full grammar, why the
-match is anchored, and why labels play no part in it at all - `issue_write` has no `labels`
-parameter and no `status` parameter, so clarify has no path to self-approve by any tool call.
+operator re-derives WHO and WHEN instead of trusting the agent's read, and why labels play no
+part in it at all - `issue_write` has no `labels` parameter and no `status` parameter, so
+clarify has no path to self-approve by any tool call.
