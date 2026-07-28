@@ -87,12 +87,12 @@ The Task keeps re-spawning `clarify` on every new non-bot comment on the thread 
 
 ### Path C - implement
 
-The agent decides this is worth building and calls `submit_outcome(decision=implement, reason=..., approval_citations=[{id, quote}, ...])`, citing who approved and why for every Issue it owns. The operator independently re-reads its own mirror and checks, for **every** Issue this Task owns that is still open: does the cited comment exist, is its author in `maintainerLogins` and never the bot, does the quoted text genuinely occur in the comment body, and has it not already been consumed? There is no requirement that the cited comment be the thread's most recent maintainer comment - the agent, not the operator, is responsible for reading whether a later comment withdraws an earlier approval.
+The agent decides this is worth building and calls `submit_outcome(decision=implement, reason=..., approval_citations=[{id, quote}, ...])`, citing who approved and why for every **live** Issue it owns that a maintainer has actually commented on - an Issue with no maintainer comment has nothing to cite and is not required to carry one; it either satisfies the `autoApproveTataraProposals` carve-out or refuses on its own. The operator independently re-reads its own mirror and checks, for every live Issue this Task owns that has a citation to check: does the cited comment exist, is its author in `maintainerLogins` and never the bot, does the quoted text genuinely occur in the comment body, and has it not already been consumed? There is no requirement that the cited comment be the thread's most recent maintainer comment - the agent, not the operator, is responsible for reading whether a later comment withdraws an earlier approval.
 
-- **Every owned Issue passes:** the operator stamps `Issue.status.approval` on each and moves `Task.status.stage` to `approved`.
-- **Any owned Issue fails:** the Task parks `identity-unverified` (HTTP 200, not an error). The next non-bot comment on any owned thread un-parks the Task to `conversing`, spawning a fresh clarify pod that submits its own fresh citation.
+- **Every live owned Issue passes:** the operator stamps `Issue.status.approval` on each and moves `Task.status.stage` to `approved`.
+- **Any live owned Issue fails:** the Task parks `identity-unverified` (HTTP 200, not an error, and nothing is posted to the issue thread - the refusal lives only in the operator's logs, notes and metrics). The next non-bot comment on any owned thread un-parks the Task to `conversing`, spawning a fresh clarify pod that submits its own fresh citation.
 
-**Task stage:** `approved` (only once the citation check passes for every owned Issue; otherwise `parked(identity-unverified)`)
+**Task stage:** `approved` (only once the citation check passes for every live owned Issue; otherwise `parked(identity-unverified)`)
 
 ---
 
@@ -215,7 +215,7 @@ sequenceDiagram
 
 ## What to do when a Task is Parked
 
-A Task enters `parked` (with a specific `stageReason`) when the operator cannot proceed without human input: the approval grammar failed, the review-round cap was hit, CI never went green within the stage deadline, or the agent explicitly declined. The operator posts a comment explaining what stopped it, unless the [comment turn-taking gate](../operations/security/bot-identity.md) withholds it - e.g. a Task that keeps parking on the same unanswered thread stops re-commenting after the first note.
+A Task enters `parked` (with a specific `stageReason`) when the operator cannot proceed without human input: the citation check found nothing to grant, the review-round cap was hit, CI never went green within the stage deadline, or the agent explicitly declined. Not every park reason posts a comment explaining itself: `identity-unverified` specifically posts **nothing** to the issue thread - the refusal is visible only in the operator's own logs, `Task.status.notes`, and the `operator_approval_refused_total` metric, never on the thread a maintainer is watching. Where the operator does post an explanatory comment for other park reasons, the [comment turn-taking gate](../operations/security/bot-identity.md) can still withhold a repeat one - e.g. a Task that keeps parking on the same unanswered thread stops re-commenting after the first note - but for `identity-unverified` there was never a first note to begin with.
 
 Your options:
 

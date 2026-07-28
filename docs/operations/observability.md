@@ -241,8 +241,8 @@ for anything that needs to outlive a Task's TTL (up to 48h for `delivered`, 7d f
 | `action` | Fields |
 |---|---|
 | `task_note` | `task`, `agent_kind`, `note_kind`, `bytes` |
-| `approval_verified` | `task`, `issue`, `maintainer_login`, `comment_external_id`, `matched_phrase`, `auto` |
-| `approval_refused` | `task`, `issue`, `reason` |
+| `approval_verified` | `task`, `issue`, `maintainer_login`, `cited_comment_id`, `auto` |
+| `approval_refused` | `issue`, `reason` (no `task` field on this line) |
 | `task_delivered` | `task`, `stats` (tokens, turns, pod_runs, wall_seconds, agents_run, issue_count, mr_count) |
 | `stage_transition` | `task`, `from`, `to`, `stage_reason` |
 

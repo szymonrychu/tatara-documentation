@@ -243,8 +243,11 @@ The stage carries a `stageReason` explaining what happened (`admission-starved`,
 others). See [Task reference](../reference/task.md) for the full stage and reason list; do not
 re-derive it here, it changes independently of this page.
 
-In no case does the operator close an issue, force-push, or retry silently: every give-up is a
-posted comment explaining what was attempted.
+In no case does the operator close an issue, force-push, or retry silently, and the
+`stageReason` is always recorded on the Task CR - but not every give-up reaches the issue thread
+itself as a comment. `identity-unverified` in particular posts nothing to the thread: the refusal
+is visible in the operator's logs, `Task.status.notes`, and its metrics, never as a comment a
+maintainer would see.
 
 ---
 
@@ -255,10 +258,13 @@ independently verified by the operator - never a label. Labels still exist, but 
 operator-written, one-way projection of `Issue.status.status` - readable by any tool with SCM
 access (CI systems, dashboards, humans scrolling the issue list) but never a source of truth. No
 code path reads a label to produce a status; a test asserts it. This is a deliberate architectural
-choice: a comment carries authorship, timestamp, and content the operator can verify against the
-maintainer set and the cited quote's presence in the comment body, in a way a label-apply event
-alone cannot - a label-add tells you *that* someone acted, a cited comment tells you *what* they
-approved and lets a human read the reasoning next to the decision.
+choice: a comment carries authorship and content the operator can verify - against the maintainer
+set and the cited quote's presence in the comment body - in a way a label-apply event alone
+cannot. A comment also carries a timestamp, but the operator does not verify anything against it:
+there is no recency check, by design (see
+[why](../operations/security/approval-gates.md#there-is-no-most-recent-comment-requirement-and-that-is-deliberate)).
+A label-add tells you *that* someone acted; a cited comment tells you *what* they approved and lets
+a human read the reasoning next to the decision.
 
 **Comments create a natural audit log.** Every agent action - triage decision, design question,
 scope summary, merge outcome, give-up reason - appears as an issue or PR comment, or as a

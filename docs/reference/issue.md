@@ -115,7 +115,7 @@ pull the full body with `scm_read(kind=comments)`.
 | `login` | `string` | A verified maintainer login - never the bot |
 | `commentId` | `string` | The `Comment.externalId` the clarify agent cited, which the operator confirmed exists on this Issue |
 | `createdAt` | `Time` | When the cited comment was posted |
-| `phrase` | `string` | The agent's cited quote, confirmed by the operator to occur verbatim in the comment body - not a match against any configured wordlist |
+| `phrase` | `string` | The **matched** form of the agent's cited quote: as submitted if that literal substring occurred in the comment body, or html-unescaped if only that form matched (the turn-0 bundle XML-escapes comment bodies, so a maintainer's `let's ship it` can render as `let&apos;s ship it`). Not necessarily byte-identical to what the agent submitted, and not a match against any configured wordlist |
 | `auto` | `bool` | Set on the `autoApproveTataraProposals` path. When `true`, `login` is the sentinel `<tatara:auto>` and `commentId` is empty |
 
 `ApprovalEvidence` is **single-use**: a later approval must cite a comment

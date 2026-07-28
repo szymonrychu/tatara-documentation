@@ -302,11 +302,15 @@ accepted the submit.
 
 !!! danger "A bot-authored event is never enqueued"
     The enqueue filter drops any event whose author is
-    `Project.spec.scm.botLogin`. This is load-bearing, not hygiene: the operator
-    posts a comment on the issue when it parks a Task. Without the filter, that
-    comment lands in the Task's own `pendingEvents` and **un-parks the Task the
-    operator just parked** - a fully autonomous loop, driven by nothing but the
-    platform talking to itself.
+    `Project.spec.scm.botLogin`. This is load-bearing, not hygiene: several
+    paths do post as the bot - an agent's own `issue_write(action=comment)`,
+    the operator's deploy-timeout notice, the terminal reap comment - and
+    without the filter any of those would land in the Task's own
+    `pendingEvents` and **un-park the Task the platform just parked itself
+    into**, a fully autonomous loop driven by nothing but the platform talking
+    to itself. Not every park reason posts a comment at all -
+    `identity-unverified` posts nothing to the thread - but the filter has to
+    hold uniformly regardless of which reasons do.
 
 ---
 

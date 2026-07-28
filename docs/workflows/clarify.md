@@ -50,15 +50,17 @@ The pod's only path forward is `submit_outcome`:
 ```
 or `decision: close` or `decision: discuss`. `reason` is **required on every decision** - for
 `decision=implement` it must say in plain words **who** approved and **why** the agent read
-their comment that way, and `approval_citations` must carry, for every Issue the Task owns, that
-comment's forge `external_id` plus a verbatim quote from its body. The agent **judges meaning**;
-the operator does not take that judgment on faith. It independently re-reads the cited comment
-against its own mirror and checks
+their comment that way, and `approval_citations` must carry one entry - that comment's forge
+`external_id` plus a verbatim quote from its body - for every **live** Issue the Task owns **that a
+maintainer has commented on at all**. An Issue with no maintainer comment is not a citation gap: it
+either satisfies the `autoApproveTataraProposals` carve-out or refuses outright, and there is
+nothing to cite either way. The agent **judges meaning**; the operator does not take that judgment
+on faith. It independently re-reads each cited comment against its own mirror and checks
 [the facts, not the intent](../operations/security/approval-gates.md#the-approval-grammar): the
 comment exists on that Issue, its author is a verified non-bot maintainer, the quoted text truly
-occurs in the body the operator holds, and the comment has not already been consumed as evidence
-- for **every** live Issue the Task owns. The operator does **not** require the citation to be the
-thread's most recent maintainer comment - an earlier "go ahead" is still citable even if a later
+occurs in the body the operator holds, and the comment has not already been consumed as evidence -
+for **every** live Issue the Task owns that has one to check. The operator does **not** require
+the citation to be the thread's most recent maintainer comment - an earlier "go ahead" is still citable even if a later
 maintainer comment merely says "thanks, ping me when the PR is up." Reading whether a later
 comment actually *withdraws* an earlier approval is an intent question, and intent is squarely the
 agent's job: a clarify pod that sees a later maintainer comment retracting or qualifying an
@@ -80,8 +82,12 @@ thread makes the operator re-sync that Issue's comments from the forge and un-pa
 never grants approval - it only gets a live agent back in front of the human who just commented.
 That pod reads the new comment, forms its own judgment, and submits `decision=implement` with a
 fresh citation through the same single gate (`restapi.verifyApprovalScope`) every other clarify
-pod goes through. The operator's own park comment can never satisfy this itself: bot-authored
-events are dropped before they ever reach the queue.
+pod goes through. **Nothing is posted to the thread when the park happens** - the refusal is
+recorded only in `Task.status.notes`, a log line, and a metric - so a genuinely new human comment
+is what un-parks it, not a reaction to any prompt from the operator. Even where the platform does
+post as the bot elsewhere (an agent's own `issue_write` comment, a deploy-timeout notice), those
+events are dropped before they ever reach the queue, so the platform can never un-park a Task by
+talking to itself.
 
 !!! warning "Approval is not sticky"
     An Issue the Task acquires *after* reaching `approved` - via `issue_write(create)`, or a

@@ -97,39 +97,51 @@ The agent's side, `submit_outcome(decision=implement, ...)`:
 
 - `reason` says in plain words **who** approved and **why** the agent read
   their comment that way.
-- `approval_citations` carries, for every Issue the Task owns, one
-  `{id, quote}` pair: `id` is that Issue's approving comment's forge
-  `external_id`, copied verbatim from the turn-0 bundle; `quote` is a verbatim
-  substring of that comment's body.
+- `approval_citations` carries one `{id, quote}` pair for every Issue the Task
+  owns **that a maintainer has commented on at all**: `id` is that comment's
+  forge `external_id`, copied verbatim from the turn-0 bundle; `quote` is a
+  verbatim substring of that comment's body. It is not unconditionally
+  required - see clause 3 below for what happens on an Issue with no
+  maintainer comment.
 
 The operator sets `Issue.status.status = approved` only when **all** of the
-following hold, run by `restapi.verifyApprovalScope` over **every** owned
-Issue - this is the single grant path; there is no other:
+following hold, run by `restapi.verifyApprovalScope` over **every LIVE owned**
+Issue - `state == "open"` and `status` not in (`done`, `rejected`); an
+out-of-scope Issue is filtered out of the loop entirely and never has to
+produce evidence - this is the single grant path; there is no other:
 
-1. A `clarify` Task for this Issue submitted `decision=implement` with a
-   citation. That is the agent's judgment on scope and meaning, and it is a
-   precondition, never itself an approval.
-2. **Scope.** *Every* Issue the Task owns that is still live - `state == "open"`
-   and `status` not in (`done`, `rejected`) - carries a citation that passes
-   clause 3. Not one of them. Every live one. One citation on one issue does
-   not approve a Task spanning six repositories. Narrowing to live issues is
-   deliberate: a human closing one issue of a multi-issue Task must not make
-   approval require fresh evidence on a closed thread, forever.
-3. For the cited comment `C` on that Issue's thread:
-    a. `C` **exists** on that Issue - the operator looks it up by
-       `external_id` in its own mirror (`Issue.status.comments`), never by
-       trusting the agent's say-so.
-    b. `C.author` is in the effective maintainer set, **and**
-       `C.author != Project.spec.scm.botLogin` - the bot is excluded
-       structurally, not by convention - **and** `IsMaintainer(project, repo,
-       C.author)` passes. That check is closed by default and fails closed.
-    c. The `quote` the agent cited **really occurs**, verbatim, as a substring
-       of `C.body` as the operator itself holds it. No normalisation, no
-       fuzzy match: the operator does not need to understand the text, only
-       to confirm the agent did not fabricate it.
-    d. `C.externalId` is not the comment id already recorded in
-       `Issue.status.approval.commentId`. **Approval evidence is single-use**: a
-       consumed comment cannot approve a second time.
+1. A `clarify` Task submitted `decision=implement`. That is the agent's
+   judgment on scope and meaning, and it is a precondition, never itself an
+   approval.
+2. **Scope.** *Every* live Issue the Task owns satisfies clause 3. Not one of
+   them. Every live one. One citation on one issue does not approve a Task
+   spanning six repositories. Narrowing to live issues is deliberate: a human
+   closing one issue of a multi-issue Task must not make approval require
+   fresh evidence on a closed thread, forever.
+3. For each live Issue:
+    a. **No maintainer has commented on it at all.** Citations are irrelevant
+       in this arm: the Issue either satisfies the
+       [`autoApproveTataraProposals` carve-out](#the-one-carve-out-with-no-comment-to-cite-autoapprovetataraproposals)
+       or the whole check refuses with no-maintainer-comment. There is nothing
+       for the agent to cite and nothing citing can fix.
+    b. **A maintainer has commented**, so a citation is now required. For the
+       cited comment `C`:
+        i. `C` **exists** on that Issue - the operator looks it up by
+           `external_id` in its own mirror (`Issue.status.comments`), never by
+           trusting the agent's say-so, and its author is a maintainer,
+           structurally excluding the bot.
+        ii. The `quote` the agent cited **really occurs** as a substring of
+            `C.body` as the operator itself holds it. The operator tries the
+            quote exactly as submitted, then - because the turn-0 bundle
+            XML-escapes comment bodies (contract E.1), so a maintainer's
+            "let's ship it" renders as `let&apos;s ship it` and an agent
+            citing that verbatim would otherwise be refused - the quote
+            `html.UnescapeString`'d. Both are literal containment tests
+            against the operator's own mirror; neither is a fuzzy match, and a
+            fabricated quote fails both.
+        iii. `C.externalId` is not the comment id already recorded in
+             `Issue.status.approval.commentId`. **Approval evidence is
+             single-use**: a consumed comment cannot approve a second time.
 4. The operator then pins the evidence on the Issue CR, and once every owned
    Issue is approved, moves the Task to the `approved` stage:
 
@@ -143,11 +155,14 @@ status:
     phrase: "go ahead, I approve!"
 ```
 
-`phrase` here is the agent's cited quote, not a match against any configured
-wordlist - the `Project.spec.scm` field that used to hold a closed phrase
-list is gone, and there is no replacement: what approves is the maintainer's
-comment as the agent read it and the operator verified it, not membership in
-a closed set of strings.
+`phrase` here is the **matched** form of the agent's quote - exactly as
+submitted if that literal substring occurred in the comment body, or the
+`html.UnescapeString`'d form if only that one occurred - not necessarily
+byte-identical to what the agent submitted, and not a match against any
+configured wordlist. The `Project.spec.scm` field that used to hold a closed
+phrase list is gone, and there is no replacement: what approves is the
+maintainer's comment as the agent read it and the operator verified it, not
+membership in a closed set of strings.
 
 ### There is no most-recent-comment requirement, and that is deliberate
 
@@ -189,10 +204,14 @@ each other.
 ### When it fails
 
 If any check fails, the Task parks with `stageReason=identity-unverified` -
-**HTTP 200, not an error** - and the operator comments on the issue naming
-exactly what was missing. **That comment is bot-authored, so it can never
-un-park the Task the operator just parked.** The bot is filtered out of the
-event queue and out of the check, twice over.
+**HTTP 200, not an error.** **Nothing is posted to the issue thread.** The
+refusal reason is recorded as a `Task.status.notes` entry, a WARN log line, and
+the `operator_approval_refused_total{reason}` counter - visible to whoever
+operates the platform, not to the maintainer waiting on the thread. Un-parking
+requires a genuinely new non-bot comment on the thread, and there is nothing on
+the thread itself prompting anyone to post one; if the situation is not
+otherwise noticed, the Task can sit parked until it ages out at
+`ParkRetention` and is reaped.
 
 ### Approval is not sticky
 
@@ -214,11 +233,11 @@ it.
 
 !!! warning "Fail closed: an empty `maintainerLogins` approves nothing, ever"
     `spec.scm.maintainerLogins` is **closed by default**. An empty or unset list
-    means the project has no maintainers, so no comment can ever satisfy clause
-    3b, no evidence is ever pinned, and no Issue ever advances into
-    implementation. A project must name its maintainers before tatara will write
-    a line of code against it. There is no "any human" fallback here, unlike the
-    intake gate.
+    means the project has no maintainers, so no comment on the thread is ever
+    a maintainer comment, no citation can ever pass the identity check, no
+    evidence is ever pinned, and no Issue ever advances into implementation. A
+    project must name its maintainers before tatara will write a line of code
+    against it. There is no "any human" fallback here, unlike the intake gate.
 
 ### The one carve-out with no comment to cite: `autoApproveTataraProposals`
 
@@ -385,7 +404,7 @@ flowchart TD
     C -- decision: reject --> D([Issue closed, status rejected])
     C -- decision: clarify --> E[Task stays at clarifying]
     C -- "decision: implement\n+ approval_citations" --> F{verifyApprovalScope:\ncitation checks pass\non EVERY live owned Issue?}
-    F -- no --> P[parked: identity-unverified\noperator comments what is missing\nHTTP 200, not an error]
+    F -- no --> P[parked: identity-unverified\nHTTP 200, not an error\nnothing posted to the thread]
     F -- yes --> G[ApprovalEvidence pinned\nstage: approved]
     P --> H{Non-bot comment\narrives on the thread}
     H --> R[un-park to conversing,\nfresh clarify pod re-decides]

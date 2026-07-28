@@ -220,9 +220,10 @@ it never decides what a comment *means*.
 | An `approve` from an account not in `maintainerLogins` | Does not approve. Identity is checked before the quoted text is even compared |
 | The bot posting `go ahead` | Does not approve. The bot is excluded structurally, before the quoted text is compared |
 
-If no citation passes, the Task parks and the operator comments on the issue saying what it was
-missing. Post a comment at any time afterwards and the next comment un-parks the Task to a fresh
-clarify pod, which picks up the conversation where it left off. See
+If no citation passes, the Task parks. **Nothing is posted to the issue** - the reason lives only
+in the operator's logs and metrics, not on the thread, so there is no prompt telling anyone a
+comment is needed. Post a comment at any time afterwards and the next comment un-parks the Task to
+a fresh clarify pod, which picks up the conversation where it left off. See
 [Approval Gates](../operations/security/approval-gates.md#the-approval-grammar) for the full
 rules, including why there is no requirement that the cited comment be the thread's most recent
 one.
