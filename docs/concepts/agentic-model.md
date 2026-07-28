@@ -250,15 +250,15 @@ posted comment explaining what was attempted.
 
 ## Why comments are the control plane, and labels are not
 
-Every human decision in tatara is expressed as **comment text**, matched against a configured
-grammar. Labels still exist, but only as an operator-written, one-way projection of
-`Issue.status.status` - readable by any tool with SCM access (CI systems, dashboards, humans
-scrolling the issue list) but never a source of truth. No code path reads a label to produce a
-status; a test asserts it. This is a deliberate architectural choice: a comment carries authorship,
-timestamp, and content the operator can verify against the maintainer set and the exact phrase
-grammar, in a way a label-apply event alone cannot - a label-add tells you *that* someone acted, a
-matched comment tells you *what* they approved and lets a human read the reasoning next to the
-decision.
+Every human decision in tatara is expressed as **comment text**, judged by the agent and
+independently verified by the operator - never a label. Labels still exist, but only as an
+operator-written, one-way projection of `Issue.status.status` - readable by any tool with SCM
+access (CI systems, dashboards, humans scrolling the issue list) but never a source of truth. No
+code path reads a label to produce a status; a test asserts it. This is a deliberate architectural
+choice: a comment carries authorship, timestamp, and content the operator can verify against the
+maintainer set and the cited quote's presence in the comment body, in a way a label-apply event
+alone cannot - a label-add tells you *that* someone acted, a cited comment tells you *what* they
+approved and lets a human read the reasoning next to the decision.
 
 **Comments create a natural audit log.** Every agent action - triage decision, design question,
 scope summary, merge outcome, give-up reason - appears as an issue or PR comment, or as a

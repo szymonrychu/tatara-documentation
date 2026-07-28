@@ -64,7 +64,8 @@ GitHub and GitLab have dedicated noreply commit email formats for bot accounts. 
 `spec.scm.maintainerLogins` must NOT include `botLogin` - but the guard does not depend on that
 convention. The clarify agent judges whether a maintainer's comment approves and cites it; the
 operator grants nothing on that judgment alone - `restapi.verifyApprovalScope` independently
-verifies **who** posted the cited comment and **when**. The bot is excluded **structurally**:
+verifies **who** posted the cited comment and **that the quoted text is really there**. The bot
+is excluded **structurally**:
 every ingested comment carries `isBot`, set from `Project.spec.scm.botLogin`, and the operator
 refuses a bot-authored citation before it even compares the quoted text.
 
@@ -84,7 +85,8 @@ Three independent checks keep the bot from ever satisfying the gate:
 
 This is enforced in code, not through configuration. See
 [Approval Gates](approval-gates.md#the-approval-grammar) for the full grammar, and for why the
-operator re-derives WHO and WHEN itself rather than trusting the agent's read of the comment.
+operator re-derives who posted the cited comment and that the quote is really there, itself,
+rather than trusting the agent's read of the comment.
 
 ## One identity, and what it costs
 

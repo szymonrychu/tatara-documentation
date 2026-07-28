@@ -399,13 +399,27 @@ unpark(t):
   case "identity-unverified":
       on a NON-BOT pendingEvent:
           FIRST: sync that issue's comments from the forge.
-          THEN:  re-evaluate the approval grammar against the refreshed thread.
-          It PASSES -> Issue.status.approval is stamped, status=approved, and
-                       require: len(owned Issues with state == open) > 0
-                                // the empty set is not a licence here either
-                       if EVERY owned open Issue is approved -> implementing
-          It FAILS  -> stay parked. Do NOT comment again. Re-evaluate on the
-                       next human comment.
+          THEN:  require: conversingHasRoom
+                          else -> STAY PARKED, decline=no-conversing-room
+                                  // the pendingEvent is RETAINED; the next
+                                  // comment or reconcile pass retries
+                 if t.spec.kind == "review":
+                     require: no owned MR is merged
+                              else -> STAY PARKED, decline=merged-mr
+                     require: status.humanReviewRounds < 5
+                              else -> STAY PARKED. Do not spawn another pod.
+                     status.humanReviewRounds++
+                 -> conversing   // a fresh clarify pod reads the refreshed
+                                 // thread
+          // This edge NEVER grants approval and NEVER reaches implementing or
+          // approved directly - it only puts a live agent back in front of
+          // the human who just commented. The spawned pod forms its own
+          // judgment and submits its own submit_outcome(decision=implement,
+          // approval_citations=...) against the refreshed thread. Only THAT
+          // submit_outcome, independently re-verified by
+          // restapi.verifyApprovalScope, can stamp Issue.status.approval and
+          // move the Task toward approved. There is no path in this case
+          // block that stamps approval directly.
 
   case "merge-timeout":
       require: status.mergeReentries < maxMergeReentries (3)

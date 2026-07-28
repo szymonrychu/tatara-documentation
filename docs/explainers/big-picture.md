@@ -85,7 +85,7 @@ The agent proposes, grooms, implements, and reviews its own work, and can even s
 
 A CI/CD script runs fixed commands. Tatara runs an AI agent that reasons about your specific codebase. The agent reads your code, understands your patterns, asks clarifying questions if the spec is ambiguous, and writes code in your style.
 
-The tradeoff is that agent behavior is probabilistic, not deterministic. The approval gates exist precisely because of this: `clarify`'s conversation shapes the direction, but implementation itself waits on a maintainer's approval-phrase comment before any code is written, and a separate `review` pod reviews the code before the operator merges it on green CI - with a no-direct-push branch-protection rule as the available defense-in-depth (a single bot identity means branch protection cannot require an approving review; see [Approval Gates](../operations/security/approval-gates.md)).
+The tradeoff is that agent behavior is probabilistic, not deterministic. The approval gates exist precisely because of this: `clarify`'s conversation shapes the direction, but implementation itself waits on a maintainer's comment the agent cites and the operator independently verifies before any code is written, and a separate `review` pod reviews the code before the operator merges it on green CI - with a no-direct-push branch-protection rule as the available defense-in-depth (a single bot identity means branch protection cannot require an approving review; see [Approval Gates](../operations/security/approval-gates.md)).
 
 ## What could go wrong (and how tatara handles it)
 

@@ -216,7 +216,7 @@ it never decides what a comment *means*.
 |---|---|
 | `go ahead, I approve!` | **Approves**, if the clarify agent cites it - the agent reads this as unambiguous consent |
 | `LGTM` | **Approves**, for the same reason. There is no required phrase; the agent judges ordinary language |
-| `I can't approve this until the tests pass` | Does not approve. A clarify agent reading this correctly does not cite it - and if one mistakenly did, the operator still confirms the quote exists in the comment, but confirming existence is not confirming meaning |
+| `I can't approve this until the tests pass` | **Should not approve** - this is a judgment call, not a structural guarantee. A clarify agent reading this correctly does not cite it. The operator only confirms the quote exists in the comment it is given; it does not judge meaning, so a misjudging agent that cited this anyway would not be caught here |
 | An `approve` from an account not in `maintainerLogins` | Does not approve. Identity is checked before the quoted text is even compared |
 | The bot posting `go ahead` | Does not approve. The bot is excluded structurally, before the quoted text is compared |
 

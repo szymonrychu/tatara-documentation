@@ -169,12 +169,19 @@ sequenceDiagram
 
     Op->>Pod: schedule clarify pod
     Pod->>GH: fetch issue + comments
-    Pod-->>Op: submit_outcome(decision=implement)
-    Op->>Op: independently re-check the approval grammar (not yet satisfied)
+    Pod-->>Op: submit_outcome(decision=implement, no citation yet)
+    Op->>Op: verifyApprovalScope: no comment to cite; park(identity-unverified)
 
-    M->>GH: Comment: "go ahead"
+    M->>GH: Comment: "go ahead, I approve!"
     GH-->>Op: webhook (comment event)
-    Op->>Op: verify M in maintainerLogins, phrase matches, not previously consumed
+    Op->>Op: sync comment mirror; un-park to conversing (no grant here)
+
+    Note over Op,Pod: fresh clarify pod running
+
+    Op->>Pod: schedule clarify pod
+    Pod->>GH: fetch refreshed comments
+    Pod-->>Op: submit_outcome(decision=implement, approval_citations=[{id, quote}])
+    Op->>Op: verify M in maintainerLogins, quote occurs verbatim, not previously consumed
     Op->>Op: Issue.status.approval stamped; stage=approved
 
     Op->>Op: admitted; stage=implementing

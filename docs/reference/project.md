@@ -195,7 +195,7 @@ Binds the project to an SCM provider and configures the full set of operational 
 |---|---|---|---|---|
 | `provider` | `string` | - | **yes** | SCM provider. One of `github` or `gitlab`. |
 | `owner` | `string` | - | **yes** | GitHub organization or user name, or GitLab group/user path. All enrolled repositories must live under this owner. |
-| `botLogin` | `string` | - | **yes** | SCM username of the bot account. Used to distinguish bot comments from human comments: a comment authored by `botLogin` can never satisfy the approval grammar's maintainer check (C.6), and it is dropped at intake before it can re-trigger the Task the bot just acted on (the [mid-flight events](context-bundle.md#mid-flight-events) enqueue filter). |
+| `botLogin` | `string` | - | **yes** | SCM username of the bot account. Used to distinguish bot comments from human comments: a comment authored by `botLogin` can never satisfy the approval grammar's maintainer check, and it is dropped at intake before it can re-trigger the Task the bot just acted on (the [mid-flight events](context-bundle.md#mid-flight-events) enqueue filter). |
 | `botEmail` | `string` | - | no | Git commit author email for agent commits. When empty the wrapper's default identity applies. |
 
 #### Approval gates

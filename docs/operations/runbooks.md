@@ -88,9 +88,9 @@ after the clarify agent reported `decision=implement`, but the Task never advanc
 **Explanation:** The clarify agent judged that a maintainer approved and cited a comment as
 evidence - the forge comment's `external_id` plus a verbatim quote from its body - for every
 Issue the Task owns. The operator does not take that judgment on faith: `restapi.verifyApprovalScope`
-independently re-derives, for **every** owned Issue, whether the cited comment exists, who
-posted it, and when. One of those structural checks failed, so the operator refused the
-citation and parked the Task rather than granting an unverified mandate.
+independently re-derives, for **every** owned Issue, whether the cited comment exists, who posted
+it, and whether the quoted text is really there. One of those structural checks failed, so the
+operator refused the citation and parked the Task rather than granting an unverified mandate.
 
 **Diagnosis, in order:**
 

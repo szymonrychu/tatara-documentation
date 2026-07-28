@@ -159,13 +159,23 @@ something other than the withdrawal it is. The structural checks stop a non-main
 fabrication - the agent cannot invent a comment or a quote that is not really there - but it does
 not close selective quoting or a wrong verdict over text that is genuinely present.
 
-This is not a hypothetical channel. CVE-2025-59041 / GHSA-j4h9-wv2m-wrf7 ("Comment and Control",
-CVSS 9.4) demonstrated exactly this class of attack - indirect prompt injection via issue bodies,
-comments, and hidden HTML comments - against Claude Code, Gemini CLI, and Copilot, all running as
-GitHub Actions. The channel this platform's agents read from is the same channel that
-vulnerability used.
+This is not a hypothetical channel. The "Comment and Control" research
+([writeup](https://oddguan.com/blog/comment-and-control-prompt-injection-credential-theft-claude-code-gemini-cli-github-copilot/),
+[SecurityWeek coverage](https://www.securityweek.com/claude-code-gemini-cli-github-copilot-agents-vulnerable-to-prompt-injection-via-comments/))
+demonstrated exactly this class of attack: indirect prompt injection via issue and PR comments
+against Claude Code, Gemini CLI, and GitHub Copilot's agent. The channel this platform's agents
+read from is the same channel that research targeted.
 
-A second LLM adjudicator re-checking the first agent's verdict was considered and rejected: a
+A negation-adjacency regex around the quoted span - scanning for "not", "don't", "no" and similar
+tokens near the cited text and refusing the citation if one is found - was considered and
+rejected. It resurrects string matching in exactly the form this design deletes, and it
+false-positives on ordinary English: "no problem, go ahead" contains a negation token immediately
+before a real approval and would be wrongly refused, while a more careful "I would not say no to
+this" is itself an approval a naive scanner reads as a double negative it cannot resolve. Reading
+whether a comment approves is a language-understanding problem, not a pattern-matching one, and a
+regex answering it is the same category error the wordlist was.
+
+A second LLM adjudicator re-checking the first agent's verdict was also considered and rejected: a
 second model reading the same untrusted thread is attackable by the same injection, and it adds a
 second surface without removing the first. It would also double the cost of every clarify turn for
 a check that does not change what it is fundamentally unable to see.

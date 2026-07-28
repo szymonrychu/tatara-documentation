@@ -40,7 +40,8 @@ context. The operator - never an agent - drives every transition between them, p
     ---
 
     Live triage/human-conversation pod on a new issue or any comment on a live Task's umbrella;
-    runs the approval grammar before a Task can advance to `approved`.
+    cites a maintainer comment as approval, which the operator's approval grammar independently
+    verifies before a Task can advance to `approved`.
 
     [:octicons-arrow-right-24: Clarify](clarify.md)
 

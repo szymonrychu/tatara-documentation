@@ -97,6 +97,7 @@ events are dropped before they ever reach the queue.
     scope-change or already-delivered notices - see [Refine](refine.md).
 
 See [Approval Gates](../operations/security/approval-gates.md) for the full grammar, why the
-operator re-derives WHO and WHEN instead of trusting the agent's read, and why labels play no
-part in it at all - `issue_write` has no `labels` parameter and no `status` parameter, so
-clarify has no path to self-approve by any tool call.
+operator re-derives who posted the cited comment and that the quote is really there instead of
+trusting the agent's read, and why labels play no part in it at all - `issue_write` has no
+`labels` parameter and no `status` parameter, so clarify has no path to self-approve by any tool
+call.
