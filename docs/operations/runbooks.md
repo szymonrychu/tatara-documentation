@@ -1366,3 +1366,106 @@ kubectl -n tatara logs deploy/tatara-operator | grep review_outcome | tail -50
 Spot-check a handful of the sonnet-5 review Tasks' actual PR/MR comments for substance, not just the verdict field.
 
 **Fix:** If a manual read of recent sonnet-5 reviews confirms shallow approvals, revert the `review` agent kind's `modelByKind` tiering back to Opus for the affected project (see the model/effort tiering section of [Tuning](tuning.md)) - the alert's own summary points at this as the G5 incident goal. If the sample looks genuinely clean, this may be a legitimately quiet review pool crossing the volume gate for the first time; reassess after another window rather than reverting immediately.
+
+---
+
+<a id="tatara-runbook-node-pod-network-partitioned"></a><!-- alert: "Node pod network partitioned" status: covered -->
+## Node pod network partitioned
+
+**Symptoms:** `Node pod network partitioned` (`alerts/tatara-nodes.yaml`, critical) fires when more than 80% of the pod-network scrape targets on one node are down for 10m while the node itself still reports `Ready`. Gated on a floor of at least 3 targets on that node, so a node carrying one or two pods cannot trip it on a single dead endpoint.
+
+**What it means:** The node's pod overlay (flannel VXLAN on this cluster) is partitioned. The kubelet is host-network, so it keeps being scraped and keeps reporting the node `Ready`; everything running on the pod network becomes unreachable. That asymmetry is the entire signal - from every other angle the node looks healthy, which is why tatara-helmfile#239 ran for roughly 9 hours with the only page being `Operator replica missing`.
+
+The known cause on this cluster is a NIC link flap: when the link drops, flannel recreates the `flannel.1` VXLAN device without restoring the per-peer ARP/FDB/route entries, and pod-to-pod traffic across that node stops. The USB NICs that caused the original incident were replaced on every node except the NAS on 2026-07-27, so do not diagnose a new occurrence as that specific hardware fault - but the flannel recovery gap is unfixed and applies to any node whose link drops for any reason.
+
+**Diagnosis:**
+```promql
+count by (node) ((up == 0) * on (namespace, pod) group_left(node) kube_pod_info{node!=""})
+/
+count by (node) (up * on (namespace, pod) group_left(node) kube_pod_info{node!=""})
+```
+Healthy baseline is 0.09 to 0.28 per node - there are always some dead endpoints. A partitioned node reads close to 1.0.
+
+```bash
+kubectl get nodes -o wide
+kubectl -n tatara get pods -o wide --field-selector spec.nodeName=<node>
+kubectl get events -A --field-selector involvedObject.kind=Node | tail -30
+```
+Confirm the split: the node is `Ready`, its kubelet metrics are current, and its pods are the ones failing. If a host-network pod on the node is also down, this is not a pod-overlay partition and you are looking at a node-level fault instead.
+
+**Fix:** Cordon and drain the node, which moves the workload onto healthy nodes and is the remediation both tatara-helmfile#239 and #245 prescribe:
+```bash
+kubectl cordon <node>
+kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+```
+tatara-operator has a PodDisruptionBudget (`maxUnavailable: 1`) so the drain cannot take its HA to zero, and CloudNativePG maintains its own budgets for the memory Postgres clusters. Once drained, restart the CNI on that node to force flannel to rebuild the VXLAN peer state, verify pod-to-pod traffic across it, then uncordon.
+
+Node-problem-detector and an automated remediation path would catch this class without a human, and are the standing ask recorded in tatara-helmfile's `ROADMAP.md`; they belong to the infra helmfile, not to any tatara-* repo.
+
+---
+
+<a id="tatara-runbook-node-volume-plane-wedged"></a><!-- alert: "Node volume plane wedged" status: covered -->
+## Node volume plane wedged
+
+**Symptoms:** `Node volume plane wedged` (`alerts/tatara-nodes.yaml`, critical) fires when a `Ready` node's kubelet has wanted to mount at least one more volume than it has actually mounted, continuously for 15m.
+
+**What it means:** The kubelet's volume manager has volumes in its desired state that it cannot move into its actual state - the CSI/volume plane on that node is wedged. Pods scheduled there sit in `CreateContainerError` or `ContainerCreating` indefinitely while the node keeps reporting `Ready`, so the scheduler keeps sending it work. This is the tatara-helmfile#245 failure class, which surfaced as `failed to stat ... permission denied` against a stale CephFS mount.
+
+A single volume showing for one scrape is a mount in progress, not this condition; that is what the 15m hold is for. A real wedge persists for hours.
+
+`volume_manager_total_volumes` comes from the kubelet, which is host-network, so this rule keeps working straight through the pod-overlay partition that `Node pod network partitioned` detects.
+
+**Diagnosis:**
+```promql
+sum by (node) (volume_manager_total_volumes{state="desired_state_of_world"})
+- sum by (node) (volume_manager_total_volumes{state="actual_state_of_world"})
+```
+```bash
+kubectl get pods -A --field-selector spec.nodeName=<node> | grep -E 'CreateContainerError|ContainerCreating'
+kubectl describe pod -n <ns> <pod> | tail -30
+kubectl get events -A --field-selector involvedObject.kind=Pod | grep -i -E 'mount|volume' | tail -30
+```
+The pod `describe` names the specific PVC and the mount error. Check whether the PV still exists (`kubectl get pv <name>`) - a `VolumeFailedDelete ... still attached` event for a PV that is already gone is an ordinary teardown race for an ephemeral RBD volume, not a wedge, and should not be treated as this condition.
+
+**Fix:** Cordon and drain the node, exactly as for a pod-network partition:
+```bash
+kubectl cordon <node>
+kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+```
+Draining releases the stale mounts; if a mount does not release, the node needs a kubelet restart or a reboot before it is safe to uncordon. Verify with the PromQL above that the gap returns to 0 before uncordoning.
+
+Secondary finding from tatara-helmfile#245, still open: the memory Postgres PVCs are RWO volumes sitting on the cluster-default CephFS RWX storage class (`rook-ceph-rwx`), while the unused RBD block class `rook-ceph` would be the correct one, and a stale CephFS mount is precisely what produced the original failure. Exposing a Postgres storage class is a tatara-operator change (`PGCluster()` sets none today) and the migration is backup-and-restore, not an in-place edit.
+
+---
+
+<a id="tatara-runbook-log-collector-node-coverage-incomplete"></a><!-- alert: "Log collector node coverage incomplete" status: covered -->
+## Log collector node coverage incomplete
+
+**Symptoms:** `Log collector node coverage incomplete` (`alerts/tatara-logs.yaml`, warning) fires when the count of `Ready` nodes exceeds the count of ready log-collector pods for 30m.
+
+**What it means:** At least one `Ready` node runs no log collector, so every pod scheduled there ships no logs to Loki at all. This matters far beyond the missing lines: **every Loki-backed rule in `alerts/tatara-logs.yaml` is blind on those nodes and returns a clean zero regardless of what happened there.** An empty Loki result for a pod on an uncovered node proves nothing. The failure is self-concealing, which is exactly how the agent report in tatara-observability#79 was lost.
+
+The rule reads Prometheus, not Loki, deliberately: a Loki query cannot detect its own blind spot, because a node that ships nothing has no stream to select. kube-state-metrics is the only surface that knows about a node the collector never reached. For the same reason the rule sets `no_data_state: NoData` and `exec_err_state: Error` on itself, opting out of the Loki-shaped `Alerting` defaults the rest of that file uses.
+
+The expression is a single subtraction so that it catches both failure modes: the DaemonSet never being scheduled onto a node (desired below node count) and being scheduled but unhealthy (ready below desired).
+
+**Diagnosis:**
+```promql
+count(kube_node_status_condition{condition="Ready",status="true"} == 1)
+- (sum(kube_daemonset_status_number_ready{namespace="monitoring",daemonset=~"promtail|alloy|grafana-agent|vector|fluent-bit"}) or vector(0))
+```
+Identify which nodes are uncovered:
+```promql
+count by (node) (kube_node_info)
+count by (node) (kube_pod_info{namespace="monitoring", created_by_name="promtail"})
+```
+```bash
+kubectl -n monitoring get ds
+kubectl -n monitoring get pods -o wide -l app.kubernetes.io/name=promtail
+kubectl get nodes -o custom-columns=NAME:.metadata.name,TAINTS:.spec.taints
+```
+Cross-check in Grafana Explore that the collector's `node_name` label values cover every node; a node that has never appeared over a 7d window has never shipped a line.
+
+**Fix:** This is an infra change, not a tatara one - the log collector is not deployed by any tatara-* repo, so `tatara-helmfile` cannot fix it. Compare the collector DaemonSet's `nodeSelector` and `tolerations` against the uncovered nodes' taints. On this cluster the working reference is the `prometheus-prometheus-node-exporter` DaemonSet, which reaches every node; giving the collector the same toleration set, and dropping any restricting `nodeSelector`, is the fix. Route it to whoever owns the monitoring stack.
+
+Until it lands, treat every namespace-wide Loki query as covering only part of the fleet, and confirm which nodes a pod ran on before concluding anything from an empty log result. Escalate to the cluster maintainer if the collector owner is unclear - there is no tatara-side workaround, only the awareness this alert provides.
