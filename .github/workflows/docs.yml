@@ -31,6 +31,23 @@ jobs:
       - name: Check for stale pre-redesign terms
         run: ./scripts/check-stale-terms.sh
 
+      - name: Runbook anchor guard self-tests
+        run: python3 -m unittest discover scripts -p 'test_*.py' -v
+
+      # docs/operations/runbooks.md is a cross-repo API: alert rules in
+      # szymonrychu/tatara-observability carry a runbook_url pointing at its
+      # `tatara-runbook-*` anchors, and the incident agent follows that link as phase 2 of
+      # every incident turn. `mkdocs build --strict` validates INTERNAL links only, so an
+      # inbound link from another repo is invisible to it and a dropped anchor ships green.
+      # This asserts the anchor set is well-formed and append-only against main, so the
+      # break is caught in the PR that causes it. The explicit fetch keeps the guard from
+      # degrading into its own neutral skip when origin/main is not in the checkout.
+      - name: Fetch main for the runbook anchor guard
+        run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+
+      - name: Check runbook anchor contract
+        run: python3 scripts/check_runbook_anchors.py --base origin/main
+
       - name: Build docs (strict)
         run: mkdocs build --strict
 

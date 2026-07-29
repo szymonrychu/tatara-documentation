@@ -14,4 +14,10 @@ run = "mkdocs serve"
 run = "mkdocs build --strict"
 
 [tasks.lint]
-run = "./scripts/check-stale-terms.sh"
+run = [
+  "./scripts/check-stale-terms.sh",
+  "python3 scripts/check_runbook_anchors.py",
+]
+
+[tasks.test]
+run = "python3 -m unittest discover scripts -p 'test_*.py'"
