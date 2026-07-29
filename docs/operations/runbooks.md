@@ -1420,34 +1420,77 @@ Node-problem-detector and an automated remediation path would catch this class w
 <a id="tatara-runbook-node-volume-plane-wedged"></a><!-- alert: "Node volume plane wedged" status: covered -->
 ## Node volume plane wedged
 
-**Symptoms:** `Node volume plane wedged` (`alerts/tatara-nodes.yaml`, critical) fires when a `Ready` node's kubelet has wanted to mount at least one more volume than it has actually mounted, continuously for 15m.
+**Symptoms:** `Node volume plane wedged` (`alerts/tatara-nodes.yaml`, critical) fires when a `Ready` node's kubelet has wanted to mount at least one more volume than it has actually mounted, continuously for 15m, over and above any gap already explained by a ReadWriteOnce handoff (see below). Pods that need the affected volume(s) hang in `Pending` or `ContainerCreating` indefinitely - **not** `CreateContainerError`, despite what an earlier version of this rule's summary claimed. Only pods needing the specific stuck volume(s) are affected, not everything scheduled on the node.
 
-**What it means:** The kubelet's volume manager has volumes in its desired state that it cannot move into its actual state - the CSI/volume plane on that node is wedged. Pods scheduled there sit in `CreateContainerError` or `ContainerCreating` indefinitely while the node keeps reporting `Ready`, so the scheduler keeps sending it work. This is the tatara-helmfile#245 failure class, which surfaced as `failed to stat ... permission denied` against a stale CephFS mount.
+**What it means, and why this is now two rules, not one:** The raw desired-minus-actual gap has two possible causes with **opposite** remediations, and tatara-observability#90 caught the rule prescribing the wrong one on its very first firing:
 
-A single volume showing for one scrape is a mount in progress, not this condition; that is what the 15m hold is for. A real wedge persists for hours.
+1. **The node's own CSI/mount plane is broken** - the tatara-helmfile#245 class, which surfaced as `failed to stat ... permission denied` against a stale CephFS mount. Cordon and drain is correct here.
+2. **A ReadWriteOnce volume is mid-handoff between two pods on two different nodes** - a `RollingUpdate` Deployment created a surge pod before releasing the volume from the pod it is replacing. The node is healthy; draining it evicts innocent workloads and does not resolve anything. This case now fires its own rule with its own remediation: [PersistentVolumeClaim multi-attach deadlock](#tatara-runbook-persistentvolumeclaim-multi-attach-deadlock).
+
+This rule's expression subtracts case 2's volumes (Pending pods on this node whose RWO PVC is also referenced from a different node) before comparing against the threshold, so a pure multi-attach handoff no longer trips it at all - but the subtraction is a best-effort discriminator, not a proof, so **always confirm which case you are in before acting.**
+
+A single volume showing for one scrape is a mount in progress, not this condition; that is what the 15m hold is for. A real node-level wedge persists for hours (tatara-helmfile#245 ran for a working day).
 
 `volume_manager_total_volumes` comes from the kubelet, which is host-network, so this rule keeps working straight through the pod-overlay partition that `Node pod network partitioned` detects.
 
-**Diagnosis:**
+**Diagnosis - confirm which case you are in before touching the node:**
 ```promql
 sum by (node) (volume_manager_total_volumes{state="desired_state_of_world"})
 - sum by (node) (volume_manager_total_volumes{state="actual_state_of_world"})
 ```
 ```bash
-kubectl get pods -A --field-selector spec.nodeName=<node> | grep -E 'CreateContainerError|ContainerCreating'
+kubectl get pods -A --field-selector spec.nodeName=<node> | grep -vE 'Running|Completed'
 kubectl describe pod -n <ns> <pod> | tail -30
 kubectl get events -A --field-selector involvedObject.kind=Pod | grep -i -E 'mount|volume' | tail -30
 ```
-The pod `describe` names the specific PVC and the mount error. Check whether the PV still exists (`kubectl get pv <name>`) - a `VolumeFailedDelete ... still attached` event for a PV that is already gone is an ordinary teardown race for an ephemeral RBD volume, not a wedge, and should not be treated as this condition.
+The pod `describe` output is the discriminator:
 
-**Fix:** Cordon and drain the node, exactly as for a pod-network partition:
+- A kubelet/CSI-level error against **this** node - for example `failed to stat ... permission denied` on a stale mount (tatara-helmfile#245) - means the node itself is at fault. Proceed to **Fix** below.
+- An `attachdetach-controller` event reading `Multi-Attach error for volume ... already used by pod(s) <other-pod>` means another pod legitimately holds a ReadWriteOnce volume elsewhere. The node is healthy. **Do not drain it** - go to [PersistentVolumeClaim multi-attach deadlock](#tatara-runbook-persistentvolumeclaim-multi-attach-deadlock) instead.
+
+Also check whether the PV still exists (`kubectl get pv <name>`) - a `VolumeFailedDelete ... still attached` event for a PV that is already gone is an ordinary teardown race for an ephemeral RBD volume, not a wedge, and should not be treated as either case above.
+
+**Fix - only once a genuine node-level CSI fault is confirmed:** Cordon and drain the node, exactly as for a pod-network partition:
 ```bash
 kubectl cordon <node>
 kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
 ```
 Draining releases the stale mounts; if a mount does not release, the node needs a kubelet restart or a reboot before it is safe to uncordon. Verify with the PromQL above that the gap returns to 0 before uncordoning.
 
+Do **not** run this against a Multi-Attach handoff - the node hosting the `Pending` pod is not at fault there, and draining it evicts every other healthy pod using that node's volumes without resolving the deadlock.
+
 Secondary finding from tatara-helmfile#245, still open: the memory Postgres PVCs are RWO volumes sitting on the cluster-default CephFS RWX storage class (`rook-ceph-rwx`), while the unused RBD block class `rook-ceph` would be the correct one, and a stale CephFS mount is precisely what produced the original failure. Exposing a Postgres storage class is a tatara-operator change (`PGCluster()` sets none today) and the migration is backup-and-restore, not an in-place edit.
+
+---
+
+<a id="tatara-runbook-persistentvolumeclaim-multi-attach-deadlock"></a><!-- alert: "PersistentVolumeClaim multi-attach deadlock" status: covered -->
+## PersistentVolumeClaim multi-attach deadlock
+
+**Symptoms:** `PersistentVolumeClaim multi-attach deadlock` (`alerts/tatara-nodes.yaml`, warning) fires when a ReadWriteOnce PVC is referenced from more than one node at once, with at least one of its referencing pods `Pending`, sustained for 15m.
+
+**What it means - the circular wait:** This is a workload-level deadlock, not a node fault. A `RollingUpdate` Deployment with `maxUnavailable: 0` (surging a replacement pod before removing the old one) backed by a single-replica ReadWriteOnce PVC creates the new pod before terminating the old one. If the scheduler places the new pod on a different node than the one already holding the volume, the wait becomes circular and permanent:
+
+- the new pod cannot attach the ReadWriteOnce volume, because the old pod legitimately still holds it;
+- the old pod is not terminated until the new pod becomes `Ready`;
+- the new pod cannot become `Ready` without the volume.
+
+Nothing about this resolves on its own - it holds indefinitely until a human intervenes.
+
+**The node hosting the `Pending` pod is not at fault.** Do not cordon or drain it. See [Node volume plane wedged](#tatara-runbook-node-volume-plane-wedged) for how to tell this apart from a genuine node-level CSI fault, which needs the opposite response.
+
+**Diagnosis:**
+```bash
+kubectl -n <ns> describe pod <pending> | grep -A2 Multi-Attach
+kubectl get pvc <name> -o jsonpath='{.spec.accessModes}'
+kubectl get deploy <name> -o jsonpath='{.spec.strategy}'
+```
+The `describe pod` output names the pod that already holds the volume; the access mode confirms `ReadWriteOnce`; the strategy confirms a `RollingUpdate` with `maxUnavailable: 0` is what let the surge pod get created before the old one was torn down.
+
+**Immediate unblock:** Delete the pod still holding the volume. The `Pending` pod attaches as soon as the volume is released, and the Deployment continues its rollout normally from there.
+
+**Permanent fix:** Change the Deployment's rollout strategy so a surge pod can never be created before the old one releases the volume - either `strategy: Recreate` for any single-replica ReadWriteOnce workload, or `maxUnavailable: 1` / `maxSurge: 0` if a `RollingUpdate` is still wanted.
+
+Real example seen: `home-automation/piper`. A daily 03:30Z re-render of its pod template re-rolls the Deployment every day; most days the handoff completes within minutes, but whenever the scheduler happens to place the surge pod on a different node than the current holder, it deadlocks permanently until a human deletes the old pod and fixes the strategy. It will keep re-deadlocking daily until the Deployment's strategy is changed - this is not a one-off, it is latent every day the fix is not applied.
 
 ---
 
