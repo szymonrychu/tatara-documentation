@@ -241,8 +241,8 @@ for anything that needs to outlive a Task's TTL (up to 48h for `delivered`, 7d f
 | `action` | Fields |
 |---|---|
 | `task_note` | `task`, `agent_kind`, `note_kind`, `bytes` |
-| `approval_verified` | `task`, `issue`, `maintainer_login`, `comment_external_id`, `matched_phrase`, `auto` |
-| `approval_refused` | `task`, `issue`, `reason` |
+| `approval_verified` | `task`, `issue`, `maintainer_login`, `cited_comment_id`, `auto` |
+| `approval_refused` | `issue`, `reason` (no `task` field on this line) |
 | `task_delivered` | `task`, `stats` (tokens, turns, pod_runs, wall_seconds, agents_run, issue_count, mr_count) |
 | `stage_transition` | `task`, `from`, `to`, `stage_reason` |
 
@@ -250,9 +250,10 @@ for anything that needs to outlive a Task's TTL (up to 48h for `delivered`, 7d f
 through the stage machine at the cost of one `slog.Info` call per transition - useful when a
 Task has already been reaped and `operator_task_stage_age_seconds` no longer has a series for
 it. Approval-gate audit fields (`approval_verified` / `approval_refused`) are the log-side
-complement to the grammar itself - see
+complement to the check itself - see
 [Security: approval gates](../operations/security/approval-gates.md#the-approval-grammar) for
-the grammar the maintainer's comment is checked against.
+what the operator verifies about the cited comment: that it exists, its author, and that the
+quoted text is really there.
 
 ---
 

@@ -82,27 +82,40 @@ kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{
 ## `parked(identity-unverified)`
 
 **Symptoms:** A `clarifying`-stage Task moved to `parked` with `stageReason=identity-unverified`
-after a maintainer commented `decision=implement` intent, but the Task never advanced to
+after the clarify agent reported `decision=implement`, but the Task never advanced to
 `approved`.
 
-**Explanation:** The Task's `clarifying -> approved` transition requires the C.6 approval
-grammar to pass for **every** Issue the Task owns, not just one if the Task is multi-issue. The
-grammar failed - the operator saw a comment but it did not satisfy the approval check.
+**Explanation:** The clarify agent judged that a maintainer approved and cited a comment as
+evidence - the forge comment's `external_id` plus a verbatim quote from its body - for every
+Issue the Task owns. The operator does not take that judgment on faith: `restapi.verifyApprovalScope`
+independently re-derives, for **every** owned Issue, whether the cited comment exists, who posted
+it, and whether the quoted text is really there. One of those structural checks failed, so the
+operator refused the citation and parked the Task rather than granting an unverified mandate.
 
 **Diagnosis, in order:**
 
-1. **Phrase match.** Confirm the maintainer's comment matches one of `Project.spec.scm.approvalPhrases` under an **anchored, whole-line** match - a phrase embedded mid-sentence or as part of a longer line does not count. Check the exact phrase list on the Project CR.
-2. **Commenter identity.** Confirm the commenter's login is in `Project.spec.scm.maintainerLogins` and is **not** the bot's own login (`botLogin`) - a bot self-comment can never satisfy the grammar, by design.
-3. **Every owned Issue, not just one.** If the Task owns more than one Issue, every one of them needs its own matching comment from a maintainer login. A Task with three owned Issues and only one approved comment stays parked.
+1. **Cited comment exists.** Confirm the `external_id` the agent cited is actually present in `Issue.status.comments` - a stale mirror (the on-demand sync failed, or the comment is genuinely new) means the operator cannot find it at all.
+2. **Commenter identity.** Confirm the cited comment's author is in `Project.spec.scm.maintainerLogins` and is **not** the bot's own login (`botLogin`) - a bot self-comment can never satisfy the check, by design.
+3. **Quote really occurs in the body.** The `quote` the agent cited must be a verbatim substring of the comment body the operator itself holds - a paraphrase or a quote from a different comment fails this check.
+4. **Not already consumed.** A comment already recorded as `ApprovalEvidence` on an Issue cannot approve a second time.
+5. **Every owned Issue, not just one.** If the Task owns more than one Issue, every one of them needs its own valid citation. A Task with three owned Issues and only one satisfied stays parked.
 
-For the full grammar specification (anchoring rules, phrase normalization, multi-issue
-semantics) see
+There is no most-recent-comment check on the operator's side - it verifies structure, not
+sequence, so an older approving comment is still citable even when a newer maintainer comment
+exists on the thread. Whether that newer comment withdraws the earlier approval is an intent
+question the operator does not ask; it is the clarify agent's job to read the whole thread and
+submit `decision=discuss` instead of citing a stale approval when a later maintainer comment
+actually walks it back.
+
+For the full grammar specification (what the agent judges versus what the operator verifies) see
 [Security: approval gates](../operations/security/approval-gates.md#the-approval-grammar) - this
-runbook only tells you what to check, not how the grammar itself works.
+runbook only tells you what to check, not how the verification itself works.
 
-**Re-entry:** `identity-unverified` is not one of the narrow `parked` re-entry cases - a fresh
-maintainer comment does not automatically retry the grammar. Correct the phrase or login issue
-and have the maintainer re-comment with a matching, anchored phrase.
+**Re-entry:** the **next** non-bot comment on the thread un-parks the Task to `conversing`,
+spawning a fresh clarify pod against the refreshed thread - it does not re-run the check
+directly. That pod reads the new comment, forms its own judgment, and submits a fresh
+`decision=implement` with a new citation through the same gate. Have the maintainer post an
+unambiguous comment and the next comment event will bring an agent back to read it.
 
 ---
 

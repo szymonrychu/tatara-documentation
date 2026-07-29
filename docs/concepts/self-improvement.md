@@ -36,7 +36,8 @@ same agent loop that ships product work is pointed at the platform itself:
 
 - **Idle improvements get done.** The periodic [brainstorm](../workflows/brainstorm.md)
   surveys the code graph and files concrete proposals as new `clarify` Tasks; a maintainer
-  comments an approval phrase on the good ones and the loop implements them.
+  comments on the good ones, the clarify agent cites that comment as approval, and the
+  loop implements them once the operator verifies the citation.
 - **Incidents close their own loops.** A firing alert spawns an
   [incident](../workflows/incident.md) investigation that produces an evidence-backed
   issue - which is then implemented, whether the fix is in code or in the alerting itself.
@@ -56,8 +57,8 @@ tatara's own repositories.
 The [brainstorm](../workflows/brainstorm.md) cron queries tatara's own knowledge graph,
 scores improvement candidates, and files them as new `clarify` Tasks carrying the
 `tatara-brainstorming` label. **Brainstorm never implements** - each accepted proposal becomes
-its own `clarify` Task, and a verified maintainer must post a comment matching one of
-`Project.spec.scm.approvalPhrases` before the loop writes any code; the bot is structurally
+its own `clarify` Task, and a verified maintainer must post a comment the clarify agent cites
+and the operator independently verifies before the loop writes any code; the bot is structurally
 excluded from ever satisfying its own gate. This is
 [Gate 1, the approval grammar](agentic-model.md#gate-1-the-approval-grammar) and it is the
 load-bearing control on self-directed work - brainstorm-authored proposals go through the exact
@@ -70,7 +71,7 @@ flowchart LR
     A[brainstorm Task<br/>fires on tatara Project] --> B[Query code graph:<br/>find coupling / gaps]
     B --> C[submit_outcome propose:<br/>tighten context guard]
     C --> D[new clarify Task,<br/>tatara-brainstorming label]
-    D --> E[Maintainer comments<br/>an approval phrase]
+    D --> E[Maintainer comments;<br/>clarify agent cites it]
     E --> F[Task.status.stage = approved]
     F --> G[implement Task<br/>implements + opens PR]
     G --> H[review: submit_outcome approve,<br/>operator merges on green CI]
@@ -80,7 +81,8 @@ flowchart LR
 graph notices that a token-accounting helper is copy-pasted across three reconcilers. It
 files *"Deduplicate per-turn token accounting into a single helper"* with a problem
 statement, a proposed approach, and the expected benefit, as a new `clarify` Task. A maintainer
-comments an approval phrase on the issue; the Task moves to `approved` and then `implementing`,
+comments on the issue, the clarify agent cites that comment and the operator verifies it; the
+Task moves to `approved` and then `implementing`,
 which extracts the helper, adds a table-driven test, and opens a PR that a review pod approves
 and the operator merges once CI is green. The improvement is one a human would have wanted and
 never scheduled.

@@ -202,36 +202,37 @@ Tatara's intake model determines which humans can drive the agent loop; a separa
 determines who can release an issue into implementation.
 
 **You approve by commenting.** When a `clarify` agent has settled the scope, a maintainer posts a
-comment whose text is an approval phrase, and the operator - not the agent - reads it. The operator
-checks that the comment is the most recent one from a maintainer, that its author is not the bot,
-and that its text matches an entry in `spec.scm.approvalPhrases`. It then pins the comment's id on
-the Issue as single-use evidence and lets the work start. No label approves anything.
+comment, the agent judges whether it approves, and it cites that comment - its forge `external_id`
+plus a verbatim quote - in `submit_outcome(decision=implement)`. The operator does not take the
+agent's judgment on faith: it independently checks that the cited comment exists, that its author
+is a verified maintainer and not the bot, and that the quoted text really occurs in the comment
+body the operator itself holds. It then pins the comment's id on the Issue as single-use evidence
+and lets the work start. No label approves anything, and the operator has no wordlist of its own -
+it never decides what a comment *means*.
 
 ### What approves, and what does not
 
 | A maintainer comments | Result |
 |---|---|
-| `go ahead` | **Approves.** The whole comment is the phrase |
-| `LGTM` | **Approves.** Case and markdown emphasis are normalised away, so `**LGTM**` works too |
-| `I can't approve this until the tests pass` | Does not approve. The match is anchored to a whole line: the comment must *consist of* a phrase, not merely contain one |
-| `Looks good, ship it once you have rebased on main` | Does not approve. Same reason - and this is the point of the anchoring, because a substring match would have shipped it |
-| `> go ahead` (quoting someone else) | Does not approve. Quoted lines are stripped before the match |
-| An `approve` from an account not in `maintainerLogins` | Does not approve. Identity is checked before the text is read |
-| The bot posting `go ahead` | Does not approve. The bot is excluded structurally, before the text is read |
+| `go ahead, I approve!` | **Approves**, if the clarify agent cites it - the agent reads this as unambiguous consent |
+| `LGTM` | **Approves**, for the same reason. There is no required phrase; the agent judges ordinary language |
+| `I can't approve this until the tests pass` | **Should not approve** - this is a judgment call, not a structural guarantee. A clarify agent reading this correctly does not cite it. The operator only confirms the quote exists in the comment it is given; it does not judge meaning, so a misjudging agent that cited this anyway would not be caught here |
+| An `approve` from an account not in `maintainerLogins` | Does not approve. Identity is checked before the quoted text is even compared |
+| The bot posting `go ahead` | Does not approve. The bot is excluded structurally, before the quoted text is compared |
 
-`approvalPhrases` defaults, when unset, to `approve`, `approved`, `go ahead`, `lgtm`, `ship it`,
-`implement it`. An empty list means those defaults; it never means "any text approves".
-
-If no comment passes, the Task parks and the operator comments on the issue saying what it was
-waiting for. Post a passing comment at any time afterwards and the Task picks up where it left off.
-See [Approval Gates](../operations/security/approval-gates.md#the-approval-grammar) for the full
-rules.
+If no citation passes, the Task parks. **Nothing is posted to the issue** - the reason lives only
+in the operator's logs and metrics, not on the thread, so there is no prompt telling anyone a
+comment is needed. Post a comment at any time afterwards and the next comment un-parks the Task to
+a fresh clarify pod, which picks up the conversation where it left off. See
+[Approval Gates](../operations/security/approval-gates.md#the-approval-grammar) for the full
+rules, including why there is no requirement that the cited comment be the thread's most recent
+one.
 
 ### Allow-lists
 
 | Field | Effect when empty | Effect when set |
 |---|---|---|
-| `spec.scm.maintainerLogins` | **Closed by default.** No login is a maintainer, so no comment can ever approve anything and no issue - human-filed or bot-authored - ever advances to implementation | Only a comment authored by a listed login can approve, and only when its text matches an approval phrase |
+| `spec.scm.maintainerLogins` | **Closed by default.** No login is a maintainer, so no comment can ever approve anything and no issue - human-filed or bot-authored - ever advances to implementation | Only a comment authored by a listed login can be cited as approval |
 | `spec.scm.reporterLogins` | Issues and comments from any author are processed | Only the bot, maintainers, and listed reporters trigger the agent loop; all others are silently dropped at intake |
 
 !!! danger "Security recommendation"
@@ -558,23 +559,20 @@ spec:
     reporterLogins:             # (23)!
       - alice
       - bob
-    approvalPhrases:            # (24)!
-      - go ahead
-      - lgtm
-    prReactionScope: labeledOrMentioned  # (25)!
-    guidance: >-                # (26)!
+    prReactionScope: labeledOrMentioned  # (24)!
+    guidance: >-                # (25)!
       Focus on reliability and observability alongside new features.
     cron:
       issueScan:
         schedule: "0 * * * *"
-        maxPerRepo: 1           # (27)!
+        maxPerRepo: 1           # (26)!
       mrScan:
         schedule: "0 * * * *"
         maxPerRepo: 1
       brainstorm:
         enabled: true
         schedule: "0 * * * *"
-        maxOpenProposals: 8     # (28)!
+        maxOpenProposals: 8     # (27)!
         sources:
           - docs
           - memory
@@ -583,16 +581,16 @@ spec:
         enabled: true
         schedule: "0 2 * * *"
       refine:
-        closedLookbackDays: 30  # (29)!
+        closedLookbackDays: 30  # (28)!
 
   grafana:
-    enabled: true               # (30)!
+    enabled: true               # (29)!
     url: http://prometheus-grafana.monitoring.svc.cluster.local
-    secretRef: tatara-grafana   # (31)!
+    secretRef: tatara-grafana   # (30)!
 
   queue:
-    capacity: 5                 # (32)!
-    alertCapacity: 1            # (33)!
+    capacity: 5                 # (31)!
+    alertCapacity: 1            # (32)!
 ```
 
 1.  Project name must be unique per namespace. It becomes the label `tatara.dev/project` on all
@@ -640,37 +638,33 @@ spec:
 21. GitHub noreply commit-author email for the bot. Links agent commits to the bot account in
     the GitHub web UI. Find this in the bot account's GitHub email settings.
 22. Human maintainer logins. **Required for anything to ever be approved** - empty means no
-    approvals are ever possible. When set, only a comment from one of these accounts, matching
-    `approvalPhrases` below, is ever recorded as approval; they also form the trusted-insider set
-    for intake bypass. Overridable per-repository.
+    approvals are ever possible. When set, only a comment from one of these accounts can be cited
+    as approval by a clarify agent, and the operator independently verifies that citation; they
+    also form the trusted-insider set for intake bypass. Overridable per-repository.
 23. Reporter allow-list. When set, issues and comments from accounts not in this list, not in
     `maintainerLogins`, and not the bot are silently dropped at intake. Closes the primary
     prompt-injection vector. Overridable per-repository.
-24. The closed, per-project wordlist an approving maintainer comment must match: some line of the
-    normalized comment body must *consist of* one of these phrases, anchored whole-line, not
-    merely contain it. Empty means the built-in defaults (`lgtm`, `approve`, `approved`, `ship it`,
-    `go ahead`, `go`, `implement it`) - it never means "any text approves."
-25. Cron `mrScan` re-review scope. This example opts in to the narrow setting. Left unset (or
+24. Cron `mrScan` re-review scope. This example opts in to the narrow setting. Left unset (or
     `all`), the `mrScan` path re-reviews every open human PR/MR each cycle. `labeledOrMentioned`
     restricts scheduled re-review to PRs labeled with `triggerLabel` or that `@mention` the bot.
     The field has no default; set it explicitly to narrow the loop.
-26. Free-form project charter text appended verbatim to brainstorm goal prompts. Use this to focus
+25. Free-form project charter text appended verbatim to brainstorm goal prompts. Use this to focus
     agent attention on your project's priorities and in-scope concerns.
-27. Maximum concurrent issue-scan (or MR-scan) Tasks per repository lane. `1` is the safe default;
+26. Maximum concurrent issue-scan (or MR-scan) Tasks per repository lane. `1` is the safe default;
     a single scan agent per repo prevents conflicting concurrent scans.
-28. Project-wide cap on open, unapproved agent proposals across all repositories. When the count
+27. Project-wide cap on open, unapproved agent proposals across all repositories. When the count
     reaches this number, the brainstorm cycle is skipped entirely for that tick.
-29. How far back in days closed issues are loaded during the refine pre-step for
+28. How far back in days closed issues are loaded during the refine pre-step for
     already-implemented detection. Defaults to 30 days when not set.
-30. Enables the per-project Grafana integration: a read-only `grafana-mcp` Deployment provisioned
+29. Enables the per-project Grafana integration: a read-only `grafana-mcp` Deployment provisioned
     with a Viewer service account token (agents reach it via the injected `TATARA_GRAFANA_MCP_URL`,
     not as a pod sidecar), and an alert-webhook receiver at `<webhookURL>/grafana`.
-31. Kubernetes Secret containing two keys: `serviceAccountToken` (Grafana Viewer SA token,
+30. Kubernetes Secret containing two keys: `serviceAccountToken` (Grafana Viewer SA token,
     mounted into the grafana-mcp container) and `webhookSecret` (bearer token the configured
     Grafana contact point must present to the webhook).
-32. Queue admission capacity - maximum simultaneously admitted normal-class events. Defaults to
+31. Queue admission capacity - maximum simultaneously admitted normal-class events. Defaults to
     `maxConcurrentAgents` when not set. Override only to decouple queue capacity from the
     concurrency cap.
-33. Reserved concurrent slots for alert-class events (Grafana-sourced incidents). Default 1.
+32. Reserved concurrent slots for alert-class events (Grafana-sourced incidents). Default 1.
     Alert slots are separate from `capacity`, ensuring an incoming incident always gets an agent
     pod even when the normal queue is fully saturated.
