@@ -399,13 +399,27 @@ unpark(t):
   case "identity-unverified":
       on a NON-BOT pendingEvent:
           FIRST: sync that issue's comments from the forge.
-          THEN:  re-evaluate the approval grammar against the refreshed thread.
-          It PASSES -> Issue.status.approval is stamped, status=approved, and
-                       require: len(owned Issues with state == open) > 0
-                                // the empty set is not a licence here either
-                       if EVERY owned open Issue is approved -> implementing
-          It FAILS  -> stay parked. Do NOT comment again. Re-evaluate on the
-                       next human comment.
+          THEN:  require: conversingHasRoom
+                          else -> STAY PARKED, decline=no-conversing-room
+                                  // the pendingEvent is RETAINED; the next
+                                  // comment or reconcile pass retries
+                 if t.spec.kind == "review":
+                     require: no owned MR is merged
+                              else -> STAY PARKED, decline=merged-mr
+                     require: status.humanReviewRounds < 5
+                              else -> STAY PARKED. Do not spawn another pod.
+                     status.humanReviewRounds++
+                 -> conversing   // a fresh clarify pod reads the refreshed
+                                 // thread
+          // This edge NEVER grants approval and NEVER reaches implementing or
+          // approved directly - it only puts a live agent back in front of
+          // the human who just commented. The spawned pod forms its own
+          // judgment and submits its own submit_outcome(decision=implement,
+          // approval_citations=...) against the refreshed thread. Only THAT
+          // submit_outcome, independently re-verified by
+          // restapi.verifyApprovalScope, can stamp Issue.status.approval and
+          // move the Task toward approved. There is no path in this case
+          // block that stamps approval directly.
 
   case "merge-timeout":
       require: status.mergeReentries < maxMergeReentries (3)
@@ -445,14 +459,18 @@ event is dropped at enqueue, so the comment the operator posts when it parks a
 Task cannot land in that Task's `pendingEvents` and un-park it. Without that
 filter, parking is a loop.
 
-**2. `identity-unverified` has a comment-driven release, and a comment alone
-never triggers it.** A non-bot comment triggers a fresh sync of that issue's
-comments from the forge, then a re-run of the anchored, whole-line
-[approval grammar](../operations/security/approval-gates.md#the-approval-grammar)
-against the refreshed thread. Only a comment that **passes the grammar** un-parks
-it - maintainer identity, anchored whole-line phrase, single-use evidence. That is
-a stronger gate than "the webhook wrote a status", because the operator re-reads
-and re-verifies the thread itself.
+**2. `identity-unverified` has a comment-driven release, but the release is a
+live agent, not a grant.** A non-bot comment triggers a fresh sync of that
+issue's comments from the forge, then un-parks the Task to `conversing`,
+spawning a fresh `clarify` pod against the refreshed thread. That pod forms its
+own judgment and submits its own citation through
+[the approval grammar](../operations/security/approval-gates.md#the-approval-grammar)
+- the operator independently verifies the citation exists, its author is a
+verified non-bot maintainer, the quoted text is genuinely there, and it has not
+already been consumed. The webhook path itself never grants approval; it only
+gets a live agent back in front of the human who just commented. That is a
+stronger gate than "the webhook wrote a status", because the operator re-reads
+and re-verifies the cited comment itself, on every `submit_outcome`.
 
 **3. A `review`-kind Task can never reach `implementing` or `merging`, by any
 path.** Not on the un-park edge, and not on the primary one:
