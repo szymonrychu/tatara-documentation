@@ -220,7 +220,6 @@ lifetime cap, `agent.maxTurnsPerTask` below, is what bounds a runaway
 | `agent.maxReviewRounds` | `3` | Accepted `request_changes` verdicts before `parked(review-loop-exhausted)` |
 | `agent.maxHumanReviewRounds` | `5` | Un-parks of a `review`-kind Task back to `reviewing` on a human comment. At the cap it stays parked. This is what stops a chatty PR thread spawning one review pod per comment |
 | `agent.maxPodRecreations` | `3` | Pod respawns within the current stage before `failed(pod-recreation-exhausted)`. Reset to 0 on every transition. **A pod that never becomes Ready within `podReadyTimeout` (5m of `podStartedAt`) is a respawn, not a failure** - it burns one of these, and this counter is what eventually terminates it |
-| `scm.approvalPhrases` | `lgtm`, `approve`, `approved`, `ship it`, `go ahead`, `go`, `implement it` | The closed wordlist an approving comment must match. **Empty means the defaults; it can never mean "any text approves"** |
 
 `maxOpenTasks` is a Task-**creation** budget and `maxNewTasksPerSweep` bounds
 one sweep pass's minting - both are different levers from

@@ -74,24 +74,25 @@ The issue needs clarification, a design choice, or human input. The agent calls 
 
 The Task keeps re-spawning `clarify` on every new non-bot comment on the thread until a maintainer's comment satisfies the approval grammar (see Path C) or the 24-hour `clarifying` budget elapses with no approval, at which point the Task parks `awaiting-human`.
 
-!!! danger "Comments never approve on the agent's own say-so - only the operator's independent grammar check does"
+!!! danger "The agent judges meaning; only the operator's independent structural check grants anything"
     Even when `clarify` itself concludes the issue is implement-ready and calls
-    `submit_outcome(decision=implement)`, that is informational: the operator
-    independently re-evaluates the approval grammar against the thread. No line in the
-    most recent maintainer comment matching one of `Project.spec.scm.approvalPhrases`
-    means no approval, regardless of what the agent decided. This applies uniformly - a
-    bot-authored brainstorm proposal and a human-filed issue are gated identically; there
-    is no fast path for either. See
+    `submit_outcome(decision=implement, approval_citations=...)`, the agent's judgment is
+    informational: the operator independently re-verifies each cited comment against the
+    thread. A citation whose comment does not exist, whose author is not a verified
+    non-bot maintainer, or whose quote does not genuinely occur in the body the operator
+    holds means no approval, regardless of what the agent decided. This applies
+    uniformly - a bot-authored brainstorm proposal and a human-filed issue are gated
+    identically; there is no fast path for either. See
     [Approval Gates](../operations/security/approval-gates.md#the-approval-grammar).
 
 ### Path C - implement
 
-The agent decides this is worth building and calls `submit_outcome(decision=implement, reason=...)`, citing who approved and where. The operator independently re-reads the thread and checks, for **every** Issue this Task owns that is still open: does its most recent maintainer comment (author in `maintainerLogins`, never the bot) consist of a line matching an entry in `Project.spec.scm.approvalPhrases`, anchored and whole-line, not previously consumed?
+The agent decides this is worth building and calls `submit_outcome(decision=implement, reason=..., approval_citations=[{id, quote}, ...])`, citing who approved and why for every **live** Issue it owns that a maintainer has actually commented on - an Issue with no maintainer comment has nothing to cite and is not required to carry one; it either satisfies the `autoApproveTataraProposals` carve-out or refuses on its own. The operator independently re-reads its own mirror and checks, for every live Issue this Task owns that has a citation to check: does the cited comment exist, is its author in `maintainerLogins` and never the bot, does the quoted text genuinely occur in the comment body, and has it not already been consumed? There is no requirement that the cited comment be the thread's most recent maintainer comment - the agent, not the operator, is responsible for reading whether a later comment withdraws an earlier approval.
 
-- **Every owned Issue passes:** the operator stamps `Issue.status.approval` on each and moves `Task.status.stage` to `approved`.
-- **Any owned Issue fails:** the Task parks `identity-unverified`. The grammar is re-evaluated on every subsequent non-bot comment on any owned thread until it passes or the park ages out.
+- **Every live owned Issue passes:** the operator stamps `Issue.status.approval` on each and moves `Task.status.stage` to `approved`.
+- **Any live owned Issue fails:** the Task parks `identity-unverified` (HTTP 200, not an error, and nothing is posted to the issue thread - the refusal lives only in the operator's logs, notes and metrics). The next non-bot comment on any owned thread un-parks the Task to `conversing`, spawning a fresh clarify pod that submits its own fresh citation.
 
-**Task stage:** `approved` (only once the grammar passes for every owned Issue; otherwise `parked(identity-unverified)`)
+**Task stage:** `approved` (only once the citation check passes for every live owned Issue; otherwise `parked(identity-unverified)`)
 
 ---
 
@@ -168,12 +169,19 @@ sequenceDiagram
 
     Op->>Pod: schedule clarify pod
     Pod->>GH: fetch issue + comments
-    Pod-->>Op: submit_outcome(decision=implement)
-    Op->>Op: independently re-check the approval grammar (not yet satisfied)
+    Pod-->>Op: submit_outcome(decision=implement, no citation yet)
+    Op->>Op: verifyApprovalScope: no comment to cite; park(identity-unverified)
 
-    M->>GH: Comment: "go ahead"
+    M->>GH: Comment: "go ahead, I approve!"
     GH-->>Op: webhook (comment event)
-    Op->>Op: verify M in maintainerLogins, phrase matches, not previously consumed
+    Op->>Op: sync comment mirror; un-park to conversing (no grant here)
+
+    Note over Op,Pod: fresh clarify pod running
+
+    Op->>Pod: schedule clarify pod
+    Pod->>GH: fetch refreshed comments
+    Pod-->>Op: submit_outcome(decision=implement, approval_citations=[{id, quote}])
+    Op->>Op: verify M in maintainerLogins, quote occurs verbatim, not previously consumed
     Op->>Op: Issue.status.approval stamped; stage=approved
 
     Op->>Op: admitted; stage=implementing
@@ -207,12 +215,12 @@ sequenceDiagram
 
 ## What to do when a Task is Parked
 
-A Task enters `parked` (with a specific `stageReason`) when the operator cannot proceed without human input: the approval grammar failed, the review-round cap was hit, CI never went green within the stage deadline, or the agent explicitly declined. The operator posts a comment explaining what stopped it, unless the [comment turn-taking gate](../operations/security/bot-identity.md) withholds it - e.g. a Task that keeps parking on the same unanswered thread stops re-commenting after the first note.
+A Task enters `parked` (with a specific `stageReason`) when the operator cannot proceed without human input: the citation check found nothing to grant, the review-round cap was hit, CI never went green within the stage deadline, or the agent explicitly declined. Not every park reason posts a comment explaining itself: `identity-unverified` specifically posts **nothing** to the issue thread - the refusal is visible only in the operator's own logs, `Task.status.notes`, and the `operator_approval_refused_total` metric, never on the thread a maintainer is watching. Where the operator does post an explanatory comment for other park reasons, the [comment turn-taking gate](../operations/security/bot-identity.md) can still withhold a repeat one - e.g. a Task that keeps parking on the same unanswered thread stops re-commenting after the first note - but for `identity-unverified` there was never a first note to begin with.
 
 Your options:
 
-- **Comment on the issue.** For `awaiting-human` or `identity-unverified`, any non-bot comment re-evaluates the relevant grammar or re-enters `clarifying`, as appropriate to the stage reason.
-- **Post an approval phrase** (a maintainer account, matching `Project.spec.scm.approvalPhrases`) to record approval directly.
+- **Comment on the issue.** For `awaiting-human` or `identity-unverified`, any non-bot comment un-parks the Task to `conversing` (or re-enters `clarifying`), spawning a fresh agent pod to read it, as appropriate to the stage reason.
+- **Comment as a maintainer** to give the next clarify pod something unambiguous to cite as approval - there is no configured phrase to match, only the agent's judgment and the operator's independent verification of that citation.
 - **Fix the underlying problem** (e.g., a failing test) and comment to resume; approval already recorded earlier in the same Task is not re-consumed.
 
 Every `parked` reason except `backlog-sweep` ages out on its own retention window (7 days by default) and is reaped after a final comment - it does not wait indefinitely.

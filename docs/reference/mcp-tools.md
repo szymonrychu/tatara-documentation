@@ -189,9 +189,18 @@ stage.
     {"type":"object","properties":{
       "task":{"type":"string"},
       "decision":{"type":"string","enum":["implement","close","discuss"]},
-      "reason":{"type":"string","description":"Required. For decision=implement, cite WHO approved and WHERE - the operator independently re-reads the thread and verifies both the identity AND the wording."}},
+      "reason":{"type":"string","description":"Required. For decision=implement, say in plain words WHO approved and WHY you read their comment as approval."},
+      "approval_citations":{"type":"array","items":{"type":"object","properties":{
+          "id":{"type":"string"},"quote":{"type":"string"}},
+        "required":["id","quote"]},
+        "description":"Required for decision=implement whenever a maintainer has commented: ONE entry per issue this task owns. id is the external_id of the maintainer comment you are citing, copied verbatim from the <comment external_id=\"...\"> attribute already in your turn-0 bundle - do NOT re-crawl to find it; it does NOT have to be the newest comment on the thread. quote is a VERBATIM substring of that same comment's body. YOU judge whether the comment approves; the operator re-reads the comment itself and refuses if the id does not name a maintainer-authored non-bot comment on that issue, if your quote is not in it, or if it already approved once. If a LATER maintainer comment withdraws the approval you would otherwise cite, send decision=discuss instead - do not cite a withdrawn approval. Omit only when no human has commented at all."}},
      "required":["decision","reason"],"additionalProperties":false}
     ```
+
+    There is no `most_recent` clause anywhere in this schema or in the operator's check: the
+    operator verifies the citation exists, its author, and the quote - never sequence. Reading
+    whether a later maintainer comment withdraws an earlier approval is entirely on you; cite the
+    withdrawal (`decision=discuss`), do not cite the stale approval.
 
 === "brainstorm"
 

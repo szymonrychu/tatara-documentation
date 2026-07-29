@@ -16,7 +16,7 @@ Tatara addresses both by running a continuous, autonomous loop: it reads your is
 
 **Autonomous implementation loop.** Issues labeled `tatara` are picked up automatically. The agent clarifies the issue (posting questions or a plan when it needs a human decision, and parking until you respond), implements once approved, opens a PR, and babysits CI. A separate review pod then approves the change and the operator itself merges it on green CI - there is no configuration that arms the forge's own merge-when-green feature on a tatara-opened PR. You review code and the approval decision, not prompts.
 
-**Periodic brainstorm.** A cron-driven brainstorm agent queries the codebase knowledge graph and proposes improvements as GitHub/GitLab issues. Proposals are filed, not implemented - a maintainer approves a proposal the same way as any other issue: a comment matching one of `Project.spec.scm.approvalPhrases`; nothing else releases it. The agent caps proposal volume (`maxOpenProposals`) so the tracker does not flood.
+**Periodic brainstorm.** A cron-driven brainstorm agent queries the codebase knowledge graph and proposes improvements as GitHub/GitLab issues. Proposals are filed, not implemented - a maintainer approves a proposal the same way as any other issue: by commenting, the clarify agent citing that comment, and the operator independently verifying the citation; nothing else releases it. The agent caps proposal volume (`maxOpenProposals`) so the tracker does not flood.
 
 **Incident response.** A Grafana alert fires a webhook to the operator. An incident investigation agent starts within seconds, queries Grafana (metrics, logs, annotations), diagnoses the issue, and files a structured incident issue with findings and remediation proposals. Escalation and follow-up implementation happen through the normal clarify -> implement -> review handoff.
 
@@ -42,9 +42,10 @@ Tatara addresses both by running a continuous, autonomous loop: it reads your is
 
 **Not autonomous with unchecked write access - but the write access is real.** A maintainer
 decides whether an issue gets worked, and decides it in exactly one way: a comment on the
-issue whose text matches one of `Project.spec.scm.approvalPhrases`, posted by an account in
-`maintainerLogins` and never the bot (the bot is structurally excluded from ever satisfying its
-own gate). After that, the default is autonomous: `review` approves the bot's own PR from a
+issue, posted by an account in `maintainerLogins` and never the bot (the bot is structurally
+excluded from ever satisfying its own gate), which the clarify agent judges and cites and the
+operator independently verifies against its own mirror before any code is written. After that,
+the default is autonomous: `review` approves the bot's own PR from a
 separate pod by calling `submit_outcome(approve)` - never a native forge approval, since GitHub
 blocks a PR's own author from approving it either way - and the operator itself merges once
 required checks are green and that verdict is recorded, with no human merge step. The agent pod
@@ -74,4 +75,4 @@ The smallest useful tatara deployment:
 5. The `tatara-helmfile` repository forked and configured for your cluster
 6. One `Project` CR and one or more `Repository` CRs
 
-You do not need Grafana alerting or the brainstorm cron to start. The minimal loop is: label an issue -> a maintainer comments an approval phrase -> agent implements and a review pod approves -> the operator merges on green CI.
+You do not need Grafana alerting or the brainstorm cron to start. The minimal loop is: label an issue -> a maintainer comments -> the clarify agent cites the comment and the operator verifies it -> agent implements and a review pod approves -> the operator merges on green CI.
