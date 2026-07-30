@@ -40,8 +40,8 @@ the implement pod, and nothing mints its way past it.
 | `documentation` | the nightly documentation batch cron | `documenting` |
 
 The Task's name is `<project>-<kind>-<YYYY-MM-DD>-<uid5>`, capped at 49
-characters, and its pod is `<task-name>-<agent-kind>`. See
-[the stage machine](task-stages.md#pod-naming) for why 49.
+characters. Its pod's name is computed independently - see
+[Pod naming](task-stages.md#pod-naming) for both formats, and for why 49.
 
 !!! note "Operator-managed"
     Tasks are created and fully managed by the operator, from an admitted
@@ -126,7 +126,7 @@ lifetime cap is what bounds that exemption.
 | `stage` | enum | The 15-member stage. **The only progress field.** Written by the operator only. See [the stage machine](task-stages.md) |
 | `stageEnteredAt` | time | Stamped on **every** transition. The clock for the pod-less stages |
 | `agentKind` | enum | The agent running now: `brainstorm`, `incident`, `clarify`, `refine`, `review`, `documentation`, `implement` |
-| `podName` | string | The current agent pod, `<task-name>-<agent-kind>` |
+| `podName` | string | The current agent pod's name. See [Pod naming](task-stages.md#pod-naming) |
 | `podStartedAt` | time | Stamped when the pod is **created**, and re-stamped on every respawn. It arms the readiness clock, and it is the base of the pod TTL (`podStartedAt + agentPodTTLSeconds`). **Cleared on every stage transition** |
 | `stageWorkStartedAt` | time | Stamped when the pod becomes **Ready**. It arms the work clock. **Cleared on every stage transition.** The stage deadline must measure work, not queue wait |
 | `notes` | `[]Note` | The append-only journal. **It is the continuation state.** See [Task notes](task-notes.md) |

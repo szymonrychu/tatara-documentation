@@ -538,6 +538,13 @@ MR's head branch to resume work. From that point on, the agent may push and merg
 If the author is not a maintainer, the operator logs the denied request and posts
 a comment: "This account is not authorized to hand over this MR." Nothing changes.
 
+A take-over comment can only be acted on if the `kind=review` Task gets a live
+turn to read it, and both of its `parked(awaiting-human)` re-entry paths are
+normally bounded by `maxHumanReviewRounds` (5). An externally-owned MR is
+exempt from that cap - the round budget bounds ordinary review ping-pong, not a
+maintainer reclaiming a stood-down MR - so a take-over comment still spawns a
+pod even after the cap was already spent on unrelated review rounds.
+
 ### The merge gate
 
 The merge gate merges when `status.ownership == tatara` **or** `status.ownership

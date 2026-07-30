@@ -4,8 +4,9 @@ title: Agent Execution
 
 # Agent Execution
 
-Every pod-spawning stage of a `Task` runs a dedicated Kubernetes Pod named
-`<task-name>-<agent-kind>` (`status.agentKind`: `brainstorm`, `incident`, `clarify`,
+Every pod-spawning stage of a `Task` runs a dedicated Kubernetes Pod, named
+independently of the Task itself - see [Pod naming](../reference/task-stages.md#pod-naming)
+- for the current agent kind (`status.agentKind`: `brainstorm`, `incident`, `clarify`,
 `refine`, `implement`, `review`, or `documentation`). The pod hosts a single Go
 service (`tatara-claude-code-wrapper`) that wraps one persistent, interactive
 `claude` process and exposes it to the operator as a turn-based HTTP API.
@@ -296,6 +297,13 @@ stop sequence, anchored at:
 ```
 t0 = podStartedAt + agentPodTTLSeconds
 ```
+
+except in the `conversing` stage, where the anchor is
+`max(podStartedAt, conversationLastEventAt)`: a maintainer's reply inside the
+TTL window pushes `t0` out instead of the pod being torn down mid-exchange. A
+fresh reply after `t0` still un-parks the Task onto a brand new pod (with a
+fresh `podStartedAt`) as usual - this only changes when the operator ends the
+**current, still-live** pod's stop sequence.
 
 1. **Stop admitting normal turns.** Past `t0` the wrapper refuses any
    `POST /v1/messages` with `handoff:false` with `410 Gone`. It still accepts

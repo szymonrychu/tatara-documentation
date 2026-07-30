@@ -175,8 +175,9 @@ state itself.
 
 ### Pod lifecycle
 
-The dispatcher spawns a `tatara-claude-code-wrapper` Pod (plus a Service) named
-`<task-name>-<agent-kind>` on admission. One pod is created per pod-spawn and is reused across
+The dispatcher spawns a `tatara-claude-code-wrapper` Pod (plus a Service) on admission, named
+independently of the Task itself (see [Pod naming](../reference/task-stages.md#pod-naming)). One
+pod is created per pod-spawn and is reused across
 every turn within that spawn; the operator submits each turn to the existing pod and only
 re-creates it when it has crashed or failed its readiness probe, bounded by
 `agent.maxPodRecreations` (default `3`, reset to `0` on every stage transition) after which the

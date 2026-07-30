@@ -122,7 +122,8 @@ kind, and `tatara-cli` filters its registered tool list at startup, failing
 A `Task` is a durable Kubernetes object. It can live for hours or days and pass
 through many stages (`clarifying`, `approved`, `implementing`, `reviewing`,
 `merging`, ...). A **pod is not the Task** - it is one bounded run against it.
-The pod is named `<task-name>-<agent-kind>`, and `Project.spec.agentPodTTLSeconds`
+The pod's name is computed independently of the Task's own name (see
+[Pod naming](../reference/task-stages.md#pod-naming)), and `Project.spec.agentPodTTLSeconds`
 (default 3600s, minimum 300s) caps how long that one pod may live. When a Task
 needs a `clarify` pod, then later an `implement` pod, then a `review` pod, those
 are three separate, single-purpose pods against the same Task - not one long
@@ -150,7 +151,10 @@ to know. Nothing else persists agent working memory across pod boundaries.
 Because a pod's life is bounded, tatara has to guarantee a handoff note gets
 written before the pod disappears - even if the pod is unresponsive or mid-turn
 when its TTL expires (which, empirically, is nearly always the case). At
-`t0 = podStartedAt + agentPodTTLSeconds` the wrapper:
+`t0 = podStartedAt + agentPodTTLSeconds` (in the `conversing` stage, `t0`
+anchors on the last conversation event instead of pod start if that's later -
+an active back-and-forth with a maintainer pushes the deadline out rather than
+getting cut off mid-exchange) the wrapper:
 
 1. **Stops admitting normal turns.** Any `POST /v1/messages` without
    `handoff: true` gets `410 Gone` past `t0`.
