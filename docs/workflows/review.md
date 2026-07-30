@@ -103,7 +103,11 @@ review agent's *normal* verdict on a bad human PR, so it is the primary path tha
 closed, not an edge case. The next human comment on the thread un-parks the Task back to
 `reviewing`, bounded by `status.humanReviewRounds` (cap 5, a separate counter from
 `reviewRounds`, which only advances on `request_changes`) - so a chatty thread cannot spawn an
-unbounded run of review pods.
+unbounded run of review pods. That cap is skipped, and no round is spent, when any owned MR is
+currently externally owned (a maintainer pushed a commit, or never delegated the MR to tatara in
+the first place) - see [Handing an MR to tatara](mr-takeover.md). The cap exists to bound ordinary
+review back-and-forth, not to leave a maintainer's take-over comment on a stood-down, round-capped
+MR unable to spawn a pod at all.
 
 ## Conversation persistence for reviews
 

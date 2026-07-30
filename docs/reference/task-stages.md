@@ -68,20 +68,23 @@ The other origin kinds enter their own agent stage straight out of `triaging`:
 the **agent that is running right now**, and it changes as the Task moves. The
 stage is what picks it.
 
-| Stage | Pod (agent kind) | Pod name |
-|---|---|---|
-| `triaging` | none (the operator classifies, and mints the Issue CRs) | - |
-| `brainstorming` | `brainstorm` | `<task>-brainstorm` |
-| `clarifying` | `clarify` | `<task>-clarify` |
-| `investigating` | `incident` | `<task>-incident` |
-| `refining` | `refine` | `<task>-refine` |
-| `approved` | none (admission gate) | - |
-| `implementing` | `implement` | `<task>-implement` |
-| `reviewing` | `review` | `<task>-review` |
-| `merging` | none (operator) | - |
-| `deploying` | none (operator) | - |
-| `documenting` | `documentation` | `<task>-documentation` |
-| `delivered` / `rejected` / `failed` / `parked` | none | - |
+| Stage | Pod (agent kind) |
+|---|---|
+| `triaging` | none (the operator classifies, and mints the Issue CRs) |
+| `brainstorming` | `brainstorm` |
+| `clarifying` | `clarify` |
+| `investigating` | `incident` |
+| `refining` | `refine` |
+| `approved` | none (admission gate) |
+| `implementing` | `implement` |
+| `reviewing` | `review` |
+| `merging` | none (operator) |
+| `deploying` | none (operator) |
+| `documenting` | `documentation` |
+| `delivered` / `rejected` / `failed` / `parked` | none |
+
+Each pod's own name is computed independently of the Task's name - see
+[Pod naming](#pod-naming) below.
 
 `implement` appears in this column and nowhere in `spec.kind`. **It is an agent
 kind only.** There is no such thing as an implement-kind Task; a Task reaches
@@ -99,7 +102,34 @@ that event is **admitted** against `maxConcurrentAgents`.
 
 ## Pod naming
 
-The pod is `<task-name>-<agent-kind>`. The Task name is:
+The wrapper Pod (and Service) name is independent of the Task's own name. It is
+composed once at Task creation and stamped into the `tatara.dev/pod-name`
+annotation; `agent.PodName()` reads it back thereafter (falling back to
+`wrapper-<task-name>` for a Task created before the annotation existed):
+
+```
+<type>-<project>-<repo>-<i|p><id>
+```
+
+- `type` is a fixed 3-char token for the Task's agent kind (`brs`, `ref`,
+  `inc`, `clr`, `rev`, `imp`, `doc`, `tko`; an unrecognized kind falls back to
+  its own first 3 lowercased chars).
+- `project` and `repo` are trimmed dynamically and proportionally
+  (`splitTrimBudget`) to use the 63-char DNS-1123 budget as efficiently as
+  possible, readability-first, instead of a fixed truncation length; `repo` is
+  omitted for a project-board item with no bound repo.
+- the trailing id segment is `i<N>` for an issue or `p<N>` for a PR/MR (GitHub
+  PR and GitLab MR fold into the single `p` token - there is no separate `mr`
+  token); a kind with no issue/PR/MR number keeps its own pre-existing
+  collision-avoidance disambiguator instead (an incident's `dedupKey`, a
+  documentation Task's short source-head-SHA, a brainstorm health-check's
+  `hc`) rather than dropping the segment; every other numberless kind drops it
+  entirely, with no placeholder.
+- `sanitizeDNS1123` is the final hard-cap backstop regardless of how the
+  segments above are composed.
+
+The provider (`gh`/`gl`) is not part of the name at all. The Task's own name is
+a separate string:
 
 ```
 <project>-<kind>-<YYYY-MM-DD>-<uid5>
@@ -113,10 +143,13 @@ cap. A Task whose name still overflows fails immediately with
 `metadata.name` length and there is no validating webhook, so the guard is a
 reconcile-time check.
 
-So a clarify Task on the `tatara` project might be
-`tatara-clarify-2026-07-12-m4z8q`, and the pod it spawns at `implementing` is
-`tatara-clarify-2026-07-12-m4z8q-implement`. The pod name carries the **agent**
-kind, the Task name carries the **origin** kind, and they routinely differ.
+So a clarify Task on the `tatara` project might be named
+`tatara-clarify-2026-07-12-m4z8q`, while the pod it spawns at `implementing` -
+against, say, `tatara-operator` issue 507 - is named `imp-tatara-tatara-operator-i507`
+(trimmed further if needed to fit 63 chars). The two names share no structure:
+the Task name carries the **origin** kind and a creation timestamp, the pod
+name carries the **currently-running agent** kind and the issue/PR it targets,
+and they are computed independently.
 
 ---
 
@@ -323,7 +356,7 @@ five are bounded.**
 | `merging` and `parked(merge-timeout)` | `mergeReentries` | 3 | `failed(merge-blocked)` | no |
 | `deploying` and `parked(deploy-timeout)` | `deployReentries` | 3 | `failed(deploy-blocked)` | no |
 | `reviewing` and `merging` (the head moved) | `headMoveReentries` | 3 | `failed(head-moving)` | **yes** |
-| `reviewing` and `parked(awaiting-human)` (a `review`-kind Task) | `humanReviewRounds` | 5 (`maxHumanReviewRounds`) | it stays parked | **yes** |
+| `reviewing` and `parked(awaiting-human)` (a `review`-kind Task) | `humanReviewRounds` | 5 (`maxHumanReviewRounds`) | it stays parked | **yes** (except a take-over comment on a stood-down MR - see below) |
 
 Two of these spawn a pod on every lap, and those are the two that matter for cost.
 
@@ -383,10 +416,21 @@ unpark(t):
       require: a NON-BOT pendingEvent exists.
 
       if t.spec.kind == "review":
-          require: status.humanReviewRounds < 5
-                   else: STAY PARKED. Do not spawn another review pod.
-          status.humanReviewRounds++
-          -> reviewing
+          require: no owned MR is already merged
+                   else: STAY PARKED (issue #393 - no legal outcome)
+          if any owned MR has status.ownership == "external":
+              // A stand-down state: a human pushed a commit, or the MR was
+              // never delegated to tatara. The round cap exists to bound
+              // ordinary review ping-pong, not to swallow a maintainer's
+              // take-over comment - so this path is EXEMPT from the cap and
+              // spends no round, win or lose. Re-entry either finds nothing
+              // to take over (a no-op) or hands ownership back.
+              -> reviewing
+          else:
+              require: status.humanReviewRounds < 5
+                       else: STAY PARKED. Do not spawn another review pod.
+              status.humanReviewRounds++
+              -> reviewing
           // A review-kind Task may NEVER enter implementing or merging. There
           // is no path, no condition, no exception. It does not exist.
           break

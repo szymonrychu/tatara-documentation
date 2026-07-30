@@ -108,14 +108,17 @@ Every Task enters the stage machine at `triaging`, which is pure operator work -
 agent, classifies the origin, and picks the next stage from `spec.kind`. That next stage is what
 spawns the first pod:
 
-| Origin kind (`spec.kind`) | Stage entered from `triaging` | Agent kind spawned | Pod name |
-|---|---|---|---|
-| `brainstorm` | `brainstorming` | `brainstorm` | `<task>-brainstorm` |
-| `incident` | `investigating` | `incident` | `<task>-incident` |
-| `clarify` | `clarifying` | `clarify` | `<task>-clarify` |
-| `refine` | `refining` | `refine` | `<task>-refine` |
-| `review` | `reviewing` | `review` | `<task>-review` |
-| `documentation` | `documenting` | `documentation` | `<task>-documentation` |
+| Origin kind (`spec.kind`) | Stage entered from `triaging` | Agent kind spawned |
+|---|---|---|
+| `brainstorm` | `brainstorming` | `brainstorm` |
+| `incident` | `investigating` | `incident` |
+| `clarify` | `clarifying` | `clarify` |
+| `refine` | `refining` | `refine` |
+| `review` | `reviewing` | `review` |
+| `documentation` | `documenting` | `documentation` |
+
+Each pod's name is computed independently of the Task's own name - see
+[Pod naming](../reference/task-stages.md#pod-naming).
 
 `implement` has no row above because it is never what `triaging` selects. It is reached only via
 `approved -> implementing`, once the [approval grammar](../operations/security/approval-gates.md#the-approval-grammar)
