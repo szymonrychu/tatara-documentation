@@ -232,16 +232,17 @@ stops admitting new turns, waits for the in-flight turn's callback (bounded by
 stopped; call `task_note(kind=handoff)` with everything the next pod needs"),
 and hard-caps at `t0 + 2 * turnTimeoutSeconds + 60s`. On the cap, or on any
 409/5xx, the operator writes a **synthetic handoff note in-process** from
-`Task.status.lastTurn` - the `finalText` and `pushedRepos` the turn-complete
-callback persisted - and stops the pod, force-deleting it only if the graceful
-stop fails.
+`Task.status.lastTurn` - the `finalText` and `pushedRepos` persisted by whichever
+path finalised the turn, the turn-complete callback or the poll backstop that
+recovers turns whose callback never arrived - and stops the pod, force-deleting
+it only if the graceful stop fails.
 
 `Task.status.notes` is therefore **never empty after a TTL stop**. Either the
 agent wrote a handoff, or the operator wrote one for it.
 
 Non-empty is not the same as useful, and the metric distinguishes them. If
-`status.lastTurn` is absent too - the pod never completed a turn, or the
-callback never landed - the operator has nothing to synthesize from and writes a
+`status.lastTurn` is absent too - no turn in this stage ever produced a final
+message or a push - the operator has nothing to synthesize from and writes a
 PLACEHOLDER note saying so, counted as `handoff="none"` on
 `operator_agent_pod_ttl_expired_total`. That is silent work loss and has its own
 [runbook](runbooks.md#tatara-runbook-operator-agent-pod-ttl-stopped-with-no-handoff-captured).
