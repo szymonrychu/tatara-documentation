@@ -685,7 +685,9 @@ sum by (agent_kind, handoff) (increase(operator_agent_pod_ttl_expired_total{name
 
 What lands instead is a placeholder note leading with `NO CONTINUATION STATE WAS CAPTURED`. The next pod for that Task starts from a bundle whose only note says that, re-runs turn-0, and charges the retry to `maxTurnsPerTask`. Nothing about the Task's stage or conditions records the loss.
 
-`status.lastTurn` is written by the turn-complete callback and cleared on every stage transition, so it is legitimately absent in exactly one benign case: the pod was TTL-stopped **before its first turn ever completed**. A Task that was still rendering turn-0 when its TTL expired has genuinely produced nothing to hand off. Check `status.stats.turns` and the pod's age before treating it as a defect.
+`status.lastTurn` is written by the turn-complete callback and cleared on every stage transition, so it is legitimately absent in exactly one benign case: the pod was TTL-stopped **before its first turn ever completed** in this stage. A Task that was still rendering turn-0 when its TTL expired has genuinely produced nothing to hand off. Check `status.stats.turns` and the pod's age before treating it as a defect.
+
+`status.lastTurn` deliberately SURVIVES a mid-stage pod respawn (the crash/eviction path writes no handoff note, so it is the vanished pod's only surviving trace). A pod that TTL-stops before completing a turn of its own can therefore still land `handoff=synthetic` from an earlier pod's payload - which is correct, and is why the synthetic note dates the turn it was built from. If that timestamp predates the current pod, the work done since it is unrecorded even though the stop was not counted as `handoff=none`.
 
 **Diagnosis:**
 ```promql
@@ -705,7 +707,7 @@ kubectl -n tatara get task <task-name> -o jsonpath='{range .status.notes[*]}{.at
 
 1. **Confirm it is not a pre-first-turn stop.** `status.stats.turns == 0` with a pod younger than one `agentPodTTLSeconds` is the benign case; no action.
 2. **Check whether the turn-complete callback is landing at all.** `handoff=none` on Tasks that have completed turns means `status.lastTurn` is not being written - look for `record last-turn continuation payload (non-fatal)` errors in the operator log, and for callback rejections (`callback_authn_failed`, HMAC skew) that would drop the payload before it is persisted.
-3. **Check whether the wrapper is being torn down before the stop reaches it.** `reap_orphan reason="idle no live turn"` on the same Task shortly before the stop means the idle backstop and the pod TTL are fighting. The reaper stands down from t0 onward, so this should not recur; if it does, compare `idlePodReapMinutes` against `agentPodTTLSeconds` for that Project.
+3. **Check whether the wrapper is being torn down before the stop reaches it.** `reap_orphan reason="idle no live turn"` on the same Task shortly before the stop means the idle backstop and the pod TTL are fighting. The reaper stands down for the window in which the G.7 stop owns the pod - from t0 until the stop's own hard cap, `t0 + 2*turnTimeoutSeconds + 60s` - so this should not recur. The stand-down is bounded on purpose: a reconcile that never reaches the TTL gate would otherwise exempt a wedged pod from the idle backstop forever. A pod reaped past that cap is the backstop working, not this bug.
 4. **Treat the affected Tasks as discontinuous.** Any Task whose notes journal contains only the `NO CONTINUATION STATE WAS CAPTURED` placeholder has lost its prior turns; do not read it as clean continuity when reviewing what the next pod produced.
 
 ---
