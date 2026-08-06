@@ -650,9 +650,13 @@ sum by (stageReason) (increase(operator_task_parked_total{namespace="tatara",job
 <a id="tatara-runbook-operator-agent-pod-force-deleted-at-ttl"></a><!-- alert: "Operator agent pod force-deleted at TTL" status: covered -->
 ## Agent pod lost mid-stage
 
-**Symptoms:** `Operator task pod-recreation budget exhausted` (`alerts/tatara-operator.yaml`, warning) fires on any Task failing in 1h with `stageReason=pod-recreation-exhausted`. `Operator agent pod force-deleted at TTL` (same file, warning) fires on any agent pod, by `agent_kind`, force-deleted at TTL in 1h.
+**Symptoms:** `Operator task pod-recreation budget exhausted` (`alerts/tatara-operator.yaml`, warning) fires on any Task failing in 1h with `stageReason=pod-recreation-exhausted`. `Operator agent pod force-deleted at TTL` (same file, warning) fires when more than 2 agent pods of one `agent_kind` had to be force-deleted at TTL in 1h.
 
-**What it means:** The first is the readiness clock's terminal case: a pod exists but never becomes Ready within the 5-minute `podReadyTimeout`, the operator respawns it, and once `stats.podRecreations` exceeds `maxPodRecreations` (3) the Task fails outright - investigate pod evictions, node pressure, and OOM-kills on the wrapper workload. The second is rarer and worse: the G.7 stop sequence got neither an agent handoff nor a synthetic one when the pod was torn down at its TTL. `Task.status.notes` is the only continuation state carried to the next pod, so that next pod resumes from a bundle missing the last turn's work - silent work loss that leaves the Task looking healthy.
+**What it means:** The first is the readiness clock's terminal case: a pod exists but never becomes Ready within the 5-minute `podReadyTimeout`, the operator respawns it, and once `stats.podRecreations` exceeds `maxPodRecreations` (3) the Task fails outright - investigate pod evictions, node pressure, and OOM-kills on the wrapper workload.
+
+The second is a **wrapper-health** signal and, on its own, **not work loss**. `operator_agent_pod_ttl_expired_total` reports two independent labels. `outcome` answers how the POD was stopped (`graceful` or `force_deleted`); `force_deleted` means the graceful G.7 stop failed against a live pod - a wedged turn, an unresponsive PTY - and the operator deleted it with a zero grace period. `handoff` answers how the CONTINUATION STATE was captured, and that is the label that decides whether anything was lost. A Task whose agent wrote a perfect handoff note and whose wrapper then failed to tear down cleanly is `outcome=force_deleted, handoff=agent`: nothing is missing.
+
+This runbook and the alert both asserted the opposite until tatara-operator#527 - that `force_deleted` meant "neither an agent handoff nor a synthetic one" - and that state was never reachable in the code. Work loss now has its own alert; see [Agent pod TTL-stopped with no handoff captured](#tatara-runbook-operator-agent-pod-ttl-stopped-with-no-handoff-captured) below.
 
 **Diagnosis:**
 ```bash
@@ -662,10 +666,47 @@ kubectl -n tatara get task <task-name> -o jsonpath='{.status.stats.podRecreation
 ```
 ```promql
 sum(increase(operator_task_terminal_total{namespace="tatara",job="tatara-operator",stage="failed",stageReason="pod-recreation-exhausted"}[1h]))
-sum by (agent_kind) (increase(operator_agent_pod_ttl_expired_total{namespace="tatara",job="tatara-operator",outcome="force_deleted"}[1h]))
+sum by (agent_kind, handoff) (increase(operator_agent_pod_ttl_expired_total{namespace="tatara",job="tatara-operator",outcome="force_deleted"}[1h]))
 ```
 
-**Fix:** For the recreation-budget alert, address the node-level cause the summary names - evictions, node memory pressure, OOM-kills - on the nodes the `wrapper` workload lands on; there is no operator-side retry left once the budget is spent. For force-deleted-at-TTL there is no confirmed fix beyond investigation: check wrapper logs for what the pod was doing right up to the force-delete (a wedged turn, an unresponsive PTY) and treat the next pod's notes for that Task as potentially incomplete rather than assuming clean continuity.
+**Fix:** For the recreation-budget alert, address the node-level cause the summary names - evictions, node memory pressure, OOM-kills - on the nodes the `wrapper` workload lands on; there is no operator-side retry left once the budget is spent. For force-deleted-at-TTL, split by `handoff` first (second query above). If `handoff` is `agent` or `synthetic`, continuity is intact and this is purely a teardown problem: check wrapper logs for what the pod was doing right up to the force-delete. If `handoff` is `none`, follow the runbook below - that is the work-loss case, and the force-delete is incidental to it.
+
+---
+
+<a id="tatara-runbook-operator-agent-pod-ttl-stopped-with-no-handoff-captured"></a><!-- alert: "Operator agent pod TTL-stopped with no handoff captured" status: covered -->
+## Agent pod TTL-stopped with no handoff captured
+
+**Symptoms:** `Operator agent pod TTL-stopped with no handoff captured` (`alerts/tatara-operator.yaml`, warning) fires on any agent pod, by `agent_kind`, TTL-stopped in 1h with `handoff=none`.
+
+**What it means:** Silent work loss, and the Task will look healthy. The G.7 stop sequence guarantees `Task.status.notes` is non-empty after every TTL stop, but `handoff=none` is the case where non-empty is not the same as useful. Both sources of a handoff failed at once:
+
+- the agent did not answer the one handoff turn the wrapper still admits past t0 (it was mid-turn at the hard cap, the wrapper 410'd/409'd it, or the pod was already gone), **and**
+- `Task.status.lastTurn` was absent, so the operator had no `finalText` and no `pushedRepos` to build a synthetic note from.
+
+What lands instead is a placeholder note leading with `NO CONTINUATION STATE WAS CAPTURED`. The next pod for that Task starts from a bundle whose only note says that, re-runs turn-0, and charges the retry to `maxTurnsPerTask`. Nothing about the Task's stage or conditions records the loss.
+
+`status.lastTurn` is written by the turn-complete callback and cleared on every stage transition, so it is legitimately absent in exactly one benign case: the pod was TTL-stopped **before its first turn ever completed**. A Task that was still rendering turn-0 when its TTL expired has genuinely produced nothing to hand off. Check `status.stats.turns` and the pod's age before treating it as a defect.
+
+**Diagnosis:**
+```promql
+sum by (agent_kind) (increase(operator_agent_pod_ttl_expired_total{namespace="tatara",job="tatara-operator",handoff="none"}[1h]))
+sum by (agent_kind, outcome, handoff) (increase(operator_agent_pod_ttl_expired_total{namespace="tatara",job="tatara-operator"}[6h]))
+```
+```logql
+{namespace="tatara", app="tatara-operator"} | json | action="agent_pod_ttl_stop" | handoff="none"
+```
+```bash
+# the affected Task's continuation state, and whether it had produced a turn at all
+kubectl -n tatara get task <task-name> -o jsonpath='{.status.lastTurn}{"\n"}{.status.stats.turns}{"\n"}'
+kubectl -n tatara get task <task-name> -o jsonpath='{range .status.notes[*]}{.at} {.agent} {.kind}: {.body}{"\n"}{end}'
+```
+
+**Fix:** Nothing recovers the lost turns - there is nothing persisted to recover from. Triage in this order:
+
+1. **Confirm it is not a pre-first-turn stop.** `status.stats.turns == 0` with a pod younger than one `agentPodTTLSeconds` is the benign case; no action.
+2. **Check whether the turn-complete callback is landing at all.** `handoff=none` on Tasks that have completed turns means `status.lastTurn` is not being written - look for `record last-turn continuation payload (non-fatal)` errors in the operator log, and for callback rejections (`callback_authn_failed`, HMAC skew) that would drop the payload before it is persisted.
+3. **Check whether the wrapper is being torn down before the stop reaches it.** `reap_orphan reason="idle no live turn"` on the same Task shortly before the stop means the idle backstop and the pod TTL are fighting. The reaper stands down from t0 onward, so this should not recur; if it does, compare `idlePodReapMinutes` against `agentPodTTLSeconds` for that Project.
+4. **Treat the affected Tasks as discontinuous.** Any Task whose notes journal contains only the `NO CONTINUATION STATE WAS CAPTURED` placeholder has lost its prior turns; do not read it as clean continuity when reviewing what the next pod produced.
 
 ---
 
