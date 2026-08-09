@@ -11,28 +11,39 @@ between an issue arriving on a forge and code landing on `main`:
 | Gate | What it holds back | Who opens it |
 |---|---|---|
 | Intake | Whether an issue becomes a Task at all | The sweep's orphan predicate plus `Project.spec.scm.reporterLogins` |
-| Approval | Whether any code is written | The [approval grammar](#the-approval-grammar) below. The clarify agent judges the thread and cites evidence; the operator independently verifies it. The Task sits at `clarifying` until that verification passes, then moves to `approved` |
+| Approval | Whether any code is written | The [approval grammar](#the-approval-grammar) below. The **implement** agent judges the thread and cites evidence, before writing a line of code; the operator independently verifies it. The Task sits at `refined` until that verification passes, then moves to `under-implementation` |
 | Merge | Whether reviewed code reaches `main` | The **operator**, on an accepted `submit_outcome(verdict=approve)` from a review pod. The forge's native merge-on-green is never armed, and no MCP tool exposes a merge action |
+
+!!! info "The approval gate moved into `implement` (contract 4, #521)"
+    Before the #521 lifecycle redesign, a separate `clarify` agent kind ran
+    this gate and handed off to `implement` only once it passed. `clarify`
+    is now gone: its three decisions became `action` values
+    (`approved`/`discuss`/`rejected`) on the `implement` outcome, so the same
+    pod that judges the approval grammar goes on to write the code, in the
+    same turn or a later one on the same Task. The verification mechanics
+    below - the operator independently re-reading the cited comment rather
+    than trusting the agent's say-so - are unchanged; only which pod
+    declares the citation changed.
 
 ```mermaid
 sequenceDiagram
     participant M as Maintainer
     participant SCM as SCM (GitHub/GitLab)
     participant OP as Operator
-    participant AG as Agent pod
+    participant AG as Agent pod (implement)
 
     OP->>SCM: open the issue thread, mirror it onto an Issue CR
-    AG->>OP: clarify: submit_outcome(decision=implement, no citation yet)
+    AG->>OP: implement: submit_outcome(action=approved, no citation yet)
     OP->>OP: verifyApprovalScope over every live owned Issue
     Note over OP: no comment to cite yet,<br/>park at identity-unverified
     M->>SCM: comment "go ahead, I approve!"
     SCM->>OP: issue_comment webhook (sender=M)
-    OP->>OP: sync the comment mirror,<br/>un-park the Task to conversing
-    AG->>OP: clarify: submit_outcome(decision=implement,<br/>approval_citations=[{id, quote}])
-    OP->>OP: verify structurally: citation exists, author is a<br/>verified non-bot maintainer, quote occurs verbatim,<br/>not already consumed
+    OP->>OP: sync the comment mirror,<br/>un-park a fresh implement pod
+    AG->>OP: implement: submit_outcome(action=approved,<br/>approving_maintainer=M, plan_note_id=..., approval_citations=[{id, quote}])
+    OP->>OP: verify structurally: citation exists, author is a<br/>verified non-bot maintainer, quote occurs verbatim,<br/>not already consumed; plan-hash matches the pinned plan note
     OP->>OP: pin ApprovalEvidence on the Issue CR,<br/>Issue.status.status = approved
-    OP->>AG: spawn the implement pod
-    AG->>SCM: push a branch, open a PR
+    OP->>OP: Task.status.state: refined -> under-implementation
+    AG->>SCM: same pod (or its next turn) pushes a branch, opens a PR
     OP->>AG: spawn the review pod
     AG->>OP: review: submit_outcome(verdict=approve)
     OP->>SCM: the OPERATOR posts the review, then merges
@@ -81,27 +92,34 @@ spec:
 ```
 
 Intake decides only whether the platform *listens*. It grants nothing. An
-allowlisted reporter who is not a maintainer can open an issue and talk to a
-`clarify` agent all day; they cannot cause a line of code to be written.
+allowlisted reporter who is not a maintainer can open an issue and talk to an
+`implement` agent all day; they cannot cause a line of code to be written.
 
 ## Gate 2: The approval grammar { #the-approval-grammar }
 
 Approval is not a label, and it is not a wordlist match either. **A maintainer
-comment is always required. The clarify agent judges whether it approves; the
+comment is always required. The implement agent judges whether it approves; the
 operator independently verifies the structural facts the agent's judgment
 rests on.** The operator has no wordlist and does no text matching of its own -
 it never decides what a comment *means*. It only checks that the comment the
 agent cited is real, whose it is, and that the quoted text is genuinely there.
 
-The agent's side, `submit_outcome(decision=implement, ...)`:
+The agent's side, `submit_outcome(action=approved, ...)`:
 
 - `reason` says in plain words **who** approved and **why** the agent read
   their comment that way.
-- `approval_citations` carries one `{id, quote}` pair for every Issue the Task
-  owns **that a maintainer has commented on at all**: `id` is that comment's
-  forge `external_id`, copied verbatim from the turn-0 bundle; `quote` is a
-  verbatim substring of that comment's body. It is not unconditionally
-  required - see clause 3 below for what happens on an Issue with no
+- `plan_note_id` is **always required** on `action=approved`, including when
+  no human commented: the id of the `task_note(kind="plan")` call that wrote
+  the plan being approved. The operator hashes that note's body at grant and
+  re-checks the hash before the agent writes any code - see
+  [the plan pin](#the-plan-pin) below.
+- `approving_maintainer` and `approval_citations` travel **as a pair - both,
+  or neither**. `approval_citations` carries one `{id, quote}` pair for every
+  Issue the Task owns **that a maintainer has commented on at all**: `id` is
+  that comment's forge `external_id`, copied verbatim from the turn-0 bundle;
+  `quote` is a verbatim substring of that comment's body. Neither field is
+  required when the Issue satisfies the `autoApproveTataraProposals`
+  carve-out below - see clause 3 for what happens on an Issue with no
   maintainer comment.
 
 The operator sets `Issue.status.status = approved` only when **all** of the
@@ -110,7 +128,7 @@ Issue - `state == "open"` and `status` not in (`done`, `rejected`); an
 out-of-scope Issue is filtered out of the loop entirely and never has to
 produce evidence - this is the single grant path; there is no other:
 
-1. A `clarify` Task submitted `decision=implement`. That is the agent's
+1. An `implement` Task submitted `action=approved`. That is the agent's
    judgment on scope and meaning, and it is a precondition, never itself an
    approval.
 2. **Scope.** *Every* live Issue the Task owns satisfies clause 3. Not one of
@@ -143,7 +161,7 @@ produce evidence - this is the single grant path; there is no other:
              `Issue.status.approval.commentId`. **Approval evidence is
              single-use**: a consumed comment cannot approve a second time.
 4. The operator then pins the evidence on the Issue CR, and once every owned
-   Issue is approved, moves the Task to the `approved` stage:
+   Issue is approved, moves the Task from `refined` to `under-implementation`:
 
 ```yaml
 status:
@@ -164,6 +182,20 @@ phrase list is gone, and there is no replacement: what approves is the
 maintainer's comment as the agent read it and the operator verified it, not
 membership in a closed set of strings.
 
+### The plan pin { #the-plan-pin }
+
+Approval grants a **specific plan**, not a blank check. `plan_note_id` is
+mandatory on every `action=approved` call, human comment or not: it names the
+`task_note(kind="plan")` the agent wrote before asking for the go-ahead. The
+operator hashes that note's body at grant time and re-checks the hash
+immediately before the pod's next code-writing turn - if the plan note has
+changed since, the Task routes back to `refined` (`plan-hash-mismatch`)
+instead of proceeding on a plan nobody approved. This closes a hole the
+pre-#521 gate did not have to think about: when the same pod both judges
+approval and writes the code, "the plan I got approved" and "the plan I am
+about to implement" are two separate reads that must be pinned to the same
+note, not two names for the same variable.
+
 ### There is no most-recent-comment requirement, and that is deliberate
 
 Clause 3 does **not** require the cited comment to be the thread's most recent
@@ -175,9 +207,9 @@ Task would park forever with no path out.
 
 Whether a later maintainer comment actually **withdraws** an earlier approval
 is an intent question, and intent is the agent's job under this design, not the
-operator's - the operator only checks structure. A clarify pod that reads a
+operator's - the operator only checks structure. An implement pod that reads a
 later maintainer comment as a withdrawal or qualification of an earlier
-approval must submit `decision=discuss`, not cite the stale approval. This is a
+approval must submit `action=discuss`, not cite the stale approval. This is a
 real, accepted narrowing of the operator's backstop relative to the old
 wordlist grammar's "most recent wins" rule: a misjudging agent that cites a
 genuinely-superseded approval is not caught structurally. See
@@ -186,24 +218,25 @@ for the full accounting of what is and is not covered.
 
 ### When the citation check runs
 
-The check is not a one-shot at `clarify` outcome time. It runs at **both** of:
+The check is not a one-shot at `implement`'s first outcome. It runs at
+**both** of:
 
-1. `clarify`'s `submit_outcome(decision=implement)`, and
+1. an `implement` Task's `submit_outcome(action=approved)`, and
 2. **every non-bot event on a Task parked at `identity-unverified`** un-parks
-   the Task to `conversing`, spawning a fresh clarify pod - it does not grant
-   approval by itself. That pod reads the refreshed thread and submits its own
-   `decision=implement` with a fresh citation through the same gate.
+   the Task and spawns a fresh `implement` pod - it does not grant approval by
+   itself. That pod reads the refreshed thread and submits its own
+   `action=approved` with a fresh citation through the same gate.
 
 The webhook path never grants approval on its own any more: it only puts a
-live agent back in front of the human who just commented. There used to be two
-grant paths - one at `clarify` outcome time, one on the webhook comment path -
-and they have collapsed into the single `restapi.verifyApprovalScope` call.
-Collapsing them removes a whole class of the two paths ever disagreeing with
-each other.
+live agent back in front of the human who just commented. There used to be
+two grant paths - one at the gate agent's outcome time, one on the webhook
+comment path - and they have collapsed into the single
+`restapi.verifyApprovalScope` call. Collapsing them removes a whole class of
+the two paths ever disagreeing with each other.
 
 ### When it fails
 
-If any check fails, the Task parks with `stageReason=identity-unverified` -
+If any check fails, the Task parks with `parkReason=identity-unverified` -
 **HTTP 200, not an error.** **Nothing is posted to the issue thread.** The
 refusal reason is recorded as a `Task.status.notes` entry, a WARN log line, and
 the `operator_approval_refused_total{reason}` counter - visible to whoever
@@ -215,10 +248,10 @@ otherwise noticed, the Task can sit parked until it ages out at
 
 ### Approval is not sticky
 
-An Issue acquired *after* the Task reached `approved` - through `issue_write`
-creating one, or through a `refine` fold adopting one - **resets the Task out of
-`approved`** and back to `clarifying`, because clause 2 no longer holds. An
-agent cannot widen its own mandate by adopting work after the gate closed behind
+An Issue acquired *after* the Task reached `under-implementation` - through
+`issue_write` creating one, or through a `refine` fold adopting one - **resets
+the Task back to `refined`**, because clause 2 no longer holds. An agent
+cannot widen its own mandate by adopting work after the gate closed behind
 it.
 
 !!! danger "Presence is not consent. A citation is not a grant."
@@ -400,17 +433,17 @@ project-level list is non-empty.
 flowchart TD
     A([Issue filed]) --> B{Intake gate\nreporterLogins}
     B -- author not allowed --> Z1([Dropped - no Task minted])
-    B -- author allowed --> C[clarify pod reads the thread]
-    C -- decision: reject --> D([Issue closed, status rejected])
-    C -- decision: clarify --> E[Task stays at clarifying]
-    C -- "decision: implement\n+ approval_citations" --> F{verifyApprovalScope:\ncitation checks pass\non EVERY live owned Issue?}
+    B -- author allowed --> C[implement pod reads the thread\nstate: refined]
+    C -- action: rejected --> D([Issue closed, state rejected])
+    C -- action: discuss --> E[Task stays at refined]
+    C -- "action: approved\n+ plan_note_id\n+ approval_citations" --> F{verifyApprovalScope:\ncitation + plan-hash checks pass\non EVERY live owned Issue?}
     F -- no --> P[parked: identity-unverified\nHTTP 200, not an error\nnothing posted to the thread]
-    F -- yes --> G[ApprovalEvidence pinned\nstage: approved]
+    F -- yes --> G[ApprovalEvidence pinned\nstate: under-implementation]
     P --> H{Non-bot comment\narrives on the thread}
-    H --> R[un-park to conversing,\nfresh clarify pod re-decides]
+    H --> R[un-park,\nfresh implement pod re-decides]
     R --> C
     E --> H
-    G --> I[implement pod opens a PR]
+    G --> I[same implement pod\nopens a PR]
     I --> J[review pod submits a verdict]
     J -- request_changes --> I
     J -- approve --> K{Live head SHA still\nequals reviewedSHA?}

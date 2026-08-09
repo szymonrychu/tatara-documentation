@@ -87,8 +87,8 @@ Notes render inside the context bundle, wrapped as untrusted content like
 everything else in it:
 
 ```xml
-<notes total="62" rendered="50" elided="12" fetch="task_context(task=tatara-clarify-2026-07-12-m4z8q, notes=all)">
-  <note agent="clarify"  at="2026-07-12T10:31Z" kind="handoff" source="agent">Scope locked. 3 repos.</note>
+<notes total="62" rendered="50" elided="12" fetch="task_context(task=tatara-implement-2026-07-12-m4z8q, notes=all)">
+  <note agent="implement" at="2026-07-12T10:31Z" kind="handoff" source="agent">Scope locked. 3 repos.</note>
   <note agent="implement" at="2026-07-12T11:02Z" kind="plan" source="agent">Guard the reaper on podStartedAt plus a live-turn probe.</note>
   <note agent="operator" at="2026-07-12T13:00Z" kind="handoff" source="operator">TTL stop. Last turn's final text: ...</note>
 </notes>

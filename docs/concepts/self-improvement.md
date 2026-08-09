@@ -35,8 +35,8 @@ forgotten, and the docs drift from the code. Tatara inverts each of these becaus
 same agent loop that ships product work is pointed at the platform itself:
 
 - **Idle improvements get done.** The periodic [brainstorm](../workflows/brainstorm.md)
-  surveys the code graph and files concrete proposals as new `clarify` Tasks; a maintainer
-  comments on the good ones, the clarify agent cites that comment as approval, and the
+  surveys the code graph and files concrete proposals as new `implement`-origin Tasks; a maintainer
+  comments on the good ones, the `implement` agent cites that comment as approval, and the
   loop implements them once the operator verifies the citation.
 - **Incidents close their own loops.** A firing alert spawns an
   [incident](../workflows/incident.md) investigation that produces an evidence-backed
@@ -55,9 +55,9 @@ tatara's own repositories.
 ## Brainstorm-driven improvements
 
 The [brainstorm](../workflows/brainstorm.md) cron queries tatara's own knowledge graph,
-scores improvement candidates, and files them as new `clarify` Tasks carrying the
+scores improvement candidates, and files them as new `implement`-origin Tasks carrying the
 `tatara-brainstorming` label. **Brainstorm never implements** - each accepted proposal becomes
-its own `clarify` Task, and a verified maintainer must post a comment the clarify agent cites
+its own `implement` Task, and a verified maintainer must post a comment the `implement` agent cites
 and the operator independently verifies before the loop writes any code; the bot is structurally
 excluded from ever satisfying its own gate. This is
 [Gate 1, the approval grammar](agentic-model.md#gate-1-the-approval-grammar) and it is the
@@ -70,19 +70,19 @@ A representative cycle on tatara's own codebase:
 flowchart LR
     A[brainstorm Task<br/>fires on tatara Project] --> B[Query code graph:<br/>find coupling / gaps]
     B --> C[submit_outcome propose:<br/>tighten context guard]
-    C --> D[new clarify Task,<br/>tatara-brainstorming label]
-    D --> E[Maintainer comments;<br/>clarify agent cites it]
-    E --> F[Task.status.stage = approved]
-    F --> G[implement Task<br/>implements + opens PR]
+    C --> D[new implement Task,<br/>tatara-brainstorming label]
+    D --> E[Maintainer comments;<br/>implement agent cites it]
+    E --> F[Task.status.state = under-implementation]
+    F --> G[same Task<br/>implements + opens PR]
     G --> H[review: submit_outcome approve,<br/>operator merges on green CI]
 ```
 
 **Example - a graph-discovered refactor.** A brainstorm pass reading the operator's code
 graph notices that a token-accounting helper is copy-pasted across three reconcilers. It
 files *"Deduplicate per-turn token accounting into a single helper"* with a problem
-statement, a proposed approach, and the expected benefit, as a new `clarify` Task. A maintainer
-comments on the issue, the clarify agent cites that comment and the operator verifies it; the
-Task moves to `approved` and then `implementing`,
+statement, a proposed approach, and the expected benefit, as a new `implement`-origin Task. A maintainer
+comments on the issue, the `implement` agent cites that comment and the operator verifies it; the
+Task moves to `under-implementation`,
 which extracts the helper, adds a table-driven test, and opens a PR that a review pod approves
 and the operator merges once CI is green. The improvement is one a human would have wanted and
 never scheduled.
@@ -100,9 +100,9 @@ against tatara's repos.
 When a Grafana alert fires against tatara's own services, the operator spawns an
 [incident](../workflows/incident.md) agent with read-only Grafana MCP access. It queries
 metrics, logs, and the firing rule, forms a diagnosis, and calls
-`submit_outcome(action=file_issue)` to open one evidence-backed issue under a new `clarify`
-Task. That Task then goes through the normal `clarify` -> `implement` -> `review` handoff. Two
-shapes of fix come out of this, and tatara does both.
+`submit_outcome(action=file_issue)` to open one evidence-backed issue under a new `implement`-origin
+Task. That Task then goes through the normal approval-gate -> code -> `review` handoff, all within
+`implement`. Two shapes of fix come out of this, and tatara does both.
 
 ### 1. Fixing the code the alert pointed at
 

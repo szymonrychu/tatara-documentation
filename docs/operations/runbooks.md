@@ -99,12 +99,12 @@ failing the Task outright - the terminal reason when that budget is spent is
 `pod-recreation-exhausted`, not a stalled-forever state.
 
 **Common causes:**
-1. **Boot quiescence timeout** - claude process hung during boot dialog detection. Check logs for `bootWait` timeout. This is the READINESS clock; the operator respawns the pod automatically. If you see this recurring, watch `stats.podRecreations` climb toward `maxPodRecreations` and `stageReason` land on `pod-recreation-exhausted` once exhausted.
+1. **Boot quiescence timeout** - claude process hung during boot dialog detection. Check logs for `bootWait` timeout. This is the READINESS clock; the operator respawns the pod automatically. If you see this recurring, watch `stats.podRecreations` climb toward `maxPodRecreations` and `parkReason` land on `pod-recreation-exhausted` once exhausted.
 2. **Anthropic credential invalid** - the wrapper authenticates with `CLAUDE_CODE_OAUTH_TOKEN`, injected from the `oauth-token` key of the Anthropic Secret (`anthropicSecretName`). An expired or revoked token fails boot. Update the Secret key and let the operator respawn the pod.
 3. **OIDC token fetch failure** - Keycloak unreachable. Check `OIDC_ISSUER` and Keycloak health.
-4. **MCP server not starting** - `tatara mcp` fails at init. Check `TATARA_MEMORY_URL` and `TATARA_OPERATOR_URL` are reachable from the pod. If instead the MCP server starts but the Task fails instantly with `stageReason=agent-contract-mismatch`, this is not a boot problem - see
-   [`failed(agent-contract-mismatch)`](#failedagent-contract-mismatch) below.
-5. **Stage-deadline or admission-starved park** - if the Task is `parked` rather than stuck in a pod stage, check `stageReason`. `admission-starved` means it has been waiting on a `maxConcurrentAgents` slot past the 24h admission clock (skipped entirely while the project is paused at `maxConcurrentAgents=0`); `stage-deadline` means an agent was running but blew the per-stage work budget - see the budget table on the [stage reference](../reference/task-stages.md).
+4. **MCP server not starting** - `tatara mcp` fails at init. Check `TATARA_MEMORY_URL` and `TATARA_OPERATOR_URL` are reachable from the pod. If instead the MCP server starts but the Task parks instantly with `parkReason=agent-contract-mismatch`, this is not a boot problem - see
+   [`parked(agent-contract-mismatch)`](#parkedagent-contract-mismatch) below.
+5. **Stage-deadline or admission-starved park** - if the Task carries a `parkReason` rather than being stuck in a live state, check which one. `admission-starved` means it has been waiting on a `maxConcurrentAgents` slot past the 24h admission clock (skipped entirely while the project is paused at `maxConcurrentAgents=0`); `stage-deadline` means an agent was running but blew the per-state work budget - see the budget table on the [state reference](../reference/task-stages.md).
 
 ---
 
@@ -138,16 +138,22 @@ kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{
 
 **Alert rule:** `Tatara approval refusals elevated` (`alerts/tatara-logs.yaml`, warning) fires on a burst of refused approval attempts in 15m, labelled with the refusal `reason`. A single refusal does not alert; the runbook below applies either way.
 
-**Symptoms:** A `clarifying`-stage Task moved to `parked` with `stageReason=identity-unverified`
-after the clarify agent reported `decision=implement`, but the Task never advanced to
-`approved`.
+**Symptoms:** A `refined`-state Task parked with `parkReason=identity-unverified`
+after the `implement` agent's approval-gate turn reported `action=approved`, but the Task never
+advanced to `under-implementation`.
 
-**Explanation:** The clarify agent judged that a maintainer approved and cited a comment as
+!!! info "Since #521: `clarify` is `implement`"
+    This runbook predates the #521 lifecycle redesign's `clarify` fold. Every
+    `clarify`/`decision=implement`/`approved`-stage reference below is now the `implement`
+    agent's `action=approved`, and the state is `refined`, not `clarifying`/`approved`.
+
+**Explanation:** The `implement` agent judged that a maintainer approved and cited a comment as
 evidence - the forge comment's `external_id` plus a verbatim quote from its body - for every
-Issue the Task owns. The operator does not take that judgment on faith: `restapi.verifyApprovalScope`
-independently re-derives, for **every** owned Issue, whether the cited comment exists, who posted
-it, and whether the quoted text is really there. One of those structural checks failed, so the
-operator refused the citation and parked the Task rather than granting an unverified mandate.
+Issue the Task owns, along with the `plan_note_id` of the plan it wants approved. The operator
+does not take that judgment on faith: `restapi.verifyApprovalScope` independently re-derives,
+for **every** owned Issue, whether the cited comment exists, who posted it, and whether the
+quoted text is really there. One of those structural checks failed, so the operator refused the
+citation and parked the Task rather than granting an unverified mandate.
 
 **Diagnosis, in order:**
 
@@ -160,29 +166,31 @@ operator refused the citation and parked the Task rather than granting an unveri
 There is no most-recent-comment check on the operator's side - it verifies structure, not
 sequence, so an older approving comment is still citable even when a newer maintainer comment
 exists on the thread. Whether that newer comment withdraws the earlier approval is an intent
-question the operator does not ask; it is the clarify agent's job to read the whole thread and
-submit `decision=discuss` instead of citing a stale approval when a later maintainer comment
+question the operator does not ask; it is the `implement` agent's job to read the whole thread and
+submit `action=discuss` instead of citing a stale approval when a later maintainer comment
 actually walks it back.
 
 For the full grammar specification (what the agent judges versus what the operator verifies) see
 [Security: approval gates](../operations/security/approval-gates.md#the-approval-grammar) - this
 runbook only tells you what to check, not how the verification itself works.
 
-**Re-entry:** the **next** non-bot comment on the thread un-parks the Task to `conversing`,
-spawning a fresh clarify pod against the refreshed thread - it does not re-run the check
-directly. That pod reads the new comment, forms its own judgment, and submits a fresh
-`decision=implement` with a new citation through the same gate. Have the maintainer post an
-unambiguous comment and the next comment event will bring an agent back to read it.
+**Re-entry:** the **next** non-bot comment on the thread un-parks the Task, spawning a fresh
+`implement` pod against the refreshed thread - it does not re-run the check directly. That pod
+reads the new comment, forms its own judgment, and submits a fresh `action=approved` with a new
+citation through the same gate. Have the maintainer post an unambiguous comment and the next
+comment event will bring an agent back to read it.
 
 ---
 
 <a id="tatara-runbook-operator-agent-contract-version-mismatch"></a><!-- alert: "Operator agent contract version mismatch" status: covered -->
-## `failed(agent-contract-mismatch)`
+## `parked(agent-contract-mismatch)`
 
 **Alert rule:** `Operator agent contract version mismatch` (`alerts/tatara-operator.yaml`, critical).
 
-**Symptoms:** A Task fails **instantly** on entering a pod stage, before turn-0 is ever
-submitted, with `stageReason=agent-contract-mismatch`. No turn budget was spent.
+**Symptoms:** A Task parks **instantly** on entering a pod-spawning state, before turn-0 is ever
+submitted, with `parkReason=agent-contract-mismatch`. No turn budget was spent. (This runbook
+predates #521: the reason used to terminate at `failed(agent-contract-mismatch)`; it is now a
+park, since `failed` is no longer a state.)
 
 **Explanation:** The operator and the agent image (wrapper/cli/skills) ship in different helm
 releases applied concurrently by the release cascade, so a version-skewed moment is reachable:
@@ -203,9 +211,10 @@ reported, and `image` names the offending pin.
 
 **Fix:** Re-check the helmfile pins for the operator release and the agent-image release
 (wrapper/cli/skills) in `tatara-helmfile`. One of them did not advance in step with the other.
-Bump the stale pin so both sides agree on the contract version, then let the operator re-admit
-the Task (it does not auto-retry; treat it like any other `failed` Task requiring a human look,
-per the [stage reference](../reference/task-stages.md)).
+Bump the stale pin so both sides agree on the contract version (`4`, as of the #521 lifecycle
+redesign), then let the operator re-admit the Task - `agent-contract-mismatch` has no re-entry
+rule, so it does not auto-retry; treat it like any other terminally-parked Task requiring a
+human look, per the [state reference](../reference/task-stages.md#the-park-flag).
 
 See [Deployment](deployment.md#upgrades) for why this window is reachable even when both
 pipelines are green.

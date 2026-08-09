@@ -278,8 +278,10 @@ startup and registers only the allowed tools - gating happens at
   never grant a wider surface than the always-on set.
 
 Per-profile counts, derived from the gating table (20 minus each profile's
-denied cells): brainstorm 17, incident 18, clarify 14, implement 16, review
-15, refine 13, documentation 18. The full tool-by-profile matrix lives in the
+denied cells): brainstorm 17, incident 18, implement 17, review
+15, refine 13, documentation 18. `clarify` is gone as a profile (folded into
+`implement`, which absorbed its `issue_write` grant) as of the #521 lifecycle
+redesign. The full tool-by-profile matrix lives in the
 [MCP Tool Profiles reference](../reference/mcp-tools.md#the-profile-gating-table);
 this page does not duplicate it.
 
@@ -307,7 +309,7 @@ set in the environment and does not equal the cli's compiled contract
 version, it logs FATAL and exits non-zero, before registering any tools. An
 **unset** value is allowed through - this is what makes a workstation or a
 test run work with no contract-version env at all. Inside an agent pod the
-operator always sets `TATARA_CONTRACT_VERSION=2`, so the check is live there
+operator always sets `TATARA_CONTRACT_VERSION=4`, so the check is live there
 unconditionally.
 
 This is one of three defenses in the full handshake; the other two
@@ -382,7 +384,7 @@ installed in the image and injects the environment the CLI needs:
         "TATARA_TOOL_PROFILE": "implement",
         "TATARA_PROJECT": "tatara",
         "TATARA_TASK": "tatara-implement-2026-07-12-a1b2c",
-        "TATARA_CONTRACT_VERSION": "2",
+        "TATARA_CONTRACT_VERSION": "4",
         "OIDC_ISSUER": "https://auth.szymonrichert.pl/realms/master",
         "CLI_OIDC_CLIENT_ID": "tatara-agent",
         "CLI_OIDC_CLIENT_SECRET": "<injected from Secret>"

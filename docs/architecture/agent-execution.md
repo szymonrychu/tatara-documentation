@@ -6,8 +6,9 @@ title: Agent Execution
 
 Every pod-spawning stage of a `Task` runs a dedicated Kubernetes Pod, named
 independently of the Task itself - see [Pod naming](../reference/task-stages.md#pod-naming)
-- for the current agent kind (`status.agentKind`: `brainstorm`, `incident`, `clarify`,
-`refine`, `implement`, `review`, or `documentation`). The pod hosts a single Go
+- for the current agent kind (`status.agentKind`: `brainstorm`, `incident`,
+`refine`, `implement`, `review`, or `documentation` - `clarify` is gone as of the
+#521 lifecycle redesign, folded into `implement`). The pod hosts a single Go
 service (`tatara-claude-code-wrapper`) that wraps one persistent, interactive
 `claude` process and exposes it to the operator as a turn-based HTTP API.
 
@@ -341,7 +342,8 @@ carries forward between pods of the same Task; there is no live session to
 reconnect to.
 
 One consequence: a brainstorm Task's proposals each become their own new
-`clarify` Task (one per proposal), each starting cold at its own turn 0 with its
+`implement` Task (one per proposal, `spec.kind: implement` - the origin role
+`clarify` used to hold), each starting cold at its own turn 0 with its
 own context bundle - not a forked live conversation. Continuity for a sibling
 comes from what the operator renders into its bundle from the originating
 Issue/Task state, not from a shared session.
@@ -359,20 +361,21 @@ contract, where these carried the Task's origin kind.
 | `TATARA_TASK` | Task CR name | unchanged |
 | `TATARA_PROJECT` | Project CR name | unchanged |
 | `TATARA_KIND` | agent kind (`status.agentKind`) | changed semantics |
-| `TATARA_TOOL_PROFILE` | agent kind (7 values) | changed key |
-| `TATARA_SKILL_PROFILE` | agent kind (7 values) | changed key |
+| `TATARA_TOOL_PROFILE` | agent kind (6 values) | changed key |
+| `TATARA_SKILL_PROFILE` | agent kind (6 values) | changed key |
 | `TATARA_REPO` | Repository CR name; empty except on `documentation` Tasks | narrowed |
 | `TASK_BRANCH` | `task/<task-name>` | unchanged form |
 | `TATARA_OPERATOR_URL` / `TATARA_MEMORY_URL` | operator / memory service endpoints | unchanged |
 | `AGENT_POD_TTL_SECONDS` | `Project.spec.agentPodTTLSeconds` | new |
-| `TATARA_CONTRACT_VERSION` | `2` | new |
+| `TATARA_CONTRACT_VERSION` | `4` | new |
 
 !!! warning "The tool-profile rekey is a day-one fleet wedge if missed"
     Both the operator's and `tatara-cli`'s `kindProfiles` maps are keyed on the
     agent kind now, not the old Task-origin kind. The map fails **closed** on an
     unknown key: a pod whose kind is absent from the map gets only the always-on
-    tool set and no `submit_outcome` registered. A `clarify` pod mapped under its
-    old key, for example, would wedge on day one with no terminal tool at all.
+    tool set and no `submit_outcome` registered. `clarify` is gone from both maps
+    entirely as of contract 4 - a pod still reporting that profile wedges with no
+    terminal tool at all, deliberately (see [MCP tools](../reference/mcp-tools.md)).
 
 Two env vars are removed outright, not merely deprecated: `TATARA_CHAT_URL` (the chat service is archived/decommissioned; the inter-agent chat room that used to exist is gone, and continuity is the notes journal above, not a chat room) and the whole resume-mode triplet `HANDOFF_KEY` / `CONVERSATION_SESSION_ID` / `CONVERSATION_OBJECT_KEY`. <!-- stale-ok: TATARA_CHAT_URL, tatara-chat, chat room, HANDOFF_KEY, CONVERSATION_SESSION_ID, CONVERSATION_OBJECT_KEY -->
 
@@ -385,7 +388,7 @@ old `tatara-cli`, no `submit_outcome`, every new endpoint 404ing - is therefore
 reachable, and would otherwise silently burn a pod's entire turn budget producing
 nothing, repeated across every Task in flight. Three defenses, all mandatory:
 
-1. The operator injects `TATARA_CONTRACT_VERSION=2` into every agent pod (above).
+1. The operator injects `TATARA_CONTRACT_VERSION=4` into every agent pod (above).
 2. `tatara-cli`'s MCP server refuses to start if `TATARA_CONTRACT_VERSION` is set
    and does not match its own compiled contract version - a fatal exit. An
    *unset* value (a workstation, a test) is allowed through, which then simply
@@ -395,12 +398,11 @@ nothing, repeated across every Task in flight. Three defenses, all mandatory:
    with no `contractVersion` field at all (an old wrapper):
 
    ```
-   Task.status.stage       = failed
-   Task.status.stageReason = agent-contract-mismatch
-   metric:                   operator_agent_contract_mismatch_total{expected,got,image}
+   Task.status.parkReason = agent-contract-mismatch
+   metric:                  operator_agent_contract_mismatch_total{expected,got,image}
    ```
 
-   The Task fails instantly, before a single turn is submitted - zero tokens
+   The Task parks instantly, before a single turn is submitted - zero tokens
    burned. Any nonzero rate of this metric is a critical alert.
 
 ---

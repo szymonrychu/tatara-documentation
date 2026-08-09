@@ -34,8 +34,8 @@ Both paths apply the same scope check via `spec.scm.prReactionScope`:
 
 The PR author must not be the bot itself: a `review`-kind Task (`spec.kind: review`) is always
 opened against **someone else's** PR, by construction. The platform's own MRs are reviewed at
-the `reviewing` stage of the Task that opened them - a different stage of a `clarify`- or
-`refine`-originated Task, never a `review`-kind Task.
+the `awaiting-review` state of the Task that opened them - a different state of an `implement`-
+or `refine`-originated Task, never a `review`-kind Task.
 
 ## Re-review dedup
 

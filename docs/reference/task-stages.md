@@ -1,536 +1,405 @@
 ---
 title: Task Stage Machine
-description: The fifteen stages a Task moves through, who writes them, the three clocks that bound every stage, and why parked is a dead end.
+description: The eight-state lifecycle, the parkReason and liveness properties that replaced the old sixteen-stage machine, the three clocks that bound every state, and the cycle caps.
 ---
 
-# The Task stage machine
+# The Task state machine
 
-`Task.status.stage` is the single progress field on a Task. It is written by the
-**operator only**. No agent ever writes `status.stage`, and no agent can ask for a
-stage: an agent submits an outcome, and the operator decides what that outcome
-means. A transition that is not in [the transition table](#the-transition-table)
-is rejected by the reconciler, logged at ERROR, and counted in
-`operator_illegal_stage_transition_total`.
+`Task.status.state` is the single progress field on a Task, written by the
+**operator only**. No agent ever writes `status.state`, and no agent can ask
+for a state: an agent submits an outcome, and the operator decides what that
+outcome means. A transition that is not in
+[the transition table](#the-transition-table) is rejected by the reconciler,
+logged at ERROR, and counted in `operator_illegal_stage_transition_total`
+(the metric kept its pre-redesign name; only its `from`/`to` label values
+are now drawn from the 8-state enum).
 
----
+!!! info "This page describes the model introduced by the #521 lifecycle redesign"
+    The pre-redesign machine had **sixteen** stages, and `parked` was one of
+    them - simultaneously a stage, a terminal, and a pod-less marker. That
+    conflation is what let a *live, awaiting-human* Task read as *done*
+    (`TaskDone(parked) == true`), the defect the redesign exists to close.
+    The new model factors the old stage into **three orthogonal
+    properties**, and nothing below should be read as still describing
+    `triaging`, `clarifying`, `investigating`, `refining`, `approved`,
+    `implementing`, `reviewing`, `merging`, `deploying`, `documenting`,
+    `delivered`, `parked` or `failed` as live values - they no longer exist
+    on the CRD.
 
-## The stage enum
+## Three orthogonal properties, not one
 
-Fifteen members:
-
-`triaging`, `brainstorming`, `clarifying`, `investigating`, `refining`,
-`approved`, `implementing`, `reviewing`, `merging`, `deploying`, `delivered`,
-`documenting`, `rejected`, `failed`, `parked`.
-
-| Group | Stages | Meaning |
+| Property | Answers | Values |
 |---|---|---|
-| Working | `triaging`, `brainstorming`, `clarifying`, `investigating`, `refining`, `approved`, `implementing`, `reviewing`, `merging`, `deploying`, `documenting` | The Task is live. It counts against `maxOpenTasks` |
-| Quasi-terminal | `delivered` | The work landed. Reaped at **48h**, and only once `status.documentedBy` is stamped or the Task provably has nothing to document |
-| Terminal | `rejected`, `failed`, `parked` | **All three age out.** The reaper deletes them on their own budget |
+| `status.state` | **Where the work is** | 8 closed values, this page's table |
+| `status.parkReason` | **Whether it is stalled** | A flag - empty, or one of 28 reasons ([`park.go`](#the-park-flag)) |
+| `Live(state)` | **Whether a pod is up** | A pure property of `state`, not a stored field |
 
-`delivered` is held for 48h rather than 24h because the documentation batch runs
-once a night: a Task delivered at 23:30 would otherwise have had thirty minutes
-of margin before its own reaper deleted it out from under the batch that was
-about to cover it.
+A Task can be `state=refined` **and** `parkReason=awaiting-human` at the same
+time: it is waiting on a human, but it is still, structurally, at the refined
+gate - unparking re-derives its target from the same state it was already in,
+never from a fourth field. `parked` is not a value any field takes any more.
 
-The happy path, with the two side exits every stage carries:
+---
+
+## The state enum
+
+Eight members, in lifecycle order: `new`, `refined`, `under-implementation`,
+`awaiting-review`, `merged`, `deployed`, `done`, `rejected`.
+
+| Group | States | Meaning |
+|---|---|---|
+| Pre-gate | `new` | Triage. Counts against `maxOpenTasks` |
+| Live (carries a pod) | `refined`, `under-implementation`, `awaiting-review` | An agent pod is up. Bounded by the idle clock, not a fixed work budget |
+| Operator-driven | `merged`, `deployed` | No pod. The operator itself advances these |
+| Terminal | `done`, `rejected` | Both age out and are reaped on their own retention |
+
+`done` absorbed the old `delivered`. There is no `parked` state and no
+`failed` state: parking is the `parkReason` flag on whichever state the Task
+was already in, and every old `failed(...)` terminal is now `rejected` with
+the equivalent reason, or a park that simply never re-enters (see
+[stage reasons](#stage-reasons)).
 
 ```mermaid
 stateDiagram-v2
-    [*] --> triaging
-    triaging --> clarifying : spec.kind = clarify
-    clarifying --> approved : decision=implement AND the approval grammar passes
-    approved --> implementing : the implement pod is admitted
-    implementing --> reviewing : submit_outcome(submitted)
-    reviewing --> implementing : submit_outcome(request_changes)
-    reviewing --> merging : submit_outcome(approve)
-    merging --> deploying : every repo merged, in mergeOrder, on green CI
-    deploying --> delivered : every owned MR merged and deployed
-    delivered --> [*] : reaped at 48h, once documented
-    clarifying --> parked : awaiting-human, identity-unverified
-    reviewing --> parked : review-loop-exhausted, awaiting-human
-    merging --> parked : merge-timeout
-    deploying --> parked : deploy-timeout
-    implementing --> failed : turn-budget-exhausted
-    parked --> [*] : aged out at parkRetention, then reaped
-    failed --> [*] : reaped at 7d
+    [*] --> new
+    new --> refined : triage passed
+    new --> awaiting_review : kind=review (reviews a HUMAN PR)
+    refined --> under_implementation : submit_outcome(action=approved) AND the extended approval gate GRANTS
+    under_implementation --> awaiting_review : submit_outcome(action=submitted), >= 1 owned MR open
+    under_implementation --> refined : plan-hash-mismatch (the CHEAP path back to the gate)
+    awaiting_review --> under_implementation : request_changes, or approve with red live CI
+    awaiting_review --> merged : submit_outcome(verdict=approve)
+    merged --> deployed : every repo in mergeOrder merged, on green CI
+    deployed --> done : every owned MR merged and deployed
+    refined --> done : brainstorm/refine/incident non-code terminal
+    new --> rejected : false_positive, tracked_elsewhere, issue closed
+    refined --> rejected : action=rejected, false_positive, issue closed
+    done --> [*] : reaped at 48h
+    rejected --> [*] : reaped at 24h
 ```
 
-The other origin kinds enter their own agent stage straight out of `triaging`:
-`brainstorm` to `brainstorming`, `incident` to `investigating`, `refine` to
-`refining`, `review` to `reviewing`, `documentation` to `documenting`.
+Every **live** state (`refined`, `under-implementation`, `awaiting-review`)
+carries a pod for whichever agent kind `AgentKindFor(state, spec.kind)`
+resolves to - see [Which agent each state spawns](#which-agent-each-state-spawns)
+below. `merged` and `deployed` run no pod at all; the operator advances them
+directly.
 
 ---
 
-## Which agent each stage spawns
+## Which agent each state spawns
 
-`Task.spec.kind` is the **origin** and never changes. `Task.status.agentKind` is
-the **agent that is running right now**, and it changes as the Task moves. The
-stage is what picks it.
+`Task.spec.kind` is the **origin** and never changes. `Task.status.agentKind`
+is the **agent running right now**, and the state - not the origin alone -
+decides it, because the state enum is now kind-agnostic: a `brainstorm` Task
+in `refined` needs a `brainstorm` pod, not an `implement` one.
 
-| Stage | Pod (agent kind) |
+| `spec.kind` (origin) | Agent kind at `refined` / `under-implementation` |
 |---|---|
-| `triaging` | none (the operator classifies, and mints the Issue CRs) |
-| `brainstorming` | `brainstorm` |
-| `clarifying` | `clarify` |
-| `investigating` | `incident` |
-| `refining` | `refine` |
-| `approved` | none (admission gate) |
-| `implementing` | `implement` |
-| `reviewing` | `review` |
-| `merging` | none (operator) |
-| `deploying` | none (operator) |
-| `documenting` | `documentation` |
-| `delivered` / `rejected` / `failed` / `parked` | none |
+| `brainstorm` | `brainstorm` |
+| `incident` | `incident` |
+| `refine` | `refine` |
+| `review` | `review` |
+| `documentation` | `documentation` |
+| `takeover` | `implement` |
+| `implement` | `implement` |
 
-Each pod's own name is computed independently of the Task's name - see
-[Pod naming](#pod-naming) below.
+At `awaiting-review` every kind runs `review`, regardless of origin. `new`,
+`merged`, `deployed`, `done` and `rejected` spawn no pod at all -
+`AgentKindFor` returns `""` for each of them, which is a **fail-closed**
+result, not an oversight, for an origin kind the map does not recognize.
 
-`implement` appears in this column and nowhere in `spec.kind`. **It is an agent
-kind only.** There is no such thing as an implement-kind Task; a Task reaches
-`implementing` by being approved, not by being minted that way.
+`clarify` is **gone as an agent kind**. Its three decisions - `implement` /
+`close` / `discuss` - became `action` values (`approved` / `rejected` /
+`discuss`) on the `implement` outcome, so the pod that judges the approval
+grammar is the same pod that goes on to write the code, gated behind
+[the extended approval gate](../operations/security/approval-gates.md).
+There is no such thing as a `clarify`-kind Task any more; see
+[MCP tools by agent kind](mcp-tools.md) for the six surviving agent kinds.
 
-Every pod-spawning stage enqueues a `QueuedEvent`. The pod is created only when
-that event is **admitted** against `maxConcurrentAgents`.
-
-!!! note "`triaging` enqueues a QueuedEvent and spawns no pod. Both are true."
-    The `QueuedEvent` that `triaging` enqueues is for the pod of the **next**
-    stage - the one `spec.kind` selects. `triaging` itself is pure operator work:
-    classify the origin, mint the Issue CRs, pick the next stage. It runs no agent.
+Every pod-spawning state entry enqueues a `QueuedEvent`. The pod is created
+only when that event is **admitted** against `maxConcurrentAgents`.
 
 ---
 
 ## Pod naming
 
-The wrapper Pod (and Service) name is independent of the Task's own name. It is
-composed once at Task creation and stamped into the `tatara.dev/pod-name`
-annotation; `agent.PodName()` reads it back thereafter (falling back to
-`wrapper-<task-name>` for a Task created before the annotation existed):
+Unchanged in shape from before the redesign, with one deletion: the
+`clr` type token is gone. The wrapper Pod (and Service) name is independent
+of the Task's own name, composed once at Task creation and stamped into the
+`tatara.dev/pod-name` annotation:
 
 ```
 <type>-<project>-<repo>-<i|p><id>
 ```
 
-- `type` is a fixed 3-char token for the Task's agent kind (`brs`, `ref`,
-  `inc`, `clr`, `rev`, `imp`, `doc`, `tko`; an unrecognized kind falls back to
-  its own first 3 lowercased chars).
+- `type` is a fixed 3-char token for the Task's agent kind: `brs`
+  (brainstorm), `ref` (refine), `inc` (incident), `rev` (review), `imp`
+  (implement), `doc` (documentation), `tko` (takeover); an unrecognized kind
+  falls back to its own first 3 lowercased chars.
 - `project` and `repo` are trimmed dynamically and proportionally
-  (`splitTrimBudget`) to use the 63-char DNS-1123 budget as efficiently as
-  possible, readability-first, instead of a fixed truncation length; `repo` is
-  omitted for a project-board item with no bound repo.
-- the trailing id segment is `i<N>` for an issue or `p<N>` for a PR/MR (GitHub
-  PR and GitLab MR fold into the single `p` token - there is no separate `mr`
-  token); a kind with no issue/PR/MR number keeps its own pre-existing
-  collision-avoidance disambiguator instead (an incident's `dedupKey`, a
-  documentation Task's short source-head-SHA, a brainstorm health-check's
-  `hc`) rather than dropping the segment; every other numberless kind drops it
-  entirely, with no placeholder.
-- `sanitizeDNS1123` is the final hard-cap backstop regardless of how the
-  segments above are composed.
+  (`splitTrimBudget`) to use the 63-char DNS-1123 budget efficiently,
+  readability-first; `repo` is omitted for a project-board item with no
+  bound repo.
+- the trailing id segment is `i<N>` for an issue or `p<N>` for a PR/MR
+  (GitHub PR and GitLab MR fold into the single `p` token); a kind with no
+  issue/PR/MR number keeps its own collision-avoidance disambiguator
+  instead (an incident's `dedupKey`, a documentation Task's short
+  source-head-SHA) rather than dropping the segment.
+- `sanitizeDNS1123` is the final hard-cap backstop.
 
-The provider (`gh`/`gl`) is not part of the name at all. The Task's own name is
-a separate string:
-
-```
-<project>-<kind>-<YYYY-MM-DD>-<uid5>
-```
-
-capped at **49 characters**. The cap is not arbitrary: the worst-case pod suffix
-is `-documentation`, which is 14 characters, and a Kubernetes RFC-1123 label
-cannot exceed 63. `agent.TaskName()` truncates the project segment to hold the
-cap. A Task whose name still overflows fails immediately with
-`stage=failed`, `stageReason=name-too-long` - a CRD cannot constrain
-`metadata.name` length and there is no validating webhook, so the guard is a
-reconcile-time check.
-
-So a clarify Task on the `tatara` project might be named
-`tatara-clarify-2026-07-12-m4z8q`, while the pod it spawns at `implementing` -
-against, say, `tatara-operator` issue 507 - is named `imp-tatara-tatara-operator-i507`
-(trimmed further if needed to fit 63 chars). The two names share no structure:
-the Task name carries the **origin** kind and a creation timestamp, the pod
-name carries the **currently-running agent** kind and the issue/PR it targets,
-and they are computed independently.
+The Task's own name is a separate string, `<project>-<kind>-<YYYY-MM-DD>-<uid5>`,
+capped at **49 characters** - the worst-case pod suffix is `-documentation`
+(14 chars) against the 63-char RFC-1123 label limit. A Task whose name still
+overflows fails immediately: `state=rejected`, `stateReason` empty (there is
+no `name-too-long` reject reason - the mint refuses before a Task object
+exists).
 
 ---
 
 ## The transition table
 
-Written by the operator only.
-
-**Every transition, without exception, does all four of these:**
-
-```
-status.stageEnteredAt     = now
-status.podStartedAt       = nil
-status.stageWorkStartedAt = nil
-stats.podRecreations      = 0
-```
-
-and thereafter:
+Written by the operator only. **Twenty-six edges.** Every transition does all
+of:
 
 ```
-podStartedAt       is stamped when the pod is CREATED
-                   (and RE-stamped on every respawn)
-stageWorkStartedAt is stamped when the pod becomes READY
+status.stateEnteredAt              = now
+status.stateReason                 = reason
+status.agentKind                   = AgentKindFor(to, spec.kind)
+status.podStartedAt                = nil     <- load-bearing
+status.stateWorkStartedAt          = nil
+stats.podRecreations               = 0
+status.stageElapsedCarrySeconds    = 0
+status.conversationLastEventAt     = now, on entry into a LIVE state, else nil
 ```
 
-Both timestamps are cleared, not just `stageWorkStartedAt`, and that matters on
-every re-entry edge (`reviewing` back to `implementing`, `merging` back to
-`reviewing`, every un-park). A stale non-nil `podStartedAt` on such an edge does
-two things, both bad. It **disarms the admission clock** - which is armed only
-while `podStartedAt == nil` - while the Task sits in the queue, and the readiness
-clock cannot fire either because its evaluator needs a pod that does not exist
-yet: the Task is covered by **no clock at all** while it queues. And it makes the
-pod TTL (`podStartedAt + agentPodTTLSeconds`) already in the past for the fresh
-pod, so the operator stops that pod before its first turn.
+Forgetting `podStartedAt = nil` leaves a Task covered by **no clock at all**
+while it queues on a re-entry edge, because clock 1 (admission) is armed only
+while `podStartedAt == nil` and clock 2 (readiness) needs a pod that does not
+exist yet.
+
+`Enter` **refuses a parked Task outright** (`*StillParkedError`). There is
+exactly one way out of a park: `Unpark` (or `UnparkTakeover`, the one
+documented exception) - see [the park flag](#the-park-flag) below.
 
 | From | To | Trigger |
 |---|---|---|
-| (create) | `triaging` | Task minted ACTIVE: webhook-originated, or a human has the last word on the thread. Enqueues a QueuedEvent |
-| (create) | `parked(backlog-sweep)` | Task minted from a sweep-discovered backlog issue. **Spawns no pod, enqueues nothing.** It exists to own the Issue CR |
-| `parked(backlog-sweep)` | `triaging` | a non-bot `pendingEvent` arrives (a human commented) AND `maxOpenTasks` is not already reached. Over cap the promotion **defers**: the Task stays parked and the event is retained, never dropped. A refine fold does not promote it - the fold deletes it |
-| `triaging` | `brainstorming` / `clarifying` / `investigating` / `refining` / `reviewing` / `documenting` | by `spec.kind` = brainstorm / clarify / incident / refine / review / documentation |
-| `triaging` | `failed(triage-stalled` \| `name-too-long)` | spec validation or the 49-character name guard fails |
-| any pod stage | `failed(agent-contract-mismatch)` | the wrapper reports a `contractVersion` other than `2` at pod-ready, **before turn 0 is submitted**. It never burns a single turn |
-| `brainstorming` | `delivered` | `submit_outcome(propose)` - each proposal becomes its own new clarify Task - or `submit_outcome(skip)`. `documentedBy` stays empty: no documentation Task is spawned |
-| `clarifying` | `approved` | `submit_outcome(decision=implement)` AND [the approval grammar](../operations/security/approval-gates.md#the-approval-grammar) passes for **every** owned Issue |
-| `approved` | `clarifying` | the Task acquires a new Issue after approval (`issue_write(create)`, or a refine fold adopting one). **Approval is not sticky** - the mandate is re-gated |
-| `clarifying` | `parked(identity-unverified)` | `decision=implement` but the grammar fails |
-| `clarifying` | `parked(awaiting-human)` | `decision=discuss` |
-| `clarifying` | `rejected(declined)` | `decision=close` (the operator closes the issue) |
-| `investigating` | `clarifying` | `submit_outcome(file_issue)` - the tracker Issue is created under this Task |
-| `investigating` | `rejected(false-positive)` | `submit_outcome(false_positive)`. No documentation Task |
-| `refining` | `delivered` | folds, closes and links applied, and the fold verified. No documentation Task unless the refine owned merged MRs |
-| `refining` | `failed(fold-adoption-unverified)` | fold-adoption verification fails |
-| `approved` | `implementing` | a QueuedEvent for the implement pod is **admitted** |
-| `implementing` | `reviewing` | `submit_outcome(submitted)` and at least one owned MR is open |
-| `implementing` | `parked(implement-declined)` | `submit_outcome(declined)` |
-| `reviewing` | `implementing` | `submit_outcome(request_changes)` **AND `spec.kind != "review"`** AND `mr.status.reviewRounds < maxReviewRounds` AND every owned MergeRequest has `status.pendingReview == nil` (an empty owned-MR set does not open the gate either) |
-| `reviewing` | `parked(awaiting-human)` | `submit_outcome(request_changes)` on a **`kind == "review"`** Task. The review is posted. **A human's PR is fixed by the human** |
-| `reviewing` | `parked(review-loop-exhausted)` | `request_changes` at `maxReviewRounds` (3), on a non-`review` Task |
-| `reviewing` | `merging` | `submit_outcome(approve)` on a Task whose `spec.kind != review` (the MRs are the platform's own) AND every owned MergeRequest has `status.pendingReview == nil` (an empty owned-MR set does not open the gate either). The operator posts a `COMMENT` review and stamps `reviewedSHA` from the SHA the agent reported, verified still live |
-| `reviewing` | `parked(awaiting-human)` | `submit_outcome(approve)` on a **`review`-kind** Task. The review is posted. The Task never reaches `merging`. **Merging a human's PR is a human action** |
-| `merging` | `reviewing` | a live head that is not `reviewedSHA`, or a merge call that 409s "head moved". Increments `status.headMoveReentries`, capped at 3, then `failed(head-moving)` |
-| `merging` | `failed(merge-order-missing)` | `len(spec.mergeOrder) == 0` on entry. A bug-catcher, not a normal path: the outcome endpoint resolves the single-repo case |
-| `merging` | `deploying` | every repo in `mergeOrder` merged, in order, each on green CI |
-| `merging` | `failed(merge-blocked)` | `status.mergeReentries >= 3` |
-| `deploying` | `delivered` | every owned MR merged and deployed. **The operator then closes every owned Issue** and stamps `deliveredAt` |
-| `deploying` | `failed(deploy-blocked)` | `status.deployReentries >= 3` |
-| `delivered` | (nothing is spawned per delivery) | Documentation is a **nightly batch**, not a per-delivery spawn. A delivered Task with at least one MR ref, all merged, becomes eligible for the next batch. Everything else - a brainstorm `skip`, an incident `false_positive`, a fold-only refine, a declined implement - is never documented and has `documentedBy` permanently empty |
-| (nightly cron) | `documenting` | one documentation Task per project per night. `spec.documentsTasks` is every eligible Task delivered in the last 24h. Minted only when that list is non-empty |
-| `documenting` | `reviewing` | `submit_outcome(submitted)` on the docs MR |
-| `documenting` | `delivered` | `submit_outcome(declined)`. Either way, `status.documentedBy` is stamped on every Task in `spec.documentsTasks` |
-| any pod stage | `parked(admission-starved)` | clock 1: `podStartedAt == nil` and `now > stageEnteredAt + 24h`. Recoverable. **Skipped entirely when the project is paused** (`maxConcurrentAgents == 0`) |
-| any pod stage | (a **respawn**, not a transition) | clock 2: the pod exists but never became Ready within `podReadyTimeout` (5m) of `podStartedAt`. The pod respawns, `stats.podRecreations` increments, and the Task does **not** fail |
-| any pod stage | `failed(pod-recreation-exhausted)` | `stats.podRecreations > maxPodRecreations` (3). This is the terminal for a pod that never boots |
-| any pod stage | `failed(turn-budget-exhausted)` | `stats.turns >= maxTurnsPerTask` |
-| any pod stage | `parked(stage-deadline` \| `no-outcome)` | the stage deadline elapses; or a pod stopped having submitted no outcome, with the recreation budget spent |
-| `reviewing` | `parked(review-post-refused)` | a structural 4xx from `PostReview` |
-| any pod-spawning stage (`brainstorming`, `clarifying`, `investigating`, `refining`, `implementing`, `reviewing`, `documenting`) | `parked(object-too-large)` | the A.7 byte-budget pre-write guard refuses. One of the common `podStageEdges` exits every pod stage carries |
-| `triaging` \| `approved` \| `merging` \| `deploying` | `failed(object-too-large)` | the A.7 byte-budget pre-write guard refuses. These four pod-less stages fail instead of parking |
-| any non-terminal | `failed(operator-error)` | an unrecoverable operator error |
-| any terminal entry | (side effect, not a transition) | on entering `failed` or `rejected`, or being reaped from `parked`: the operator closes **only the MRs it created**. Four clauses, all required - bot-authored, on a `task/<task-name>` head, this Task is the controller owner, and no surviving plain owner exists. It runs **after** controller-ownership is released, never before |
+| (create) | `new` | Task minted for triage: webhook-originated, a sweep-discovered backlog issue (minted `parked(backlog-sweep)` alongside), or a human has the last word on the thread |
+| (create) | `refined` | a maintainer-gated takeover (`spec.kind=takeover`) mints a Task already bound to an existing MR: nothing to triage, but the work still faces the approval gate |
+| (create) | `under-implementation` | the nightly documentation batch is minted straight into implementation work - no driving issue to triage, and no gate: a nightly batch is the operator's own decision, already made |
+| (create) | `done` | **the terminal-reset guard.** A Task served stateless by the narrowed CRD (see [below](#no-migrator)) carries proof it already delivered - stamped where it finished rather than re-triaged |
+| (create) | `rejected` | **the terminal-reset guard**, the stopped-work twin of the edge above |
+| `new` | `refined` | triage passed: spec validates and the Task is routed to its origin kind's agent |
+| `new` | `awaiting-review` | triage passed on a `kind=review` Task. It reviews a **human's** PR, so there is no plan to write and no approval to grant - the gate at `refined` has nothing to do for it |
+| `new` | `rejected` | `false_positive`, `tracked_elsewhere`, or a human closed the driving issue mid-triage |
+| `refined` | `under-implementation` | `submit_outcome(action=approved)` **AND** the extended approval gate grants: the citation verifies for every live owned Issue, the declared `approvingMaintainer` agrees with it, and the plan note is pinned |
+| `refined` | `done` | a non-code kind finished: brainstorm `propose`/`skip`, refine `folds`/`closes`/`links` applied and verified, incident `file_issue` minted its tracker. None of the three ever opens an MR |
+| `refined` | `rejected` | `submit_outcome(action=rejected)` closes the issue, `false_positive`, or a human closed the driving issue |
+| `under-implementation` | `awaiting-review` | `submit_outcome(action=submitted)` and >= 1 owned MR is open |
+| `under-implementation` | `refined` | the plan pinned at grant no longer matches the plan note (`plan-hash-mismatch`) - the cheap path back to the gate, never a park |
+| `under-implementation` | `done` | the nightly documentation batch declined or its budget elapsed: `done(doc-timeout)`, no MR opened |
+| `under-implementation` | `rejected` | a human closed the driving issue mid-flight |
+| `awaiting-review` | `under-implementation` | `submit_outcome(action=request_changes)` **AND** `spec.kind != review` **AND** `reviewRounds < maxReviewRounds`, or an `approve` whose **live CI** at the reviewed head has failed. Gated on `pendingReview == nil` |
+| `awaiting-review` | `merged` | `submit_outcome(verdict=approve)` **AND** `spec.kind != review`. Gated on `pendingReview == nil`, and on the live CI at the reviewed head not being red |
+| `awaiting-review` | `done` | `mr-merged-externally`: a `kind=review` Task whose every owned MR merged externally before/while reviewing - no open MR to post an outcome against, so the operator finalizes the honest finished work |
+| `awaiting-review` | `rejected` | `mr-closed-externally` (the review target was abandoned), `mr-taken-over` (a maintainer took the MR over and this parent owns zero MRs), or a human closed the driving issue |
+| `merged` | `deployed` | every repo in `mergeOrder` merged, in order, each on green CI |
+| `merged` | `awaiting-review` | a live head that is not `reviewedSHA`, or a merge call that 409s "head moved". Increments `status.headMoveReentries`, capped at 3, then `parked(head-moving)` |
+| `merged` | `under-implementation` | a maintainer requested changes on the still-open MR before it merged, or the live CI at the reviewed head has failed. `kind=review` is refused here by the same guard that refuses it everywhere |
+| `merged` | `rejected` | a human closed the driving issue before the merge completed |
+| `deployed` | `done` | every owned MR merged **and** `deployedAt != nil`. The operator then closes every owned Issue and stamps `deliveredAt`. `deployed` carries **no** issue-closed edge: merged work is never rewound |
+| `done` | (reap) | `DeliveredRetention` (48h) elapses and the Task is documented, or provably needs no coverage |
+| `rejected` | (reap) | `RejectedRetention` (24h) elapses |
 
-!!! note "The pendingReview gate (contract C.5.3)"
-    `reviewing -> implementing` and `reviewing -> merging` both additionally
-    require that **every owned MergeRequest has `status.pendingReview ==
-    nil`**. A non-nil `pendingReview` means a review is owed to the forge and
-    the mirror has not recorded it yet - spawning a pod in that state renders
-    a bundle with no findings in it, re-submits, and burns a review round for
-    nothing. An **empty** owned-MR set does not open the gate either: zero MRs
-    is not a licence to proceed.
+`done` and `rejected` are **terminal**: no state exits, only the reaper.
 
-!!! info "Documentation is one nightly batch, not one pipeline per merged fix"
-    A per-delivery documentation Task is a 3-5x work amplifier: a docs Task, a
-    docs MR, a review pod, a merge, and a `tatara-documentation` release, for
-    every one-line patch. And a cron brainstorm that correctly reports "nothing
-    novel" must not spawn any of it at all. Documentation Tasks exist only where
-    code actually shipped, and one batch covers a whole night of it.
-
----
-
-## The deadline invariant
-
-**No stage may be entered without a deadline that leaves it.**
-
-There is no stage in which a Task can sit forever, and no cycle it can go round
-forever. A new stage cannot be added without a budget: a table-driven test
-asserts that every member of the enum has one.
-
-Every **pod stage** carries **three clocks**. Exactly one is armed at a time, and
-which one is armed is determined entirely by which timestamps are set.
-
-**1. Admission**, from `status.stageEnteredAt`, 24h, to `parked(admission-starved)`.
-
-Armed while `podStartedAt == nil`. It asks: has this Task been waiting for an
-agent slot too long? It is **skipped entirely when the project is paused**
-(`maxConcurrentAgents == 0`), so the kill switch is not a backlog shredder. That
-carve-out applies on every pod stage, not on `approved` alone.
-
-**2. Readiness**, from `status.podStartedAt`, **5 minutes** (`podReadyTimeout`,
-which is the same constant as the operator's `agentBootDeadline`).
-
-Armed once the pod exists (`podStartedAt != nil`) but has not become Ready
-(`stageWorkStartedAt == nil`). It asks: the pod exists - did it ever come up?
-**On breach the pod respawns** and `stats.podRecreations` increments. **It does
-not terminate the Task.** Only when `podRecreations > maxPodRecreations` (3) does
-the Task go to `failed(pod-recreation-exhausted)`.
-
-This clock measures from `podStartedAt` and **never** from `stageEnteredAt`.
-`stageEnteredAt` includes the admission queue, and clocking readiness from it
-would kill a Task that is queueing behind three live agents in perfectly ordinary
-steady state at `maxConcurrentAgents: 3`.
-
-**3. Work**, from `status.stageWorkStartedAt`, the per-stage budget below, to
-`parked(stage-deadline)`.
-
-Armed once the pod is Ready and doing real work. It asks: it is running - has it
-taken too long?
-
-!!! warning "There is no `pod-not-ready` stage reason"
-    A never-Ready pod is a **respawn trigger**, not a terminal state. The
-    readiness window is **5 minutes**, not 15, and its breach costs one
-    `podRecreations`, not the Task. The terminal for a pod that never boots is
-    `pod-recreation-exhausted`, once the recreation budget is spent. Anything
-    describing a `pod-not-ready` terminal, a 15-minute readiness window, or a
-    readiness clock measured from `stageEnteredAt` is describing a design that
-    was rejected precisely because it kills healthy Tasks in steady state.
-
-**Pod-less stages** (`triaging`, `approved`, `merging`, `deploying`, `delivered`,
-and the rest) run **clock 3 only**, measured from `stageEnteredAt` against their
-own budget. They do **not** run clock 1. If they did, `merging` would carry a 24h
-admission budget and could never reach `merge-timeout` at 4h, and the bounded
-merge re-entry cycle would never engage at all.
-
-Two clocks, a single per-edge deadline field, or pod-less stages on the admission
-clock: all three are wrong.
-
-### The budgets
-
-| Stage | Budget | On elapse |
-|---|---|---|
-| `triaging` | 5m | `failed(triage-stalled)` |
-| `brainstorming` | 2h | `parked(stage-deadline)` |
-| `clarifying` | 24h | `parked(awaiting-human)` |
-| `investigating` | 2h | `parked(stage-deadline)` |
-| `refining` | 2h | `parked(stage-deadline)` |
-| `approved` | 24h | `parked(admission-starved)`, **except** when the project is paused (`maxConcurrentAgents == 0`) |
-| `implementing` | 6h | `parked(stage-deadline)` |
-| `reviewing` | 4h | `parked(stage-deadline)` |
-| `merging` | 4h | `parked(merge-timeout)` |
-| `deploying` | 2h | `parked(deploy-timeout)` |
-| `documenting` | 2h (`docStageBudget`) | `delivered(doc-timeout)`, stamping `documentedBy` on every covered parent. **A stuck documentation batch never pins a parent** |
-| `delivered` | 48h | the reaper deletes it, once documented (or provably not documentable) |
-| `rejected` | 24h | the reaper deletes it |
-| `failed` | 7d | the reaper deletes it. It releases its Issues **immediately** on entering `failed`, not at reap |
-| `parked` (except `backlog-sweep`) | 7d (`parkRetention`) | the reaper deletes it, **after** the bot park comment has landed. The next sweep re-mints the still-open issue as `parked(backlog-sweep)` |
-| `parked(backlog-sweep)` | **none - exempt by design** | it is reaped only when its Issues close |
-
-`parked(backlog-sweep)` is the one stage with no time-based exit, and it has none
-precisely because it consumes nothing: no pod, no queue slot, no turn, no forge
-request. It is not stalled work. It is the durable owner of an Issue CR, and
-ageing it out would churn mint-and-reap forever.
-
-Every pod-spawning stage additionally exits on `failed(turn-budget-exhausted)`
-(`stats.turns >= maxTurnsPerTask`, default 300), on
-`failed(pod-recreation-exhausted)`, and on `parked(no-outcome)` when a pod stops
-having submitted no outcome and the recreation budget is spent.
-
-`maxTurnsPerPod` (default 40) does **not** terminate the Task: it stops the pod,
-via the TTL handoff path, and respawns, spending one `podRecreations`. **The
-`implement` agent kind is exempt from `maxTurnsPerPod`** - a long, healthy coding
-run must not be cut off - and is bounded instead by `maxTurnsPerTask` and the
-`implementing` stage deadline.
-
----
-
-## Cycle caps
-
-The invariant is global, not per-stage: it is not enough that every stage has an
-exit if a Task can loop between two of them forever. **Five cycles exist, and all
-five are bounded.**
-
-| Cycle | Counter | Cap | On exhaustion | Spawns a pod per lap? |
-|---|---|---|---|---|
-| `reviewing` and `implementing` | `reviewRounds` (on the MergeRequest) | 3 | `parked(review-loop-exhausted)` | yes |
-| `merging` and `parked(merge-timeout)` | `mergeReentries` | 3 | `failed(merge-blocked)` | no |
-| `deploying` and `parked(deploy-timeout)` | `deployReentries` | 3 | `failed(deploy-blocked)` | no |
-| `reviewing` and `merging` (the head moved) | `headMoveReentries` | 3 | `failed(head-moving)` | **yes** |
-| `reviewing` and `parked(awaiting-human)` (a `review`-kind Task) | `humanReviewRounds` | 5 (`maxHumanReviewRounds`) | it stays parked | **yes** (except a take-over comment on a stood-down MR - see below) |
-
-Two of these spawn a pod on every lap, and those are the two that matter for cost.
-
-The **head-moved** cycle: a PR whose head keeps moving - a human pushing to the
-branch, a flapping CI autocommit - spins `reviewing` to `merging` to `reviewing`
-and burns a review pod every lap.
-
-The **human-review** cycle: a `review`-kind Task un-parks on every human comment,
-so a chatty PR thread would otherwise spawn a review pod per comment.
-
-**Neither is bounded by `reviewRounds`.** That counter moves only on
-`request_changes`, so it never advances on the approve path at all. Each of these
-cycles needed its own counter, and has one.
+!!! note "Six guards live in `LegalFor`, not in the callers"
+    A `kind=review` Task may **never** reach `under-implementation` or
+    `merged`, by any path - not on `request_changes`, not on `approve`, not
+    on a takeover un-park. `awaiting-review -> under-implementation` and
+    `awaiting-review -> merged` both additionally require every owned
+    MergeRequest to have `pendingReview == nil` (an empty owned-MR set does
+    not open the gate either). `awaiting-review -> done`,
+    `under-implementation -> done` (from `refined`, not this edge - see the
+    table row above) and `new -> awaiting-review` are each restricted to the
+    one kind whose terminal or triage target they are. These guards were
+    caller-gated until the #521 review found the hole: a guard that lives in
+    the caller is not a guard, because a new call site can reintroduce it by
+    not knowing about it. `LegalFor` travels with the edge instead.
 
 ---
 
 ## Stage reasons
 
-`status.stageReason` is the machine-readable reason for the current stage. It is
-**mandatory** on `parked`, `failed` and `rejected`. The set is closed:
+`status.stateReason` carries the reason on `done` and `rejected` only
+(mandatory on `rejected`; optional and rare on `done` - most deliveries carry
+none at all). `status.parkReason` is a **separate field**, checked in
+`park.go` - see below. The two vocabularies are disjoint and validated
+independently: `reasonAllowedFor` checks `rejected` against the 6-member
+`RejectReasons` set, `done` against the 2-member `DoneReasons` set, and
+everything else (states that are not `done`/`rejected`, and every
+`parkReason` write) against the full 36-member closed set.
 
-`backlog-sweep`, `triage-stalled`, `name-too-long`, `stage-deadline`,
-`awaiting-human`, `identity-unverified`, `implement-declined`, `declined`,
-`false-positive`, `review-loop-exhausted`, `review-post-refused`, `merge-timeout`, `merge-blocked`,
-`merge-order-missing`, `deploy-timeout`, `deploy-blocked`, `no-outcome`,
-`turn-budget-exhausted`, `pod-recreation-exhausted`, `object-too-large`,
-`fold-adoption-unverified`, `admission-starved`, `agent-contract-mismatch`,
-`doc-timeout`, `operator-error`, and `head-moving` - 26 members.
+**Reject reasons (6):** `declined`, `false-positive`, `tracked-elsewhere`,
+`issue-closed`, `mr-closed-externally`, `mr-taken-over`.
 
-`admission-starved` is armed on **every** pod stage, not on `approved` alone.
-There is **no `pod-not-ready`** - see the readiness clock above.
+**Done reasons (2):** `doc-timeout`, `mr-merged-externally`. Most deliveries
+carry no reason at all - these two name the ways a Task finishes without the
+ordinary merge/deploy path.
 
 ---
 
-## `parked` is a dead end
+## The park flag
 
-A parked Task does not "resume". It either matches one of the narrow re-entry
-rules below, or it ages out at `parkRetention` (7d) and is reaped. There is
-exactly one re-entry function, and this is its entire body:
+`status.parkReason` replaced the old `parked` **stage**. It is a flag on top
+of whichever state the Task is already in, not a fourth state, and it is a
+28-member closed vocabulary:
 
-```
-unpark(t):
-  switch t.status.stageReason {
+`backlog-sweep`, `triage-stalled`, `name-too-long`, `stage-deadline`,
+`awaiting-human`, `identity-unverified`, `implement-declined`,
+`review-loop-exhausted`, `review-post-refused`, `merge-timeout`,
+`merge-blocked`, `merge-order-missing`, `deploy-timeout`, `deploy-blocked`,
+`no-outcome`, `turn-budget-exhausted`, `pod-recreation-exhausted`,
+`object-too-large`, `fold-adoption-unverified`, `admission-starved`,
+`agent-contract-mismatch`, `operator-error`, `head-moving`,
+`handoff-stalled`, `ownership-lost`, `merge-auth-refused`, `ci-red`,
+`ci-blocked`.
 
-  case "backlog-sweep":
-      require: a NON-BOT pendingEvent exists (a human commented)
-      require: ACTIVE Tasks < Project.spec.maxOpenTasks
-               // over cap, the promotion DEFERS: the Task stays parked and the
-               // pendingEvent is RETAINED, never dropped. It promotes as soon
-               // as a slot frees.
-      -> triaging      // and from there, by spec.kind, into its agent stage
+**The park clock outranks every state clock.** Its budget is
+`ParkRetention` (7d), except `parked(backlog-sweep)`, which **never** ages
+out - it is not stalled work, it is the durable, pod-less owner of an Issue
+CR, and it is reaped only when its Issues close.
 
-      // It NEVER ages out. It is reaped only when its Issues close.
+Un-parking is one function, and the target is **always re-derived from
+current state**, never stored:
 
-  case "awaiting-human":
-      // The ONLY comment-driven re-entry.
-      require: a NON-BOT pendingEvent exists.
+- `awaiting-human` on `refined` or `under-implementation`: the next
+  non-bot comment re-derives the target from whether every owned Issue is
+  `approved` (`under-implementation`) or not (`refined`) - never from a
+  stashed "where it was parked from" field.
+- `awaiting-human` on a `kind=review` Task: re-enters `awaiting-review`,
+  bounded by `humanReviewRounds` (cap 5); a stand-down (a human pushed a
+  commit) is exempt from that cap and spends no round.
+- `identity-unverified`: a non-bot comment re-syncs that Issue's comments
+  and puts a fresh `implement` pod in front of the refreshed thread. It
+  **never** grants approval directly - only `restapi.verifyApprovalScope`,
+  independently re-run on the pod's own next `submit_outcome`, can do that.
+- `merge-timeout` / `deploy-timeout`: re-enter their **own** state
+  (`merged` / `deployed`), bounded by `mergeReentries` / `deployReentries`
+  (cap 3 each), never `under-implementation`.
+- `no-outcome`: re-enters `under-implementation`, requiring zero owned MRs
+  merged.
+- Every other reason (`review-loop-exhausted`, `implement-declined`,
+  `stage-deadline`, `admission-starved`, `turn-budget-exhausted`,
+  `pod-recreation-exhausted`, `fold-adoption-unverified`, `doc-timeout`,
+  `operator-error`, `triage-stalled`, `name-too-long`, `ci-red`, ...) has
+  **no re-entry**: it ages out at `ParkRetention` and is reaped. The next
+  sweep re-mints the still-open issue as `parked(backlog-sweep)`, which owns
+  it at zero cost; a human comment then promotes that fresh Task through
+  `new`, as new work, not a resurrected zombie.
 
-      if t.spec.kind == "review":
-          require: no owned MR is already merged
-                   else: STAY PARKED (issue #393 - no legal outcome)
-          if any owned MR has status.ownership == "external":
-              // A stand-down state: a human pushed a commit, or the MR was
-              // never delegated to tatara. The round cap exists to bound
-              // ordinary review ping-pong, not to swallow a maintainer's
-              // take-over comment - so this path is EXEMPT from the cap and
-              // spends no round, win or lose. Re-entry either finds nothing
-              // to take over (a no-op) or hands ownership back.
-              -> reviewing
-          else:
-              require: status.humanReviewRounds < 5
-                       else: STAY PARKED. Do not spawn another review pod.
-              status.humanReviewRounds++
-              -> reviewing
-          // A review-kind Task may NEVER enter implementing or merging. There
-          // is no path, no condition, no exception. It does not exist.
-          break
+---
 
-      // The TARGET is RE-DERIVED from state, NEVER from status.parkedFromStage:
-          require: len(owned Issues with state == open) > 0
-          if EVERY such Issue has status.status == "approved" -> implementing
-          else                                                -> clarifying
+## The deadline invariant
 
-  case "identity-unverified":
-      on a NON-BOT pendingEvent:
-          FIRST: sync that issue's comments from the forge.
-          THEN:  require: conversingHasRoom
-                          else -> STAY PARKED, decline=no-conversing-room
-                                  // the pendingEvent is RETAINED; the next
-                                  // comment or reconcile pass retries
-                 if t.spec.kind == "review":
-                     require: no owned MR is merged
-                              else -> STAY PARKED, decline=merged-mr
-                     require: status.humanReviewRounds < 5
-                              else -> STAY PARKED. Do not spawn another pod.
-                     status.humanReviewRounds++
-                 -> conversing   // a fresh clarify pod reads the refreshed
-                                 // thread
-          // This edge NEVER grants approval and NEVER reaches implementing or
-          // approved directly - it only puts a live agent back in front of
-          // the human who just commented. The spawned pod forms its own
-          // judgment and submits its own submit_outcome(decision=implement,
-          // approval_citations=...) against the refreshed thread. Only THAT
-          // submit_outcome, independently re-verified by
-          // restapi.verifyApprovalScope, can stamp Issue.status.approval and
-          // move the Task toward approved. There is no path in this case
-          // block that stamps approval directly.
+**No state may be entered without a deadline that leaves it**, and no cycle
+between two states may run forever. Exactly one of three clocks is armed at
+a time, decided by which timestamps are set - never by the state alone:
 
-  case "merge-timeout":
-      require: status.mergeReentries < maxMergeReentries (3)
-               else -> failed(merge-blocked). The cycle is BOUNDED.
-      status.mergeReentries++
-      -> merging       // idempotent: mergeCursor resumes, and every MR is
-                       // re-validated against state=merged before any merge
-                       // call. NEVER implementing.
+**1. Admission** - from `stateEnteredAt`, 24h, to `parked(admission-starved)`.
+Armed while `podStartedAt == nil`. Skipped entirely while the project is
+paused (`maxConcurrentAgents == 0`).
 
-  case "deploy-timeout":
-      require: status.deployReentries < maxDeployReentries (3)
-               else -> failed(deploy-blocked).
-      status.deployReentries++
-      -> deploying     // idempotent. NEVER implementing.
+**2. Readiness** - from `podStartedAt`, 5 minutes (`PodReadyTimeout`). Armed
+once the pod exists but has not become Ready. **On breach the pod
+respawns** (`podRecreations` increments); it does **not** terminate the
+Task. Only past `podRecreations > maxPodRecreations` (3) does the Task park
+at `pod-recreation-exhausted`.
 
-  case "no-outcome":
-      require: ZERO owned MRs are merged
-      require: stats.turns < maxTurnsPerTask
-      -> implementing
+**3. Work / idle** - for the three **live** states, this is an **idle
+clock**, not a work budget: armed only while no turn is in flight, from the
+latest of the last human comment, the pod becoming Ready, or the end of the
+last turn. Its budget is `Project.spec.scm.conversationIdleMinutes` (default
+`ConversationIdleDefault`, 60m). An agent mid-turn is never idle by this
+clock - the bound on the work itself is the per-turn stall timeout plus the
+lifetime `maxTurnsPerTask`, not this clock. For the two **operator-driven**
+states (`merged`, `deployed`) it is an ordinary work budget from
+`stateEnteredAt`.
 
-  default:  // review-loop-exhausted, implement-declined, stage-deadline,
-            // admission-starved, turn-budget-exhausted,
-            // pod-recreation-exhausted, fold-adoption-unverified, doc-timeout,
-            // operator-error, triage-stalled, name-too-long
-      -> NO re-entry. It ages out at parkRetention and is reaped, AFTER the
-         operator posts its bot park comment. The next sweep re-mints the
-         still-open issue as a parked(backlog-sweep) Task, which OWNS it and
-         costs nothing. If a human then comments, THAT Task promotes to
-         triaging and the work resumes - as a NEW Task, not a zombie one.
-  }
-```
+### The budgets
 
-Four properties fall out of that body, and each one is load-bearing.
+| State | Budget | On elapse |
+|---|---|---|
+| `new` | 5m | `parked(triage-stalled)` |
+| `refined` | idle, 60m default | `parked(awaiting-human)` |
+| `under-implementation` | idle, 60m default | `parked(awaiting-human)` |
+| `awaiting-review` | idle, 60m default | `parked(awaiting-human)` |
+| `merged` | 4h | `parked(merge-timeout)` |
+| `deployed` | 2h | `parked(deploy-timeout)` |
+| `done` | 48h (`DeliveredRetention`) | reaped, once documented |
+| `rejected` | 24h (`RejectedRetention`) | reaped |
 
-**1. The operator's own park comment can never un-park anything.** A bot-authored
-event is dropped at enqueue, so the comment the operator posts when it parks a
-Task cannot land in that Task's `pendingEvents` and un-park it. Without that
-filter, parking is a loop.
+A `merged`/`deployed` **re-entry** after a timeout park gets its own fresh,
+non-carry-adjusted window - `TimeoutReentryBudget` (30m) - rather than the
+state's ordinary budget, so the resumed lap is not already over budget on
+arrival. The reported *residency* is still cumulative across the whole round
+trip; only the *deadline* resets.
 
-**2. `identity-unverified` has a comment-driven release, but the release is a
-live agent, not a grant.** A non-bot comment triggers a fresh sync of that
-issue's comments from the forge, then un-parks the Task to `conversing`,
-spawning a fresh `clarify` pod against the refreshed thread. That pod forms its
-own judgment and submits its own citation through
-[the approval grammar](../operations/security/approval-gates.md#the-approval-grammar)
-- the operator independently verifies the citation exists, its author is a
-verified non-bot maintainer, the quoted text is genuinely there, and it has not
-already been consumed. The webhook path itself never grants approval; it only
-gets a live agent back in front of the human who just commented. That is a
-stronger gate than "the webhook wrote a status", because the operator re-reads
-and re-verifies the cited comment itself, on every `submit_outcome`.
+!!! warning "The idle clock replaced separate work budgets on all three live states"
+    Before the redesign, `implementing` had its own 6h work budget and
+    `reviewing` its own 4h. The redesign promoted the old `conversing`
+    stage's idle-clock mechanism to all three live states uniformly - armed
+    only while no turn is in flight, so a silently-working agent is never
+    mistaken for an idle conversation and parked mid-turn.
 
-**3. A `review`-kind Task can never reach `implementing` or `merging`, by any
-path.** Not on the un-park edge, and not on the primary one:
-`submit_outcome(request_changes)` on a `kind == "review"` Task goes to
-`parked(awaiting-human)`, never to `implementing`. **A human's PR is fixed by the
-human.** The next human comment un-parks it back to `reviewing`, bounded by
-`status.humanReviewRounds` (cap 5); at the cap it simply stays parked. Every
-review Task is non-bot-authored by construction, so `parked(awaiting-human)` is
-its only terminal. Both review verdicts - `approve` and `request_changes` - end
-there on a human-authored PR.
+Every live state additionally exits on `parked(turn-budget-exhausted)`
+(`stats.turns >= maxTurnsPerTask`, default 300) and
+`parked(pod-recreation-exhausted)`. `maxTurnsPerPod` (default 40) never
+terminates the Task either - it stops the pod via the TTL handoff and
+respawns, spending one `podRecreations`. **`implement` is exempt from
+`maxTurnsPerPod`**: a long, healthy coding run must not be cut off.
 
-**4. A partially-merged Task can never re-enter `implementing` and open a second
-PR.** Three independent stops: `merge-timeout` and `deploy-timeout` re-enter
-their **own** stage, never `implementing`; `no-outcome` requires zero merged MRs;
-and `mr_write(open)` refuses outright when a merged MR already exists for that
-repo.
+---
+
+## Cycle caps
+
+Six cycles exist, and all six are bounded:
+
+| Cycle | Counter | Cap | On exhaustion | Spawns a pod per lap? |
+|---|---|---|---|---|
+| `awaiting-review` and `under-implementation` | `reviewRounds` (on the MergeRequest) | 3 | `parked(review-loop-exhausted)` | yes |
+| `merged` and `parked(merge-timeout)` | `mergeReentries` | 3 | `parked(merge-blocked)`\* | no |
+| `deployed` and `parked(deploy-timeout)` | `deployReentries` | 3 | `parked(deploy-blocked)`\* | no |
+| `awaiting-review` and `merged` (the head moved) | `headMoveReentries` | 3 | `parked(head-moving)` | **yes** |
+| `awaiting-review` and `parked(awaiting-human)` (a `review`-kind Task) | `humanReviewRounds` | 5 | stays parked | **yes** (except a take-over comment on a stood-down MR, which is exempt) |
+| `awaiting-review` / `merged` and the re-implement edge (red live CI) | `ciRedReentries` | 3 | `parked(ci-blocked)` | yes, on the re-implement lap |
+
+\* `merge-blocked` and `deploy-blocked` are park reasons with no re-entry -
+the old machine's `failed(merge-blocked)` / `failed(deploy-blocked)`
+terminals are now the same park reasons, just reached without a separate
+`failed` state to land in.
+
+The **head-moved** and **CI-red** cycles both spawn a pod on every lap and
+are the two that matter for cost. Neither is bounded by `reviewRounds`,
+which moves only on `request_changes`.
+
+---
+
+## No migrator {: #no-migrator }
+
+The redesign shipped with **no data migration**, and the reason is a CRD
+mechanic, not a choice: Kubernetes structural pruning applies on the
+**read** path, not only on write. Once `status.stage` left the schema, no
+`GET` on a pre-redesign Task returns it at all - the field is gone the
+instant a client asks, regardless of what is stored. Every pre-redesign
+Task is therefore served **stateless**, and `stage.Enter` is the only writer
+of `status.state`, so the `(create)` edge fires again for it.
+
+A guard - `controller.terminalResetTarget` - inspects what pruning leaves
+behind (`deliveredAt`, `documentedBy`, the Issue mirrors - separate objects,
+not pruned) and stamps the Task directly onto `done` or `rejected` when
+that evidence is unambiguous. Ambiguous evidence deliberately leaves the
+Task stateless rather than guessing: re-triage is noisy, but a false
+terminal strands real work permanently.
 
 ---
 
@@ -538,5 +407,6 @@ repo.
 
 - [Task](task.md) - the CRD itself, its fields, and what was removed
 - [Task notes](task-notes.md) - the journal that carries context from one pod to the next
+- [MCP tools by agent kind](mcp-tools.md) - the six agent kinds and their `submit_outcome` schemas
+- [Approval Gates](../operations/security/approval-gates.md) - the extended grammar that gates `refined` to `under-implementation`
 - [Tuning](../operations/tuning.md) - the levers that set these budgets and caps
-- [Approval gates](../operations/security/approval-gates.md#the-approval-grammar) - the grammar that gates `clarifying` to `approved`
