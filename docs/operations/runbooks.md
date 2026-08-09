@@ -428,6 +428,60 @@ absent(up{job="kube-state-metrics"} == 1)
 
 ---
 
+<a id="tatara-runbook-grafana-alert-rule-evaluation-failing"></a><!-- alert: "Grafana alert rule evaluation failing" status: covered -->
+## Grafana alert rule evaluation failing (alerting plane blind)
+
+**Symptoms:** `Grafana alert rule evaluation failing` (`alerts/tatara-grafana.yaml`, critical) fires when `grafana_alerting_rule_evaluation_failures_total` increases for any rule group over a 5m window. Unlike every other rule on this page, a firing instance of this one is not itself trustworthy proof that anything else is fine - see "What it means" below.
+
+**What it means:** Grafana failed to evaluate one or more of its own alert rules, which means every downstream consequence of that rule - paging, the operator's webhook receiver, this very page's own alert-derived signals - silently did not happen for that evaluation cycle. This rule exists because none did before tatara-observability#94: `grafana-database-cluster`, the CNPG Postgres backing Grafana itself, exhausted its connection pool for roughly 5 minutes every night around 03:30Z for six consecutive nights, and because nothing alerted on evaluation failures or on the pool itself (see [Grafana database connection pool saturating](#grafana-database-connection-pool-saturating) below), all 117 other Tatara alert rules went blind for that window without a single page. The blackout is not evenly costly: tatara-observability's own nightly `reconcile_metric_provenance.py` reconcile job runs at 03:23 UTC, inside the blackout window, so the one job that would have caught allowlist drift was itself silently skipped by GitHub Actions' own scheduling jitter landing it there - drift detection and alert evaluation went dark at the same few minutes, night after night.
+
+**The trap:** during a blackout, the absence of firing alerts is not evidence the platform is healthy - it is evidence you cannot see the platform. Do not read a quiet Grafana as a quiet cluster. Confirm this rule itself is not the thing currently blind (see Diagnosis) before trusting any other "no alerts firing" observation from the same window.
+
+**Diagnosis:**
+```promql
+sum by (rule_group) (increase(grafana_alerting_rule_evaluation_failures_total[5m])) or vector(0)
+rate(grafana_alerting_rule_evaluations_total[5m])   # should be > 0; flat/zero means evaluation has stopped entirely, not just failing
+up{job="grafana"}
+```
+```bash
+kubectl -n monitoring logs deploy/grafana --tail=100 | grep -i -E "failed to evaluate|too many connections|context deadline exceeded"
+```
+A failure whose log line mentions connection exhaustion or `too many connections` against `grafana-database-cluster` is the connection-pool cause below, not a generic evaluation bug. A failure against a specific datasource (Prometheus/Loki timeout) instead points at that datasource's own health, not at Grafana's backing store.
+
+**Immediate mitigation:** If the cause is the connection pool, see the fix in the next section - restarting Grafana alone only helps if Grafana itself, not the database, is holding the stale connections. If the cause is a specific rule group's datasource being unreachable, treat that datasource per its own runbook on this page and let evaluation recover once it answers again; there is no separate recovery action for the evaluator itself.
+
+**Durable fix direction:** A single rule catching evaluation failures is a backstop, not a substitute for capacity headroom - the durable fix is removing the recurring cause (connection pool sizing, below) so this rule has nothing to catch on a normal night. Consider also an external dead-man's-switch check (a prober outside Grafana that pages if it stops hearing from Grafana at all) so a failure mode that takes down evaluation *and* this very rule's own delivery path is not a second blind spot with no alternate warning.
+
+---
+
+<a id="tatara-runbook-grafana-database-connection-pool-saturating"></a><!-- alert: "Grafana database connection pool saturating" status: covered -->
+## Grafana database connection pool saturating
+
+**Symptoms:** `Grafana database connection pool saturating` (`alerts/tatara-grafana.yaml`, warning) fires when `grafana_database_conn_open` sustains above 90% of `grafana_database_conn_max_open` for 5m, or `grafana_database_conn_wait_count` increases at all - either means callers are queuing for a connection Grafana's pool cannot hand out.
+
+**What it means:** `grafana-database-cluster` is a CNPG Postgres `Cluster` backing Grafana's own state (dashboards, alert rule state, notification history) - it is cluster infrastructure, not a tatara-owned workload, the same category as kube-state-metrics above. tatara-observability#94 traced six consecutive nights of a roughly 5-minute connection-pool exhaustion around 03:30Z to this cluster specifically: something recurring at that time (a backup, a vacuum, a batch query - the root cause is still being narrowed) holds enough connections that Grafana's own pool has none left to serve alert evaluation, and every one of the 117 Tatara alert rules - which read Prometheus and Loki, not this Postgres, but still need Grafana's evaluator running to fire - goes dark for the duration. This is the mechanism behind [Grafana alert rule evaluation failing](#grafana-alert-rule-evaluation-failing-alerting-plane-blind); that rule is the general symptom, this one is the specific cause.
+
+**Diagnosis:**
+```promql
+grafana_database_conn_open
+grafana_database_conn_max_open
+grafana_database_conn_in_use
+grafana_database_conn_wait_count
+```
+```bash
+kubectl -n monitoring cnpg status grafana-database-cluster
+kubectl -n monitoring get pods -l cnpg.io/cluster=grafana-database-cluster
+kubectl -n monitoring exec -it grafana-database-cluster-1 -- psql -U postgres -c \
+  "select pid, state, wait_event_type, query, now() - query_start as age from pg_stat_activity where datname='grafana' order by age desc limit 20;"
+```
+`pg_stat_activity` during the window is the fastest way to see who is actually holding the connections - a handful of long-`idle in transaction` sessions or one repeating query pattern is a much stronger lead than the pool gauges alone.
+
+**Immediate mitigation:** If the pool is currently saturated, terminating the longest-held idle or stuck backend (`select pg_terminate_backend(<pid>)`) frees a slot immediately and lets evaluation resume within seconds; this is safe for an idle-in-transaction session but confirm a query is not mid-write before killing an active one. Restarting the Grafana pod only helps if Grafana's own side is holding connections open past their useful life (a leak), not if the database side is the one saturated.
+
+**Durable fix direction:** Raise `grafana-database-cluster`'s connection ceiling (CNPG `Cluster.spec.postgresql.parameters.max_connections`) or, better, put PgBouncer in transaction-pooling mode in front of it so Grafana's own `max_open_conns`/`max_idle_conns` ini settings stop mapping 1:1 onto raw Postgres backends - the same fix class as giving the memory Postgres clusters more headroom (see [Memory postgres/neo4j replica stuck](#memory-postgresneo4j-replica-stuck-ha-degraded-api-still-serving)). Whatever recurs nightly at 03:30Z (see `pg_stat_activity` above) should also be identified and either rescheduled outside any other known cron window or given its own connection budget separate from Grafana's evaluator traffic.
+
+---
+
 <a id="tatara-runbook-operator-crash-looping"></a><!-- alert: "Operator crash looping" status: covered -->
 <a id="tatara-runbook-memory-api-server-crash-looping"></a><!-- alert: "Memory API server crash looping" status: covered -->
 <a id="tatara-runbook-wrapper-agent-container-crash-looping"></a><!-- alert: "Wrapper agent container crash-looping" status: covered -->
@@ -1624,3 +1678,27 @@ Cross-check in Grafana Explore that the collector's `node_name` label values cov
 **Fix:** This is an infra change, not a tatara one - the log collector is not deployed by any tatara-* repo, so `tatara-helmfile` cannot fix it. Compare the collector DaemonSet's `nodeSelector` and `tolerations` against the uncovered nodes' taints. On this cluster the working reference is the `prometheus-prometheus-node-exporter` DaemonSet, which reaches every node; giving the collector the same toleration set, and dropping any restricting `nodeSelector`, is the fix. Route it to whoever owns the monitoring stack.
 
 Until it lands, treat every namespace-wide Loki query as covering only part of the fleet, and confirm which nodes a pod ran on before concluding anything from an empty log result. Escalate to the cluster maintainer if the collector owner is unclear - there is no tatara-side workaround, only the awareness this alert provides.
+
+---
+
+<a id="tatara-runbook-tatara-memory-logs-unscraped-for-a-project"></a><!-- alert: "Tatara memory logs unscraped for a project" status: covered -->
+## Memory logs unscraped for a project
+
+**Symptoms:** `Tatara memory logs unscraped for a project` (`alerts/tatara-logs.yaml`, warning) fires when a Project's `mem-<project>` pod is running on a node with no ready log collector, sustained for 30m. This is the per-Project counterpart to [Log collector node coverage incomplete](#log-collector-node-coverage-incomplete) above, scoped down from "some node in the cluster lacks a collector" to "the specific node this Project's memory pod landed on lacks one."
+
+**What it means:** `Tatara memory error log burst` watches for ERROR-level lines in each project's memory logs, but coverage is decided entirely by where the scheduler happens to place that project's `mem-<project>` pod, not by anything about the project itself. A memory pod scheduled onto an uncovered node ships nothing to Loki, so the burst rule's query returns a clean, structurally-guaranteed zero - it reads exactly like a healthy project with no errors. tatara-observability#93 found this is not a hypothetical: all three projects running a memory stack today (`tatara`, `infrastructure`, `mtg`) are currently scheduled on blind nodes, so the burst rule has never had a genuine chance to fire for any of them. A "no errors" reading with no corresponding "and coverage was confirmed" check is not evidence of health here, the same trap as the cluster-wide rule above.
+
+**Diagnosis - tell "no errors" from "not scraped" before trusting either:**
+```bash
+kubectl -n tatara get pods -l app.kubernetes.io/name=tatara-memory -o wide   # which node each mem-<project> pod is on
+kubectl -n monitoring get pods -o wide -l app.kubernetes.io/name=promtail   # which nodes actually have a collector
+```
+```promql
+kube_pod_info{namespace="tatara", pod=~"mem-.*"}                                        # pod -> node
+count by (node) (kube_pod_info{namespace="monitoring", created_by_name="promtail"})     # node -> collector present
+```
+Cross-reference the two: if the project's pod's node is not in the collector list, every "no errors" reading for that project since it landed there is unscraped, not healthy - go confirm coverage before closing anything as clean. If the node is covered and Loki still returns zero, that is a real, trustworthy healthy zero.
+
+**Fix:** Same remediation as [Log collector node coverage incomplete](#log-collector-node-coverage-incomplete) - this is an infra gap in the collector DaemonSet's `nodeSelector`/`tolerations`, not something a tatara-* repo can patch. Until the collector reaches every node, treat this rule's coverage as informational rather than a guarantee, and do not read a quiet `Tatara memory error log burst` for an affected project as confirmation that project's memory stack is error-free.
+
+**Memory is becoming optional - do not let this read as a standing fault once it is disabled.** The memory subsystem is being made optional platform-wide and is shortly being turned off for all three current projects (`tatara`, `infrastructure`, `mtg`). This rule, like `Tatara memory error log burst`, is gated on the Project still running a memory stack: once a Project's memory is disabled, it has no `mem-<project>` pod at all, and "no memory logs" for that project is the **correct**, expected state - not an incident, and not something this runbook should ever be paged for again on that project. If this alert or its sibling fires for a project with memory disabled, that is the rule's project gate failing to exclude it (a stale label match, a missing `unless` clause), not a real coverage gap - fix the rule expression rather than chasing a collector that is correctly serving zero relevant pods.
