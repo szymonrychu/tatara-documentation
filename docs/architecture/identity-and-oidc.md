@@ -107,8 +107,9 @@ between a `brainstorm` pod and an `incident` pod.
 Per-task authorization consequently cannot rely on the token. It relies instead on:
 
 - **Tool-surface gating** in `tatara-cli`, keyed on the operator-set `TATARA_TOOL_PROFILE`
-  - which is the **agent kind** (`status.agentKind`: `brainstorm`, `incident`, `clarify`,
-  `refine`, `implement`, `review`, or `documentation`), not the Task's origin kind (see
+  - which is the **agent kind** (`status.agentKind`: `brainstorm`, `incident`,
+  `refine`, `implement`, `review`, or `documentation` - six values, `clarify` folded
+  into `implement` at #521), not the Task's origin kind (see
   [Data & Control Flow](data-flow.md#mcp-tool-surface)). This is the real authz
   boundary. An unknown profile fails closed to the always-on tool set, with no
   `submit_outcome` registered.

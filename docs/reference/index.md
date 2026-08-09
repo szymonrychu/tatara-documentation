@@ -24,7 +24,7 @@ The operator creates, updates, and garbage-collects these resources. Do not manu
 
 | CRD | `kubectl` print columns | Description |
 |-----|-------------------------|-------------|
-| [`Task`](task.md) | `Stage`, `Kind`, `Agent`, `Issues`, `MRs`, `Turns`, `Project`, `Description`, `Age` | One durable unit of agent work, carried by a succession of agent pods across its stage machine |
+| [`Task`](task.md) | `State`, `Park`, `Agent`, `Kind`, `Project`, `Turns`, `Description`, `Age` | One durable unit of agent work, carried by a succession of agent pods across its state machine |
 | [`QueuedEvent`](queued-event.md) | `Seq`, `Class`, `Kind`, `State` | Admission-queue entry; admitted into a pod-spawn (a new or existing `Task`) when a concurrency slot is available |
 | [`Issue`](issue.md) (`iss`) | `Task`, `Repo`, `Num`, `State`, `Status`, `Comments`, `Age` | Mirror of one SCM issue: title, body, comments, and the platform's approval state. The bundle is rendered from this object, never a live forge call |
 | [`MergeRequest`](merge-request.md) (`mr`) | `Task`, `Repo`, `Num`, `State`, `Status`, `CI`, `Age` | Mirror of one SCM pull/merge request: title, body, comments, CI status, mergeability |
@@ -67,9 +67,9 @@ graph TD
 Key derivation rules:
 
 - A `Project` must exist before any `Repository`, `QueuedEvent`, `Task`, `Issue`, or `MergeRequest` can reference it.
-- A webhook event or cron scan produces a `QueuedEvent`. The dispatcher admits it - either into an existing `Task` (a stage-driven pod respawn) or by minting a new one - when a concurrency slot is available.
+- A webhook event or cron scan produces a `QueuedEvent`. The dispatcher admits it - either into an existing `Task` (a state-driven pod respawn) or by minting a new one - when a concurrency slot is available.
 - `Issue` and `MergeRequest` are the mirror: the operator syncs them from the SCM and every agent read (`scm_read(kind=issues|mr|comments)`) is served from these objects, never a live forge call. `scm_read(kind=ci)` is the one exception - CI status is read live.
-- `clarify` Tasks are given a deterministic name so repeated webhook deliveries for the same issue collide on `Create` (`AlreadyExists`) and stay idempotent. See [Task naming](task.md).
+- New-issue `implement`-origin Tasks (`SweepIssueKind` - the role `clarify` used to play) are given a deterministic name so repeated webhook deliveries for the same issue collide on `Create` (`AlreadyExists`) and stay idempotent. See [Task naming](task.md).
 
 ## Task kinds and scoping
 
@@ -79,19 +79,25 @@ A `Task` carries two kind-shaped fields and they mean different things. Conflati
 
 | Field | Meaning | Values |
 |---|---|---|
-| `Task.spec.kind` | The **origin**. Why this Task exists. Immutable; baked into the Task name. | `brainstorm`, `incident`, `clarify`, `refine`, `review`, `documentation` |
-| `Task.status.agentKind` | The **running agent**. Which pod is executing right now. Changes as the Task advances through its [stage machine](task-stages.md). | the six above, plus `implement` |
+| `Task.spec.kind` | The **origin**. Why this Task exists. Immutable; baked into the Task name. | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation`, `takeover` |
+| `Task.status.agentKind` | The **running agent**. Which pod is executing right now. Changes as the Task advances through its [state machine](task-stages.md). | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation` - six values |
 
-`implement` is an **agent kind only**. There is no `implement` Task origin: a Task that started life as a `clarify` (a human filed an issue) runs an `implement` pod once it is approved, and a `review` pod after that. One Task, one durable object, many pods.
+`implement` is both an agent kind and an origin kind, since the #521 lifecycle
+redesign folded `clarify` into it on both fronts: a Task that started life
+with `spec.kind: implement` (a human filed an issue) runs the same
+`implement` agent for its approval-gate conversation and, once approved, for
+the code itself, then a `review` pod after that. One Task, one durable
+object, many pods.
 
 | Origin kind | Scope | Description |
 |------|-------|-------------|
 | `brainstorm` | project | Surveys all project repos + external research; proposes a linked issue set across affected repos |
 | `incident` | project | Investigates a Grafana alert; files an evidence-backed incident proposal |
-| `clarify` | project | Runs the triage/human conversation on a new or commented issue; hands off to an `implement` pod once approved |
-| `review` | project | Reviews a human-authored PR/MR; can never itself reach `implementing`/`merging` - a human's PR is fixed by the human |
+| `implement` | project | Runs the triage/human conversation on a new or commented issue (the origin role `clarify` used to play), then writes the code once approved |
+| `review` | project | Reviews a human-authored PR/MR; can never itself reach `under-implementation`/`merged` - a human's PR is fixed by the human |
 | `documentation` | repo (docs repo) | Schedule-driven: updates docs when non-trivial changes have landed since the last run |
 | `refine` | project | Groom-only backlog peer: closes duplicates, dedups, recovers stalled Tasks |
+| `takeover` | project | Maintainer-gated hand-over of an existing, foreign-authored MR - minted straight into `refined`, no triage |
 
 !!! info "Only documentation is repo-scoped"
     `repositoryRef` is set **only** on `documentation` Tasks, which target one docs repo per run. Every other origin kind is project-scoped: the Task CR is a cross-repo umbrella, and its `implement`/`review` pods write back across every affected repo under that one Task.

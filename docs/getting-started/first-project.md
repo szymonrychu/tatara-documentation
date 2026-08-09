@@ -201,9 +201,10 @@ spec:
 Tatara's intake model determines which humans can drive the agent loop; a separate allow-list
 determines who can release an issue into implementation.
 
-**You approve by commenting.** When a `clarify` agent has settled the scope, a maintainer posts a
+**You approve by commenting.** When the `implement` agent has settled the scope, a maintainer posts a
 comment, the agent judges whether it approves, and it cites that comment - its forge `external_id`
-plus a verbatim quote - in `submit_outcome(decision=implement)`. The operator does not take the
+plus a verbatim quote - in `submit_outcome(action=approved)`, along with the plan note it wants
+approved. The operator does not take the
 agent's judgment on faith: it independently checks that the cited comment exists, that its author
 is a verified maintainer and not the bot, and that the quoted text really occurs in the comment
 body the operator itself holds. It then pins the comment's id on the Issue as single-use evidence
@@ -214,16 +215,16 @@ it never decides what a comment *means*.
 
 | A maintainer comments | Result |
 |---|---|
-| `go ahead, I approve!` | **Approves**, if the clarify agent cites it - the agent reads this as unambiguous consent |
+| `go ahead, I approve!` | **Approves**, if the `implement` agent cites it - the agent reads this as unambiguous consent |
 | `LGTM` | **Approves**, for the same reason. There is no required phrase; the agent judges ordinary language |
-| `I can't approve this until the tests pass` | **Should not approve** - this is a judgment call, not a structural guarantee. A clarify agent reading this correctly does not cite it. The operator only confirms the quote exists in the comment it is given; it does not judge meaning, so a misjudging agent that cited this anyway would not be caught here |
+| `I can't approve this until the tests pass` | **Should not approve** - this is a judgment call, not a structural guarantee. An `implement` agent reading this correctly does not cite it. The operator only confirms the quote exists in the comment it is given; it does not judge meaning, so a misjudging agent that cited this anyway would not be caught here |
 | An `approve` from an account not in `maintainerLogins` | Does not approve. Identity is checked before the quoted text is even compared |
 | The bot posting `go ahead` | Does not approve. The bot is excluded structurally, before the quoted text is compared |
 
 If no citation passes, the Task parks. **Nothing is posted to the issue** - the reason lives only
 in the operator's logs and metrics, not on the thread, so there is no prompt telling anyone a
 comment is needed. Post a comment at any time afterwards and the next comment un-parks the Task to
-a fresh clarify pod, which picks up the conversation where it left off. See
+a fresh `implement` pod, which picks up the conversation where it left off. See
 [Approval Gates](../operations/security/approval-gates.md#the-approval-grammar) for the full
 rules, including why there is no requirement that the cited comment be the thread's most recent
 one.
@@ -497,17 +498,17 @@ the `resource_id` field.
 
 ### Watch it work
 
-Once you file a test issue, watch the Task the operator mints for it move through the stage
+Once you file a test issue, watch the Task the operator mints for it move through the state
 machine directly:
 
 ```sh
 kubectl -n tatara get tasks -o custom-columns=\
-NAME:.metadata.name,STAGE:.status.stage,KIND:.spec.kind,AGENT:.status.agentKind -w
+NAME:.metadata.name,STATE:.status.state,PARK:.status.parkReason,KIND:.spec.kind,AGENT:.status.agentKind -w
 ```
 
-`STAGE` is the single source of truth (see [Task reference](../reference/task.md) for the full
-fifteen-value enum); `KIND` is the immutable origin and `AGENT` is whichever pod is running right
-now - they diverge as soon as an issue moves past `clarifying`. The mirrored `Issue` and
+`STATE` is the single source of truth (see [Task reference](../reference/task.md) for the full
+eight-value enum, plus the orthogonal `parkReason` flag); `KIND` is the immutable origin and `AGENT` is whichever pod is running right
+now - they diverge as soon as an issue moves past `refined`. The mirrored `Issue` and
 `MergeRequest` CRs the Task owns are visible the same way:
 
 ```sh
@@ -639,7 +640,7 @@ spec:
     the GitHub web UI. Find this in the bot account's GitHub email settings.
 22. Human maintainer logins. **Required for anything to ever be approved** - empty means no
     approvals are ever possible. When set, only a comment from one of these accounts can be cited
-    as approval by a clarify agent, and the operator independently verifies that citation; they
+    as approval by the `implement` agent, and the operator independently verifies that citation; they
     also form the trusted-insider set for intake bypass. Overridable per-repository.
 23. Reporter allow-list. When set, issues and comments from accounts not in this list, not in
     `maintainerLogins`, and not the bot are silently dropped at intake. Closes the primary

@@ -80,13 +80,13 @@ which also prints the current covered/total count.
 
 **Alert rules:** `Wrapper agent pods not becoming ready` (`alerts/tatara-wrapper.yaml`), `Operator agent boot crash budget exhausted` and `Operator agent unreachable terminations` (`alerts/tatara-operator.yaml`). All three mean a wrapper pod was created but never became usable; the first is the standing-state view, the other two are the operator giving up on it.
 
-**Symptoms:** Task sitting in a pod-spawning stage (e.g. `implementing`, `reviewing`), `stats.turns`
+**Symptoms:** Task sitting in a live state (e.g. `under-implementation`, `awaiting-review`), `stats.turns`
 not incrementing, wrapper `/readyz` fails. See the
-[stage reference](../reference/task-stages.md) for which stages spawn which agent kind.
+[state reference](../reference/task-stages.md) for which states spawn which agent kind.
 
 **Diagnosis:**
 ```bash
-kubectl -n tatara get task <task-name> -o jsonpath='{.status.stage}{" "}{.status.stageReason}{"\n"}'
+kubectl -n tatara get task <task-name> -o jsonpath='{.status.state}{" "}{.status.parkReason}{"\n"}'
 kubectl -n tatara get pods -l tatara.io/task=<task-name>
 kubectl -n tatara logs <pod-name> -c wrapper --tail=50
 kubectl -n tatara logs <pod-name> -c wrapper --previous   # if restarted
@@ -99,12 +99,12 @@ failing the Task outright - the terminal reason when that budget is spent is
 `pod-recreation-exhausted`, not a stalled-forever state.
 
 **Common causes:**
-1. **Boot quiescence timeout** - claude process hung during boot dialog detection. Check logs for `bootWait` timeout. This is the READINESS clock; the operator respawns the pod automatically. If you see this recurring, watch `stats.podRecreations` climb toward `maxPodRecreations` and `stageReason` land on `pod-recreation-exhausted` once exhausted.
+1. **Boot quiescence timeout** - claude process hung during boot dialog detection. Check logs for `bootWait` timeout. This is the READINESS clock; the operator respawns the pod automatically. If you see this recurring, watch `stats.podRecreations` climb toward `maxPodRecreations` and `parkReason` land on `pod-recreation-exhausted` once exhausted.
 2. **Anthropic credential invalid** - the wrapper authenticates with `CLAUDE_CODE_OAUTH_TOKEN`, injected from the `oauth-token` key of the Anthropic Secret (`anthropicSecretName`). An expired or revoked token fails boot. Update the Secret key and let the operator respawn the pod.
 3. **OIDC token fetch failure** - Keycloak unreachable. Check `OIDC_ISSUER` and Keycloak health.
-4. **MCP server not starting** - `tatara mcp` fails at init. Check `TATARA_MEMORY_URL` and `TATARA_OPERATOR_URL` are reachable from the pod. If instead the MCP server starts but the Task fails instantly with `stageReason=agent-contract-mismatch`, this is not a boot problem - see
-   [`failed(agent-contract-mismatch)`](#failedagent-contract-mismatch) below.
-5. **Stage-deadline or admission-starved park** - if the Task is `parked` rather than stuck in a pod stage, check `stageReason`. `admission-starved` means it has been waiting on a `maxConcurrentAgents` slot past the 24h admission clock (skipped entirely while the project is paused at `maxConcurrentAgents=0`); `stage-deadline` means an agent was running but blew the per-stage work budget - see the budget table on the [stage reference](../reference/task-stages.md).
+4. **MCP server not starting** - `tatara mcp` fails at init. Check `TATARA_MEMORY_URL` and `TATARA_OPERATOR_URL` are reachable from the pod. If instead the MCP server starts but the Task parks instantly with `parkReason=agent-contract-mismatch`, this is not a boot problem - see
+   [`parked(agent-contract-mismatch)`](#parkedagent-contract-mismatch) below.
+5. **Stage-deadline or admission-starved park** - if the Task carries a `parkReason` rather than being stuck in a live state, check which one. `admission-starved` means it has been waiting on a `maxConcurrentAgents` slot past the 24h admission clock (skipped entirely while the project is paused at `maxConcurrentAgents=0`); `stage-deadline` means an agent was running but blew the per-state work budget - see the budget table on the [state reference](../reference/task-stages.md).
 
 ---
 
@@ -119,7 +119,7 @@ failing the Task outright - the terminal reason when that budget is spent is
 ```bash
 kubectl -n tatara logs deploy/tatara-operator | grep webhook | tail -50
 kubectl -n tatara get queuedevents
-kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.stage}{" "}{.status.stageReason}{"\n"}{end}'
+kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.state}{" "}{.status.parkReason}{"\n"}{end}'
 ```
 
 **Common causes:**
@@ -127,9 +127,9 @@ kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{
 2. **Reporter allowlist drop** - `spec.scm.reporterLogins` is set and the issue author is not in the list. Intentional if you set this; add the account or clear the list.
 3. **WebhookURL not registered** - check `Project.status.webhookURL` and confirm it matches the GitHub/GitLab webhook URL. The URL is set automatically on Project reconcile.
 4. **Bot-authored issue** - the operator ignores issues authored by `botLogin` to prevent self-loops. Expected behavior.
-5. **`maxOpenTasks` cap reached** - the Project's active-Task creation budget (default 6, counts every Task whose stage is pod-eligible; `parked(backlog-sweep)` Tasks do not count against it) is exhausted. A sweep that would exceed it mints nothing this pass. Check `Project.spec.maxOpenTasks` against the current count of active Tasks; raise it or wait for one to clear a stage.
+5. **`maxOpenTasks` cap reached** - the Project's active-Task creation budget (default 6, counts every Task whose state is pod-eligible; `parked(backlog-sweep)` Tasks do not count against it) is exhausted. A sweep that would exceed it mints nothing this pass. Check `Project.spec.maxOpenTasks` against the current count of active Tasks; raise it or wait for one to clear a state.
 6. **`maxConcurrentAgents=0`** - the Project is paused. At 0, `admit()` short-circuits and no `QueuedEvent` is ever admitted, so no pod and no Task work happens, even though the Task/QueuedEvent CR itself may exist. This is the intended full-project kill switch, not a bug - check `Project.spec.maxConcurrentAgents` if work has stopped platform-wide for one Project.
-7. **Landed on `parked(backlog-sweep)` instead** - a webhook-originated Task from a sweep-discovered backlog issue starts parked with no pod and no queue entry by design; it exists only to own the Issue CR until a non-bot comment promotes it to `triaging` (subject to the `maxOpenTasks` cap in cause 5). This is expected, not stuck.
+7. **Landed on `parked(backlog-sweep)` instead** - a webhook-originated Task from a sweep-discovered backlog issue starts parked with no pod and no queue entry by design; it exists only to own the Issue CR until a non-bot comment promotes it to `new` (subject to the `maxOpenTasks` cap in cause 5). This is expected, not stuck.
 
 ---
 
@@ -138,16 +138,22 @@ kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{
 
 **Alert rule:** `Tatara approval refusals elevated` (`alerts/tatara-logs.yaml`, warning) fires on a burst of refused approval attempts in 15m, labelled with the refusal `reason`. A single refusal does not alert; the runbook below applies either way.
 
-**Symptoms:** A `clarifying`-stage Task moved to `parked` with `stageReason=identity-unverified`
-after the clarify agent reported `decision=implement`, but the Task never advanced to
-`approved`.
+**Symptoms:** A `refined`-state Task parked with `parkReason=identity-unverified`
+after the `implement` agent's approval-gate turn reported `action=approved`, but the Task never
+advanced to `under-implementation`.
 
-**Explanation:** The clarify agent judged that a maintainer approved and cited a comment as
+!!! info "Since #521: `clarify` is `implement`"
+    This runbook predates the #521 lifecycle redesign's `clarify` fold. Every
+    `clarify`/`decision=implement`/`approved`-stage reference below is now the `implement`
+    agent's `action=approved`, and the state is `refined`, not `clarifying`/`approved`.
+
+**Explanation:** The `implement` agent judged that a maintainer approved and cited a comment as
 evidence - the forge comment's `external_id` plus a verbatim quote from its body - for every
-Issue the Task owns. The operator does not take that judgment on faith: `restapi.verifyApprovalScope`
-independently re-derives, for **every** owned Issue, whether the cited comment exists, who posted
-it, and whether the quoted text is really there. One of those structural checks failed, so the
-operator refused the citation and parked the Task rather than granting an unverified mandate.
+Issue the Task owns, along with the `plan_note_id` of the plan it wants approved. The operator
+does not take that judgment on faith: `restapi.verifyApprovalScope` independently re-derives,
+for **every** owned Issue, whether the cited comment exists, who posted it, and whether the
+quoted text is really there. One of those structural checks failed, so the operator refused the
+citation and parked the Task rather than granting an unverified mandate.
 
 **Diagnosis, in order:**
 
@@ -160,29 +166,31 @@ operator refused the citation and parked the Task rather than granting an unveri
 There is no most-recent-comment check on the operator's side - it verifies structure, not
 sequence, so an older approving comment is still citable even when a newer maintainer comment
 exists on the thread. Whether that newer comment withdraws the earlier approval is an intent
-question the operator does not ask; it is the clarify agent's job to read the whole thread and
-submit `decision=discuss` instead of citing a stale approval when a later maintainer comment
+question the operator does not ask; it is the `implement` agent's job to read the whole thread and
+submit `action=discuss` instead of citing a stale approval when a later maintainer comment
 actually walks it back.
 
 For the full grammar specification (what the agent judges versus what the operator verifies) see
 [Security: approval gates](../operations/security/approval-gates.md#the-approval-grammar) - this
 runbook only tells you what to check, not how the verification itself works.
 
-**Re-entry:** the **next** non-bot comment on the thread un-parks the Task to `conversing`,
-spawning a fresh clarify pod against the refreshed thread - it does not re-run the check
-directly. That pod reads the new comment, forms its own judgment, and submits a fresh
-`decision=implement` with a new citation through the same gate. Have the maintainer post an
-unambiguous comment and the next comment event will bring an agent back to read it.
+**Re-entry:** the **next** non-bot comment on the thread un-parks the Task, spawning a fresh
+`implement` pod against the refreshed thread - it does not re-run the check directly. That pod
+reads the new comment, forms its own judgment, and submits a fresh `action=approved` with a new
+citation through the same gate. Have the maintainer post an unambiguous comment and the next
+comment event will bring an agent back to read it.
 
 ---
 
 <a id="tatara-runbook-operator-agent-contract-version-mismatch"></a><!-- alert: "Operator agent contract version mismatch" status: covered -->
-## `failed(agent-contract-mismatch)`
+## `parked(agent-contract-mismatch)`
 
 **Alert rule:** `Operator agent contract version mismatch` (`alerts/tatara-operator.yaml`, critical).
 
-**Symptoms:** A Task fails **instantly** on entering a pod stage, before turn-0 is ever
-submitted, with `stageReason=agent-contract-mismatch`. No turn budget was spent.
+**Symptoms:** A Task parks **instantly** on entering a pod-spawning state, before turn-0 is ever
+submitted, with `parkReason=agent-contract-mismatch`. No turn budget was spent. (This runbook
+predates #521: the reason used to terminate at `failed(agent-contract-mismatch)`; it is now a
+park, since `failed` is no longer a state.)
 
 **Explanation:** The operator and the agent image (wrapper/cli/skills) ship in different helm
 releases applied concurrently by the release cascade, so a version-skewed moment is reachable:
@@ -203,9 +211,10 @@ reported, and `image` names the offending pin.
 
 **Fix:** Re-check the helmfile pins for the operator release and the agent-image release
 (wrapper/cli/skills) in `tatara-helmfile`. One of them did not advance in step with the other.
-Bump the stale pin so both sides agree on the contract version, then let the operator re-admit
-the Task (it does not auto-retry; treat it like any other `failed` Task requiring a human look,
-per the [stage reference](../reference/task-stages.md)).
+Bump the stale pin so both sides agree on the contract version (`4`, as of the #521 lifecycle
+redesign), then let the operator re-admit the Task - `agent-contract-mismatch` has no re-entry
+rule, so it does not auto-retry; treat it like any other terminally-parked Task requiring a
+human look, per the [state reference](../reference/task-stages.md#the-park-flag).
 
 See [Deployment](deployment.md#upgrades) for why this window is reachable even when both
 pipelines are green.
@@ -608,20 +617,34 @@ sum(increase(ccw_http_panics_total[15m]))
 <a id="tatara-runbook-operator-approved-stage-starved"></a><!-- alert: "Operator approved stage starved" status: covered -->
 ## Task stage wedged past its clock
 
-**Symptoms:** All key on `operator_task_stage_age_seconds`, `alerts/tatara-operator.yaml`. `Operator triage stage wedged` (critical, >900s, for 5m) is `stage=triaging` past its 5m budget. `Operator pod stage wedged` (warning, >129600s/36h, for 15m) is any of `brainstorming|investigating|refining|documenting|implementing|reviewing` past 36h. `Operator human-wait stage wedged` (warning, >216000s/60h, for 30m) is `stage=clarifying` past 60h. `Operator approved stage starved` (warning, >129600s/36h, for 30m) is `stage=approved` past 36h.
+!!! info "Since #521: these four alerts have not been migrated and do not fire"
+    Verified against the live `alerts/tatara-operator.yaml` and against
+    `tatara-operator`'s `internal/obs/task_metrics.go`: all four rules below still
+    query `operator_task_stage_age_seconds` filtered on pre-#521 15-stage values
+    (`triaging`, `clarifying`, `approved`, `brainstorming`, `investigating`,
+    `refining`, `documenting`, `implementing`, `reviewing`). The operator no
+    longer emits that metric - it was renamed to `operator_task_state_age_seconds`
+    with the 8-value `state` label (see [Observability](observability.md)) - so
+    these four rules see no series and never fire. This is a live gap in
+    `tatara-observability`, not just stale prose; the equivalent state-deadline
+    coverage does not currently exist. The `kubectl`/PromQL below use today's
+    field and metric names so the runbook stays useful once the rules are
+    ported.
 
-**What it means:** every Task stage carries a deadline invariant (see the [stage machine reference](../reference/task-stages.md)): triage exits at 5m to `failed(triage-stalled)`; a pod stage's healthy worst case is about 30h (a 24h admission wait plus up to 3 readiness respawns plus a work budget of 6h or less); `clarifying`'s healthy worst case is about 48h (24h admission plus its own 24h work budget); `approved` is pod-less with a 24h work-only budget. Firing past these margins means the deadline machinery itself is not enforcing, not that the Task is merely slow. For `approved`, the one legitimate exception is a project paused at `maxConcurrentAgents=0`, which deliberately holds Tasks there and skips the starve-park.
+**Symptoms (as still configured today):** All key on `operator_task_stage_age_seconds`, `alerts/tatara-operator.yaml`. `Operator triage stage wedged` (critical, >900s, for 5m) is `stage=triaging` past its 5m budget. `Operator pod stage wedged` (warning, >129600s/36h, for 15m) is any of `brainstorming|investigating|refining|documenting|implementing|reviewing` past 36h. `Operator human-wait stage wedged` (warning, >216000s/60h, for 30m) is `stage=clarifying` past 60h. `Operator approved stage starved` (warning, >129600s/36h, for 30m) is `stage=approved` past 36h.
+
+**What it means:** every Task state carries a deadline invariant (see the [state machine reference](../reference/task-stages.md)): `new` (the old `triaging`) exits at 5m to `rejected(triage-stalled)`; a live state's healthy worst case is about 30h (a 24h admission wait plus up to 3 readiness respawns plus a work budget of 6h or less); the old `clarifying` wait is now the `implement` agent's approval-gate turn running inside `refined`, healthy worst case about 48h (24h admission plus its own 24h work budget); the old pod-less `approved` wait no longer exists as a separate state - approval-gate grant moves straight from `refined` to `under-implementation`. Firing past these margins means the deadline machinery itself is not enforcing, not that the Task is merely slow. The one legitimate exception, where it still applies, is a project paused at `maxConcurrentAgents=0`, which deliberately holds Tasks and skips the starve-park.
 
 **Diagnosis:**
 ```bash
-kubectl -n tatara get task <task-name> -o jsonpath='{.status.stage}{" "}{.status.stageReason}{" "}{.status.stageEnteredAt}{"\n"}'
+kubectl -n tatara get task <task-name> -o jsonpath='{.status.state}{" "}{.status.parkReason}{" "}{.status.stateEnteredAt}{"\n"}'
 kubectl -n tatara get project <project> -o jsonpath='{.spec.maxConcurrentAgents}{"\n"}'
 ```
 ```promql
-max by (task, stage) (operator_task_stage_age_seconds{namespace="tatara",job="tatara-operator"})
+max by (task, state) (operator_task_state_age_seconds{namespace="tatara",job="tatara-operator"})
 ```
 
-**Fix:** Rule out the `approved`-stage pause exception first. Otherwise this means the operator's own deadline-sweep logic is not running for that Task; check "Operator reconcile loop wedged or erroring" above, since stage-deadline enforcement happens inside the reconcile loop. If reconciles are healthy platform-wide but one Task is still stuck, escalate: this is the deadline-invariant guarantee failing for a single CR, which [the stage reference](../reference/task-stages.md) treats as a bug, not an expected state.
+**Fix:** Rule out the pause exception first. Otherwise this means the operator's own deadline-sweep logic is not running for that Task; check "Operator reconcile loop wedged or erroring" above, since state-deadline enforcement happens inside the reconcile loop. If reconciles are healthy platform-wide but one Task is still stuck, escalate: this is the deadline-invariant guarantee failing for a single CR, which [the state reference](../reference/task-stages.md) treats as a bug, not an expected state.
 
 ---
 
@@ -629,20 +652,36 @@ max by (task, stage) (operator_task_stage_age_seconds{namespace="tatara",job="ta
 <a id="tatara-runbook-operator-task-park-spike"></a><!-- alert: "Operator task park spike" status: covered -->
 ## Task failure or park spike
 
-**Symptoms:** `Operator task failure spike` (`alerts/tatara-operator.yaml`, warning) fires when more than 3 Tasks reach `stage=failed` in 1h, sustained 15m, broken out by `stageReason`. `Operator task park spike` (same file, warning) fires when more than 3 Tasks park in 3h, sustained 30m, broken out by `stageReason` - excluding `backlog-sweep` (the zero-cost mint that owns a backlog issue and spawns no pod) and `awaiting-human` (a human not having replied yet is not a platform failure).
+!!! info "Since #521: one of these two alerts is dead, the other silently over-scopes"
+    Verified against the live `alerts/tatara-operator.yaml` and `tatara-operator`'s
+    `internal/obs/task_metrics.go`. `Operator task failure spike` filters
+    `operator_task_terminal_total{stage="failed"}` - that metric's label is now
+    `state`, not `stage`, and `failed` is not a value `state` takes any more
+    (narrowed to `done`/`rejected`). The equality matcher on a nonexistent label
+    never matches, so this alert **never fires**. `Operator task park spike`
+    filters `operator_task_parked_total{stageReason!~"backlog-sweep|awaiting-human"}`
+    - that metric's label is now `parkReason`, not `stageReason`. A negative-regex
+    match against an absent label evaluates as "not matching empty string", which
+    is true, so the filter does not exclude anything: this alert **still fires**,
+    but the intended `backlog-sweep`/`awaiting-human` exclusion is silently
+    inactive, so routine benign parks now count toward the 3-in-3h threshold. Both
+    are live gaps in `tatara-observability`, not stale prose. The PromQL below is
+    what the rules *should* query against today's metric.
 
-**What it means:** Both are cross-cutting spike detectors, not single-cause alerts. A failure spike means Tasks are reaching some terminal `failed(...)` reason at an elevated rate; failed Tasks are kept 7 days as debugging artifacts before the reaper deletes them, so the CRs are still inspectable. A park spike means Tasks are landing in `parked` for any reason other than the two expected, benign ones - per the stage machine's re-entry function, every other `stageReason` (`stage-deadline`, `review-loop-exhausted`, `merge-timeout`, `deploy-timeout`, `admission-starved`, `no-outcome`, `pod-recreation-exhausted`, `agent-contract-mismatch`, and the rest) either matches a narrow re-entry rule or ages out at `parkRetention` (7d) and gets reaped.
+**Symptoms (as still configured today):** `Operator task failure spike` (`alerts/tatara-operator.yaml`, warning) fires when more than 3 Tasks reach `stage=failed` in 1h, sustained 15m, broken out by `stageReason`. `Operator task park spike` (same file, warning) fires when more than 3 Tasks park in 3h, sustained 30m, broken out by `stageReason` - intended to exclude `backlog-sweep` (the zero-cost mint that owns a backlog issue and spawns no pod) and `awaiting-human` (a human not having replied yet is not a platform failure), though see above.
+
+**What it means:** Both are cross-cutting spike detectors, not single-cause alerts. A failure spike would mean Tasks are reaching some terminal `rejected(...)` reason at an elevated rate; rejected Tasks are kept 24h as debugging artifacts before the reaper deletes them, so the CRs are still inspectable while it lasts. A park spike means Tasks are landing with a non-empty `parkReason` for any reason other than the two expected, benign ones - per the state machine's re-entry function, every other `parkReason` (`stage-deadline`, `review-loop-exhausted`, `merge-timeout`, `deploy-timeout`, `admission-starved`, `no-outcome`, `pod-recreation-exhausted`, `agent-contract-mismatch`, and the rest) either matches a narrow re-entry rule or ages out at `parkRetention` (7d) and gets reaped.
 
 **Diagnosis:**
 ```bash
-kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.stage}{" "}{.status.stageReason}{"\n"}{end}' | sort -k2,3
+kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.state}{" "}{.status.parkReason}{"\n"}{end}' | sort -k2,3
 ```
 ```promql
-sum by (stageReason) (increase(operator_task_terminal_total{namespace="tatara",job="tatara-operator",stage="failed"}[1h]))
-sum by (stageReason) (increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",stageReason!~"backlog-sweep|awaiting-human"}[3h]))
+sum by (stateReason) (increase(operator_task_terminal_total{namespace="tatara",job="tatara-operator",state="rejected"}[1h]))
+sum by (parkReason) (increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",parkReason!~"backlog-sweep|awaiting-human"}[3h]))
 ```
 
-**Fix:** There is no single fix - both alerts exist to point you at the `stageReason` breakdown, then at that reason's own runbook: `pod-recreation-exhausted`, see the Agent pod lost mid-stage runbook below; `merge-timeout`/`deploy-timeout`/`merge-blocked`/`deploy-blocked`, see the Delivery parked or permanently exhausted runbook below; `head-moving`, see the Merge stage not advancing runbook below; `agent-contract-mismatch`, see the `failed(agent-contract-mismatch)` runbook above on this page. A dominant `stage-deadline` or `no-outcome` reason with no other pattern points at the per-stage work budgets themselves - see [Tuning](tuning.md).
+**Fix:** There is no single fix - both alerts exist to point you at the `parkReason` breakdown, then at that reason's own runbook: `pod-recreation-exhausted`, see the Agent pod lost mid-stage runbook below; `merge-timeout`/`deploy-timeout`/`merge-blocked`/`deploy-blocked`, see the Delivery parked or permanently exhausted runbook below; `head-moving`, see the Merge stage not advancing runbook below; `agent-contract-mismatch`, see the [`parked(agent-contract-mismatch)`](#parkedagent-contract-mismatch) runbook above on this page. A dominant `stage-deadline` or `no-outcome` reason with no other pattern points at the per-state work budgets themselves - see [Tuning](tuning.md).
 
 ---
 
@@ -650,9 +689,20 @@ sum by (stageReason) (increase(operator_task_parked_total{namespace="tatara",job
 <a id="tatara-runbook-operator-agent-pod-force-deleted-at-ttl"></a><!-- alert: "Operator agent pod force-deleted at TTL" status: covered -->
 ## Agent pod lost mid-stage
 
-**Symptoms:** `Operator task pod-recreation budget exhausted` (`alerts/tatara-operator.yaml`, warning) fires on any Task failing in 1h with `stageReason=pod-recreation-exhausted`. `Operator agent pod force-deleted at TTL` (same file, warning) fires on any agent pod, by `agent_kind`, force-deleted at TTL in 1h.
+!!! info "Since #521: the pod-recreation alert is dead"
+    Verified against the live `alerts/tatara-operator.yaml`: `Operator task
+    pod-recreation budget exhausted` filters
+    `operator_task_terminal_total{stage="failed",stageReason="pod-recreation-exhausted"}`.
+    Neither label exists on that metric any more (it is `state`/`stateReason`
+    now), and `pod-recreation-exhausted` is a `parkReason`, not a terminal
+    reason, in the current model - so even a corrected label name would need
+    `operator_task_parked_total{parkReason="pod-recreation-exhausted"}`
+    instead. This alert **never fires** today; it is a live gap in
+    `tatara-observability`, not stale prose.
 
-**What it means:** The first is the readiness clock's terminal case: a pod exists but never becomes Ready within the 5-minute `podReadyTimeout`, the operator respawns it, and once `stats.podRecreations` exceeds `maxPodRecreations` (3) the Task fails outright - investigate pod evictions, node pressure, and OOM-kills on the wrapper workload. The second is rarer and worse: the G.7 stop sequence got neither an agent handoff nor a synthetic one when the pod was torn down at its TTL. `Task.status.notes` is the only continuation state carried to the next pod, so that next pod resumes from a bundle missing the last turn's work - silent work loss that leaves the Task looking healthy.
+**Symptoms (as still configured today):** `Operator task pod-recreation budget exhausted` (`alerts/tatara-operator.yaml`, warning) fires on any Task failing in 1h with `stageReason=pod-recreation-exhausted`. `Operator agent pod force-deleted at TTL` (same file, warning) fires on any agent pod, by `agent_kind`, force-deleted at TTL in 1h.
+
+**What it means:** The first is the readiness clock's terminal case: a pod exists but never becomes Ready within the 5-minute `podReadyTimeout`, the operator respawns it, and once `stats.podRecreations` exceeds `maxPodRecreations` (3) the Task parks at `pod-recreation-exhausted` (no re-entry, so it ages out and the next sweep re-mints the still-open issue) - investigate pod evictions, node pressure, and OOM-kills on the wrapper workload. The second is rarer and worse: the G.7 stop sequence got neither an agent handoff nor a synthetic one when the pod was torn down at its TTL. `Task.status.notes` is the only continuation state carried to the next pod, so that next pod resumes from a bundle missing the last turn's work - silent work loss that leaves the Task looking healthy.
 
 **Diagnosis:**
 ```bash
@@ -661,7 +711,7 @@ kubectl -n tatara describe pod <pod-name> | grep -A5 -i "evicted\|oom\|node-pres
 kubectl -n tatara get task <task-name> -o jsonpath='{.status.stats.podRecreations}{"\n"}'
 ```
 ```promql
-sum(increase(operator_task_terminal_total{namespace="tatara",job="tatara-operator",stage="failed",stageReason="pod-recreation-exhausted"}[1h]))
+sum(increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",parkReason="pod-recreation-exhausted"}[1h]))
 sum by (agent_kind) (increase(operator_agent_pod_ttl_expired_total{namespace="tatara",job="tatara-operator",outcome="force_deleted"}[1h]))
 ```
 
@@ -693,19 +743,29 @@ sum(increase(operator_turn_timeout_total{namespace="tatara",job="tatara-operator
 <a id="tatara-runbook-operator-handoff-drain-stalled"></a><!-- alert: "Operator handoff drain stalled" status: covered -->
 ## Handoff drain stalled
 
-**Symptoms:** `Operator handoff drain stalled` (`alerts/tatara-operator.yaml`, warning) fires when more than 0 Tasks park in 1h with `stage=parked, stageReason=handoff-stalled`, sustained 5m.
+!!! info "Since #521: this alert is dead"
+    Verified against the live `alerts/tatara-operator.yaml`: it filters
+    `operator_task_terminal_total{stage="parked",stageReason="handoff-stalled"}`.
+    `parked` was retired as a state and `operator_task_terminal_total` only
+    ever sees `done`/`rejected` now - parks are counted exclusively by
+    `operator_task_parked_total{state,parkReason}` (see
+    [Observability](observability.md)). Neither label nor value exists on the
+    metric this alert queries, so it **never fires**. Live gap in
+    `tatara-observability`, not stale prose.
+
+**Symptoms (as still configured today):** `Operator handoff drain stalled` (`alerts/tatara-operator.yaml`, warning) fires when more than 0 Tasks park in 1h with `stage=parked, stageReason=handoff-stalled`, sustained 5m.
 
 **What it means:** A review outcome was accepted and the PR review already landed, but the cross-reconciler drain (`MergeRequestReconciler` -> `DrainPendingReview` -> `advanceAfterReview`) did not advance the Task within its 5-minute handoff deadline, so it parked instead of progressing. This can be a dead drain - the owning `MergeRequest` CR was deleted, the workqueue item was dropped, or leader election changed over mid-drain - or a false positive: an SCM/forge degradation that slowed the drain past 5m without actually breaking it. Recovery today is a backlog-sweep re-mint; a human should confirm which case this is before waiting on that.
 
 **Diagnosis:**
 ```bash
-kubectl -n tatara get task <task-name> -o jsonpath='{.status.stage}{" "}{.status.stageReason}{"\n"}'
+kubectl -n tatara get task <task-name> -o jsonpath='{.status.state}{" "}{.status.parkReason}{"\n"}'
 kubectl -n tatara get mergerequests -l tatara.io/task=<task-name>
 kubectl -n tatara logs deploy/tatara-operator | grep -i "DrainPendingReview\|advanceAfterReview" | tail -50
 kubectl -n tatara get leases | grep tatara-operator
 ```
 ```promql
-sum(increase(operator_task_terminal_total{namespace="tatara",job="tatara-operator",stage="parked",stageReason="handoff-stalled"}[1h]))
+sum(increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",parkReason="handoff-stalled"}[1h]))
 ```
 
 **Fix:** Confirm the owning `MergeRequest` CR still exists and check operator logs around the park time for a leader-election change or a dropped workqueue item. If the MergeRequest is gone or the drain clearly never ran, this is a dead drain needing a code fix or a manual nudge. If the SCM/forge was visibly degraded for longer than 5m in the same window, treat it as a false positive - the work is fine, it just parked slower than the deadline allows. `handoff-stalled` has no automatic re-entry; the Task ages out at `parkRetention` and the next backlog sweep re-mints its still-open issue.
@@ -761,40 +821,62 @@ max(operator_queue_age_seconds{namespace="tatara",job="tatara-operator",class="a
 <a id="tatara-runbook-tatara-merge-head-kept-moving"></a><!-- alert: "Tatara merge head kept moving" status: covered -->
 ## Merge stage not advancing
 
-**Symptoms:** `Tatara merge stage wedged` (`alerts/tatara-cd.yaml`, warning) fires when a Task has spent over 7200s (half the 4h merge budget) in `stage=merging`, sustained 10m. `Tatara merge cursor stalled` (same file, warning) fires when a Task's merge cursor has not advanced past one repo in `spec.mergeOrder` for over 3600s, sustained 15m. `Tatara merge head kept moving` (same file, warning) fires on any Task failing in 1h with `stageReason=head-moving`.
+!!! info "Since #521: two of these three alerts are dead; `head-moving` is a park, not a failure"
+    Verified against the live `alerts/tatara-cd.yaml`. `Tatara merge stage
+    wedged` filters `operator_task_stage_age_seconds{stage="merging"}` - that
+    metric no longer exists (renamed to `operator_task_state_age_seconds`) and
+    the old `merging` stage is now the `merged` state itself (the operator
+    walks `mergeOrder` *while* `state=merged`, not before reaching it); this
+    alert **never fires**. `Tatara merge head kept moving` filters
+    `operator_task_terminal_total{stage="failed",stageReason="head-moving"}` -
+    `head-moving` is one of the 28 current `parkReason` values, not a terminal
+    reason, and the metric/label names it queries don't exist either; this
+    alert **never fires**. `Tatara merge cursor stalled` is unaffected - it
+    keys on `operator_merge_cursor_stalled_seconds`, which carries no
+    stage/state label and was not touched by the redesign. Live gaps in
+    `tatara-observability`, not stale prose.
 
-**What it means:** `merging` walks `Task.spec.mergeOrder` sequentially from `status.mergeCursor`, merging each repo's reviewed MR against its live head SHA. A wedged merge stage means that walk has stopped: a required CI check is red, the reviewed head moved and forced a 409, or the forge is refusing the merge - it parks at `parked(merge-timeout)` at the full 4h budget. A stalled cursor localizes the same failure to one specific repo in the order - and because the merge is sequential, every repo behind it in `mergeOrder` is blocked too. `head-moving` is the bounded-cycle exhaustion case: the reviewed PR's head kept moving across 3 `reviewing <-> merging` laps (a human pushing to the branch, or a flapping CI autocommit), spawning a fresh review pod each lap before the operator gave up.
+**Symptoms (as still configured today):** `Tatara merge stage wedged` (`alerts/tatara-cd.yaml`, warning) fires when a Task has spent over 7200s (half the 4h merge budget) in `stage=merging`, sustained 10m. `Tatara merge cursor stalled` (same file, warning) fires when a Task's merge cursor has not advanced past one repo in `spec.mergeOrder` for over 3600s, sustained 15m. `Tatara merge head kept moving` (same file, warning) fires on any Task failing in 1h with `stageReason=head-moving`.
+
+**What it means:** `merged` walks `Task.spec.mergeOrder` sequentially from `status.mergeCursor`, merging each repo's reviewed MR against its live head SHA. A wedged merge means that walk has stopped: a required CI check is red, the reviewed head moved and forced a 409, or the forge is refusing the merge - it parks at `parked(merge-timeout)` at the full 4h budget. A stalled cursor localizes the same failure to one specific repo in the order - and because the merge is sequential, every repo behind it in `mergeOrder` is blocked too. `head-moving` is the bounded-cycle exhaustion case: the reviewed PR's head kept moving across 3 `awaiting-review <-> merged` laps (a human pushing to the branch, or a flapping CI autocommit), spawning a fresh review pod each lap before the operator parked the Task at `head-moving` (no re-entry - it ages out and the next backlog sweep re-mints the still-open issue).
 
 **Diagnosis:**
 ```bash
-kubectl -n tatara get task <task-name> -o jsonpath='{.status.stage}{" "}{.status.mergeCursor}{" "}{.status.headMoveReentries}{"\n"}'
+kubectl -n tatara get task <task-name> -o jsonpath='{.status.state}{" "}{.status.mergeCursor}{" "}{.status.headMoveReentries}{"\n"}'
 kubectl -n tatara get task <task-name> -o jsonpath='{.spec.mergeOrder}{"\n"}'
 kubectl -n tatara get mergerequests -l tatara.io/task=<task-name>
 ```
 ```promql
-max by (task) (operator_task_stage_age_seconds{namespace="tatara",job="tatara-operator",stage="merging"})
+max by (task) (operator_task_state_age_seconds{namespace="tatara",job="tatara-operator",state="merged"})
 max by (task, repo) (operator_merge_cursor_stalled_seconds{namespace="tatara",job="tatara-operator"})
-sum(increase(operator_task_terminal_total{namespace="tatara",job="tatara-operator",stage="failed",stageReason="head-moving"}[1h]))
+sum(increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",parkReason="head-moving"}[1h]))
 ```
 
-**Fix:** For a wedged stage or a stalled cursor, check the stalled repo's CI status and open MR state directly on the forge - a red required check or a merge conflict needs a human or a fresh implement pass to clear, and no lexical default exists for `mergeOrder`: if the order itself encodes the wrong dependency, the merge will never resolve regardless of CI. For `head-moving`, find who or what kept pushing to the branch - a human commit or a flapping CI autocommit - since the Task has already failed and needs a fresh review cycle once the branch is stable.
+**Fix:** For a wedged state or a stalled cursor, check the stalled repo's CI status and open MR state directly on the forge - a red required check or a merge conflict needs a human or a fresh implement pass to clear, and no lexical default exists for `mergeOrder`: if the order itself encodes the wrong dependency, the merge will never resolve regardless of CI. For `head-moving`, find who or what kept pushing to the branch - a human commit or a flapping CI autocommit - since the Task is now parked with no automatic re-entry and needs a fresh review cycle once the branch is stable.
 
 ---
 
 <a id="tatara-runbook-tatara-deploy-stage-wedged"></a><!-- alert: "Tatara deploy stage wedged" status: covered -->
 ## Deploy stage not reaching the cluster
 
-**Symptoms:** `Tatara deploy stage wedged` (`alerts/tatara-cd.yaml`, critical) fires when a Task has spent over 3600s (half the 2h deploy budget) in `stage=deploying`, sustained 10m.
+!!! info "Since #521: this alert is dead"
+    Verified against the live `alerts/tatara-cd.yaml`: it filters
+    `operator_task_stage_age_seconds{stage="deploying"}`. That metric no
+    longer exists, and the old pod-less `deploying` stage is now the
+    `deployed` state itself. This alert **never fires** today - a live gap in
+    `tatara-observability`, not stale prose.
 
-**What it means:** `deploying` is pod-less: it waits for every owned `MergeRequest` to reach `state=merged` and `deployedAt` to be stamped, which happens only once the component's release job has cut and published `vX.Y.Z`, `tatara-helmfile`'s pin-bump PR has landed, and the ARC-runner `helmfile apply` has completed against the cluster. This alert means the merged code is not reaching the cluster - the release job, the pin propagation into `tatara-helmfile`, or the apply itself has stalled. It parks at `parked(deploy-timeout)` at the full 2h budget.
+**Symptoms (as still configured today):** `Tatara deploy stage wedged` (`alerts/tatara-cd.yaml`, critical) fires when a Task has spent over 3600s (half the 2h deploy budget) in `stage=deploying`, sustained 10m.
+
+**What it means:** `deployed` is pod-less: it waits for every owned `MergeRequest` to reach `state=merged` and `deployedAt` to be stamped, which happens only once the component's release job has cut and published `vX.Y.Z`, `tatara-helmfile`'s pin-bump PR has landed, and the ARC-runner `helmfile apply` has completed against the cluster. A wedge here means the merged code is not reaching the cluster - the release job, the pin propagation into `tatara-helmfile`, or the apply itself has stalled. It parks at `parked(deploy-timeout)` at the full 2h budget.
 
 **Diagnosis:**
 ```bash
-kubectl -n tatara get task <task-name> -o jsonpath='{.status.stage}{" "}{.status.deployReentries}{"\n"}'
+kubectl -n tatara get task <task-name> -o jsonpath='{.status.state}{" "}{.status.deployReentries}{"\n"}'
 kubectl -n tatara get mergerequests -l tatara.io/task=<task-name> -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.state}{" "}{.status.deployedAt}{"\n"}{end}'
 ```
 ```promql
-max by (task) (operator_task_stage_age_seconds{namespace="tatara",job="tatara-operator",stage="deploying"})
+max by (task) (operator_task_state_age_seconds{namespace="tatara",job="tatara-operator",state="deployed"})
 ```
 
 **Fix:** Trace the delivery chain for the merged repo(s) in order: confirm the release job cut and published `vX.Y.Z` to Harbor, confirm `tatara-helmfile` received the pin-bump PR (`cd-release` bot), and check whether `apply.yaml` ran and succeeded on `arc-runner-tatara-helmfile` - see [CI/CD and the deploy model](../architecture/ci-cd.md). A stuck ARC runner (a stale `AutoscalingListener`) or a chart pin pointing at a garbage-collected Harbor tag are both documented failure modes above on this page ("ARC runner jobs stuck in queue", "Helmfile apply fails 'chart not found'"). Never hand-fix the pin; if the chain is genuinely broken, open a `tatara-helmfile` PR to re-assert it once the root cause clears.
@@ -805,21 +887,38 @@ max by (task) (operator_task_stage_age_seconds{namespace="tatara",job="tatara-op
 <a id="tatara-runbook-tatara-merge-or-deploy-cycle-exhausted"></a><!-- alert: "Tatara merge or deploy cycle exhausted" status: covered -->
 ## Delivery parked or permanently exhausted
 
-**Symptoms:** `Tatara delivery parked on a merge or deploy timeout` (`alerts/tatara-cd.yaml`, critical) fires on any Task parking in 30m with `stageReason` matching `merge-timeout` or `deploy-timeout`. `Tatara merge or deploy cycle exhausted` (same file, critical) fires on any Task failing in 1h with `stageReason` matching `merge-blocked` or `deploy-blocked`.
+!!! info "Since #521: both alerts are dead, and `merge-blocked`/`deploy-blocked` are parks, not failures"
+    Verified against the live `alerts/tatara-cd.yaml` and `tatara-operator`'s
+    `internal/obs/task_metrics.go`. `Tatara delivery parked on a merge or
+    deploy timeout` filters `operator_task_parked_total{stageReason=~...}` -
+    the label is `parkReason` now, not `stageReason`, and a positive regex
+    match against an absent label never matches, so this alert **never
+    fires**. `Tatara merge or deploy cycle exhausted` filters
+    `operator_task_terminal_total{stage="failed",stageReason=~...}` - same
+    dead-label problem, and `merge-blocked`/`deploy-blocked` are two of the 28
+    current `parkReason` values, not terminal `rejected` reasons, so even a
+    corrected label name would need `operator_task_parked_total` here too.
+    This also changes the operational picture below: exhaustion no longer
+    fails the Task - it parks with no re-entry, ages out at `parkRetention`
+    (7d, not the 24h `rejected` retention), and the next backlog sweep
+    re-mints the still-open issue. Live gaps in `tatara-observability`, not
+    stale prose.
 
-**What it means:** A merge or deploy stage blew its budget (4h for `merging`, 2h for `deploying`) and the Task parked. Merged component code is NOT reaching the cluster. Re-entry from `merge-timeout`/`deploy-timeout` resumes the same stage, cursor-first - it never re-enters `implementing` - so the fix lives in the owned `MergeRequest` CRs and the `tatara-helmfile` apply run, not with the agent. The exhaustion alert is the bounded end of that same cycle: `mergeReentries`/`deployReentries` is capped at 3, and past that the Task fails permanently at `merge-blocked`/`deploy-blocked` - the delivery path to a cluster-admin-scoped runner has stopped outright, not just slowed.
+**Symptoms (as still configured today):** `Tatara delivery parked on a merge or deploy timeout` (`alerts/tatara-cd.yaml`, critical) fires on any Task parking in 30m with `stageReason` matching `merge-timeout` or `deploy-timeout`. `Tatara merge or deploy cycle exhausted` (same file, critical) fires on any Task failing in 1h with `stageReason` matching `merge-blocked` or `deploy-blocked`.
+
+**What it means:** The `merged` or `deployed` state blew its budget (4h for `merged`, 2h for `deployed`) and the Task parked. Merged component code is NOT reaching the cluster. Re-entry from `merge-timeout`/`deploy-timeout` resumes the same state, cursor-first - it never re-enters `under-implementation` - so the fix lives in the owned `MergeRequest` CRs and the `tatara-helmfile` apply run, not with the agent. The exhaustion alert is the bounded end of that same cycle: `mergeReentries`/`deployReentries` is capped at 3, and past that the Task parks permanently at `merge-blocked`/`deploy-blocked` (no re-entry rule, so it ages out at `parkRetention` and the next backlog sweep re-mints the still-open issue) - the delivery path to a cluster-admin-scoped runner has stopped outright, not just slowed.
 
 **Diagnosis:**
 ```bash
-kubectl -n tatara get task <task-name> -o jsonpath='{.status.stage}{" "}{.status.stageReason}{" "}{.status.mergeReentries}{" "}{.status.deployReentries}{"\n"}'
+kubectl -n tatara get task <task-name> -o jsonpath='{.status.state}{" "}{.status.parkReason}{" "}{.status.mergeReentries}{" "}{.status.deployReentries}{"\n"}'
 kubectl -n tatara get mergerequests -l tatara.io/task=<task-name>
 ```
 ```promql
-sum by (stageReason) (increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",stageReason=~"merge-timeout|deploy-timeout"}[30m]))
-sum by (stageReason) (increase(operator_task_terminal_total{namespace="tatara",job="tatara-operator",stage="failed",stageReason=~"merge-blocked|deploy-blocked"}[1h]))
+sum by (parkReason) (increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",parkReason=~"merge-timeout|deploy-timeout"}[30m]))
+sum by (parkReason) (increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",parkReason=~"merge-blocked|deploy-blocked"}[1h]))
 ```
 
-**Fix:** For a parked Task, work the underlying blockage directly - see the Merge stage not advancing runbook and the Deploy stage not reaching the cluster runbook above - the un-park is automatic (the reentry counter increments and the stage resumes) as long as the reentry budget is not yet spent. For an already-`failed(merge-blocked|deploy-blocked)` Task, the cycle is exhausted and there is no further automatic re-entry: fix the root blockage (forge, CI, or the ARC runner/`tatara-helmfile` chain) and re-approve the Task's work as a fresh delivery attempt.
+**Fix:** For a parked Task, work the underlying blockage directly - see the Merge stage not advancing runbook and the Deploy stage not reaching the cluster runbook above - the un-park is automatic (the reentry counter increments and the state resumes) as long as the reentry budget is not yet spent. For an already-`parked(merge-blocked|deploy-blocked)` Task, the cycle is exhausted and there is no further automatic re-entry: fix the root blockage (forge, CI, or the ARC runner/`tatara-helmfile` chain), then re-approve the Task's work as a fresh delivery attempt once the parked Task ages out and its issue is re-minted.
 
 ---
 
@@ -886,7 +985,7 @@ kubectl -n tatara get issues,mergerequests -o jsonpath='{range .items[*]}{.metad
 sum by (reason) (increase(operator_gc_blocked_total{namespace="tatara",job="tatara-operator"}[1h])) or vector(0)
 ```
 
-**Fix:** No confirmed fix beyond the guard's own repair - this rule exists to surface the underlying bug in the fold/reap controller-owner transfer path, which has not yet been root-caused. Capture the offending object's name and owner history from the logs above and escalate; do not assume the repaired object is otherwise healthy. For a persistent `fold_in_flight` GC block, check whether the associated refine Task ever reached `delivered` - see the [stage reference](../reference/task-stages.md) for the refine/fold lifecycle.
+**Fix:** No confirmed fix beyond the guard's own repair - this rule exists to surface the underlying bug in the fold/reap controller-owner transfer path, which has not yet been root-caused. Capture the offending object's name and owner history from the logs above and escalate; do not assume the repaired object is otherwise healthy. For a persistent `fold_in_flight` GC block, check whether the associated refine Task ever reached `done` - see the [state reference](../reference/task-stages.md) for the refine/fold lifecycle.
 
 ---
 
@@ -923,13 +1022,13 @@ time() - operator_sweep_next_expected_timestamp_seconds{namespace="tatara",job="
 **Diagnosis:**
 ```bash
 kubectl -n tatara get project <project> -o jsonpath='{.spec.maxOpenTasks}{" "}{.spec.maxNewTasksPerSweep}{"\n"}'
-kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.status.stage}{"\n"}{end}' | sort | uniq -c
+kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.status.state}{" "}{.status.parkReason}{"\n"}{end}' | sort | uniq -c
 ```
 ```promql
 sum by (project, cap) (increase(operator_sweep_mint_cap_hit_total{namespace="tatara",job="tatara-operator"}[3h])) or vector(0)
 ```
 
-**Fix:** For a chronically capped budget, raise `Project.spec.maxOpenTasks` (see [Tuning](tuning.md)) or wait for active Tasks to clear a stage. For a mint burst, check `operator_task_stage{stage="parked"}`: if the minted Tasks are landing in `parked(backlog-sweep)` they spawn zero pods and the burst is a healthy backlog drain; if they land in a pod-spawning stage and keep re-appearing, ownership is not sticking on reap - correlate with the Ownership or GC invariant broken runbook above.
+**Fix:** For a chronically capped budget, raise `Project.spec.maxOpenTasks` (see [Tuning](tuning.md)) or wait for active Tasks to clear a state. For a mint burst, check whether the minted Tasks are landing with `parkReason=backlog-sweep` (`operator_task_parked_total{parkReason="backlog-sweep"}`): if so they spawn zero pods and the burst is a healthy backlog drain; if they land in a live, pod-spawning state and keep re-appearing, ownership is not sticking on reap - correlate with the Ownership or GC invariant broken runbook above.
 
 ---
 
@@ -938,12 +1037,12 @@ sum by (project, cap) (increase(operator_sweep_mint_cap_hit_total{namespace="tat
 
 **Symptoms:** `Operator documentation batch abandoned` (warning, `alerts/tatara-operator.yaml`) fires when the nightly documentation batch cron did not run in the last 25h, for at least one abandoned Task (`reason="never_ran"`).
 
-**What it means:** Documentation is a nightly batch, not a per-delivery spawn: each night the operator mints one `documenting` Task per project covering every Task that reached `delivered` in the last 24h with at least one merged MR ref. If the cron itself did not fire, every Task that became eligible for that missed night is now permanently undocumented - `documentedBy` (see [Task reference](../reference/task.md)) never retries a Task a missed batch skipped; the next batch only picks up newly eligible Tasks.
+**What it means:** Documentation is a nightly batch, not a per-delivery spawn: each night the operator mints one `documentation`-kind Task per project, straight into `under-implementation` (no separate `documenting` state exists - confirmed in `tatara-operator`'s `internal/controller/docbatch.go`), covering every Task that reached `done` in the last 24h with at least one merged MR ref. If the cron itself did not fire, every Task that became eligible for that missed night is now permanently undocumented - `documentedBy` (see [Task reference](../reference/task.md)) never retries a Task a missed batch skipped; the next batch only picks up newly eligible Tasks.
 
 **Diagnosis:**
 ```bash
 kubectl -n tatara logs deploy/tatara-operator | grep -i documentation | tail -50
-kubectl -n tatara get tasks -o jsonpath='{range .items[?(@.status.stage=="delivered")]}{.metadata.name}{" "}{.status.documentedBy}{"\n"}{end}'
+kubectl -n tatara get tasks -o jsonpath='{range .items[?(@.status.state=="done")]}{.metadata.name}{" "}{.status.documentedBy}{"\n"}{end}'
 ```
 ```promql
 sum by (reason) (increase(operator_doc_task_abandoned_total{namespace="tatara",job="tatara-operator",reason="never_ran"}[25h])) or vector(0)
@@ -1222,7 +1321,7 @@ sum(operator_pushed_runs{namespace="tatara",job="tatara-operator"})
 
 **Diagnosis:**
 ```bash
-kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.stage}{"\n"}{end}'
+kubectl -n tatara get tasks -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.state}{"\n"}{end}'
 kubectl -n tatara logs deploy/tatara-operator | grep -i token | tail -50
 ```
 ```promql

@@ -60,8 +60,8 @@ All `/v1/*` require an OIDC bearer token (audience `tatara-claude-code-wrapper`)
 
 The wrapper image and the operator image ship in different helm releases and can apply concurrently, so a window where a new operator pairs with an old agent image is reachable. To fail that fast instead of burning a full turn budget against a 404ing tool surface:
 
-1. `contractVersion` is a compile-time constant in the wrapper binary (`const ContractVersion = 2`), bumped in the same release that ships a new tool surface. It is reported on every `GET /v1/session` response.
-2. The operator injects `TATARA_CONTRACT_VERSION=2` into every agent pod's env (read by tatara-cli, not by the wrapper itself).
+1. `contractVersion` is a compile-time constant in the wrapper binary (`const ContractVersion = 4`), bumped in the same release that ships a new tool surface - most recently for the #521 lifecycle redesign's `clarify` fold and `submit_outcome` gate actions. It is reported on every `GET /v1/session` response.
+2. The operator injects `TATARA_CONTRACT_VERSION=4` into every agent pod's env (read by tatara-cli, not by the wrapper itself).
 3. Before submitting a pod's turn-0, the operator reads `GET /v1/session` and compares the reported `contractVersion` against its own expectation. On a mismatch, or a response with no `contractVersion` field at all (an old wrapper), the operator fails the Task instantly with `stageReason=agent-contract-mismatch` and never submits a turn - zero tokens burned.
 
 See [tatara-cli](cli.md#contract-version-handshake) for the third defense: the cli's MCP server refusing to start on a mismatched `TATARA_CONTRACT_VERSION`.

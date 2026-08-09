@@ -5,15 +5,14 @@ title: Workflows
 # Workflows
 
 A `Task` carries two separate kind fields. `Task.spec.kind` is the **origin** - immutable, baked
-into the Task's name, one of six values. `Task.status.agentKind` is the **running agent** - the
-pod currently doing the work - one of seven values: the six origins plus `implement`. `implement`
-is an agent kind only. It is never an origin: no webhook, cron, or human action ever mints a Task
-with `kind: implement`. It is a **stage** every approved Task passes through on its way from
-`approved` to `reviewing`, regardless of which of the six origins started it.
+into the Task's name. `Task.status.agentKind` is the **running agent** - the pod currently doing
+the work - one of **six** values. `clarify` is gone as of the #521 lifecycle redesign: its
+conversation-and-approval job folded into `implement`, which now runs both the approval gate
+(`refined`) and the code (`under-implementation`) - see [Implement](implement.md).
 
 Each agent kind is a single-purpose pod: no kind straddles triage, coding, and review in one
 context. The operator - never an agent - drives every transition between them, per the
-[stage machine](../reference/task-stages.md).
+[state machine](../reference/task-stages.md).
 
 <div class="grid cards" markdown>
 
@@ -22,7 +21,7 @@ context. The operator - never an agent - drives every transition between them, p
     ---
 
     Periodic improvement proposals generated autonomously from the codebase knowledge graph.
-    Each accepted proposal becomes its own new `clarify` Task.
+    Each accepted proposal becomes its own new `implement`-origin Task.
 
     [:octicons-arrow-right-24: Brainstorm](brainstorm.md)
 
@@ -31,26 +30,17 @@ context. The operator - never an agent - drives every transition between them, p
     ---
 
     A Grafana alert fires an `incident` investigation; a confirmed finding files an issue and
-    hands off to `clarify`.
+    hands off to `implement`'s conversation phase.
 
     [:octicons-arrow-right-24: Incident](incident.md)
-
--   :material-forum-outline: **Clarify**
-
-    ---
-
-    Live triage/human-conversation pod on a new issue or any comment on a live Task's umbrella;
-    cites a maintainer comment as approval, which the operator's approval grammar independently
-    verifies before a Task can advance to `approved`.
-
-    [:octicons-arrow-right-24: Clarify](clarify.md)
 
 -   :material-hammer-wrench: **Implement**
 
     ---
 
-    Writes the code across every repo under the Task once it is `approved`. A stage, not an
-    origin - every approved Task passes through it exactly once per review round.
+    Runs the approval gate (live triage/human-conversation, citing a maintainer comment which the
+    operator independently verifies) at `refined`, then writes the code across every repo under
+    the Task at `under-implementation`. The `clarify` kind folded into this one at #521.
 
     [:octicons-arrow-right-24: Implement](implement.md)
 
@@ -104,29 +94,40 @@ context. The operator - never an agent - drives every transition between them, p
 
 ## Origin kinds and the agent kind each one spawns
 
-Every Task enters the stage machine at `triaging`, which is pure operator work - it runs no
-agent, classifies the origin, and picks the next stage from `spec.kind`. That next stage is what
+Every triaged Task enters `state=new`, which is pure operator work - it runs no agent,
+classifies the origin, and picks the next state from `spec.kind`. That next state is what
 spawns the first pod:
 
-| Origin kind (`spec.kind`) | Stage entered from `triaging` | Agent kind spawned |
+| Origin kind (`spec.kind`) | State after triage | Agent kind spawned |
 |---|---|---|
-| `brainstorm` | `brainstorming` | `brainstorm` |
-| `incident` | `investigating` | `incident` |
-| `clarify` | `clarifying` | `clarify` |
-| `refine` | `refining` | `refine` |
-| `review` | `reviewing` | `review` |
-| `documentation` | `documenting` | `documentation` |
+| `brainstorm` | `refined` | `brainstorm` |
+| `incident` | `refined` | `incident` |
+| `implement` | `refined` | `implement` |
+| `refine` | `refined` | `refine` |
+| `review` | `awaiting-review` | `review` |
+| `documentation` | `under-implementation` (minted straight in) | `documentation` |
+| `takeover` | `refined` (minted straight in) | `implement` |
+
+`implement` is an origin in its own right, not just an agent kind: it is
+`SweepIssueKind`, the value `MintIssueTask` stamps on any Task minted from a
+new issue - webhook-delivered or backlog-sweep-discovered - which is exactly
+the role `clarify` used to play as an origin.
 
 Each pod's name is computed independently of the Task's own name - see
 [Pod naming](../reference/task-stages.md#pod-naming).
 
-`implement` has no row above because it is never what `triaging` selects. It is reached only via
-`approved -> implementing`, once the [approval grammar](../operations/security/approval-gates.md#the-approval-grammar)
-has passed for every live Issue the Task owns. See the [stage machine](../reference/task-stages.md)
+`refined` is a single state serving six different origins (every row above except
+`review` and `documentation`) - what distinguishes them is `Task.status.agentKind`, which the
+[state machine's `AgentKindFor` table](../reference/task-stages.md#which-agent-each-state-spawns)
+derives from the origin, not the state. `implement` conducts the approval conversation there
+before ever writing code - it is reached at triage for its own origin as well as
+`brainstorm`/`incident`/`refine`/`takeover`, and again via `refined -> under-implementation`
+once the [approval grammar](../operations/security/approval-gates.md#the-approval-grammar) has
+passed for every live Issue the Task owns. See the [state machine](../reference/task-stages.md)
 for the full transition table, and [MCP tools](../reference/mcp-tools.md#the-profile-gating-table)
 for which tools each agent kind is gated to.
 
 !!! note "Model and effort are configured per agent kind"
     `Project.spec.agent.modelByKind` / `effortByKind` key on the **agent** kind (`brainstorm`,
-    `incident`, `clarify`, `implement`, `review`, `refine`, `documentation`) - the same seven
-    values as `Task.status.agentKind`, never the six-value origin enum.
+    `incident`, `implement`, `review`, `refine`, `documentation`) - the same six values as
+    `Task.status.agentKind`.

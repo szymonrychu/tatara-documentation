@@ -20,7 +20,7 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
     ---
 
-    Issues move through triage, implementation, and review agents in sequence, each a discrete pod handing off through the operator's stage machine. A maintainer approves by posting a comment; the clarify agent judges it and cites it, the operator independently verifies the citation, and the operator itself merges once a review pod accepts the change and required checks are green.
+    Issues move through triage, implementation, and review agents in sequence, each a discrete pod handing off through the operator's state machine. A maintainer approves by posting a comment; the implement agent judges it and cites it, the operator independently verifies the citation, and the operator itself merges once a review pod accepts the change and required checks are green.
 
     [:octicons-arrow-right-24: The agentic operating model](concepts/agentic-model.md)
 

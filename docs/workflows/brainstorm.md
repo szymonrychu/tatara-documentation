@@ -36,9 +36,9 @@ target internally.
 
 Before a due brainstorm tick proceeds, the operator gates it on the [refine workflow](refine.md)
 completing a pass first. This is cadence-derived (no separate `refine` cron schedule): a due
-brainstorm tick creates a `refine` Task and holds until that Task reaches a terminal stage. A
-`refine` Task that ends in `failed` still releases the gate - a broken refine never wedges
-brainstorm.
+brainstorm tick creates a `refine` Task and holds until that Task reaches `done`/`rejected` or
+parks. A `refine` Task that fold-verification fails still releases the gate - a broken refine
+never wedges brainstorm.
 
 ## Output
 
@@ -59,15 +59,15 @@ or
 cheap early-exit when a survey pass finds nothing novel or shippable - it costs one turn, not a
 proposal fan-out for nothing.
 
-Either way the Task reaches `delivered` directly from `brainstorming` - a brainstorm Task never
-passes through `implementing` or `reviewing` itself, and `status.documentedBy` stays permanently
+Either way the Task reaches `done` directly from `refined` - a brainstorm Task never
+passes through `under-implementation` or `awaiting-review` itself, and `status.documentedBy` stays permanently
 empty: a brainstorm Task owns no merged MR, so it is never eligible for the nightly
 [documentation](documentation.md) batch.
 
-**Each accepted proposal becomes its own new `clarify` Task.** The operator opens the SCM issue
-in the named repo, mints the Issue CR, and mints a fresh Task with `kind: clarify` owning it,
-entering the stage machine at `triaging` like any other newly filed issue. The brainstorm Task
-that proposed it and the `clarify` Task that inherits it are two separate Task objects from that
+**Each accepted proposal becomes its own new `implement`-origin Task.** The operator opens the SCM issue
+in the named repo, mints the Issue CR, and mints a fresh Task with `kind: implement` owning it
+(`SweepIssueKind` - the role `clarify` used to play), entering the state machine at `new` like any other newly filed issue. The brainstorm Task
+that proposed it and the `implement` Task that inherits it are two separate Task objects from that
 point on.
 
 ## Backlog target, not a cap
@@ -172,7 +172,7 @@ default.
 
 ## Conversation forking
 
-When a brainstorm agent's proposals are accepted, each resulting `clarify` Task gets a **forked
+When a brainstorm agent's proposals are accepted, each resulting `implement`-origin Task gets a **forked
 copy** of the brainstorm conversation (S3 copy-object) as its starting context, without the
 transcripts interfering with each other.
 
@@ -210,6 +210,9 @@ hook - no dedicated web-search/academic MCP servers are wired yet.
 
 ## Budget
 
-`brainstorming` carries a 2h stage-work budget; on elapse the Task parks at
-`parked(stage-deadline)`. See the [stage machine](../reference/task-stages.md) for the full
-deadline and reason table.
+A brainstorm Task runs at `state=refined`, which - like every live state - carries the idle
+budget (`ConversationIdleDefault`, 60m by default) rather than a dedicated fixed work budget; on
+elapse the Task parks at `parked(awaiting-human)`. See the [state machine](../reference/task-stages.md)
+for the full deadline and reason table. (Pre-#521 this was a dedicated `brainstorming` stage with
+its own 2h work budget, parking at `stage-deadline` - the redesign folded it into the same idle
+clock every live state shares.)

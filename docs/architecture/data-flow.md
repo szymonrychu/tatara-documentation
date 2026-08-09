@@ -10,7 +10,7 @@ A second, independent path - the async memory ingest pipeline - runs in parallel
 and keeps the knowledge graph fresh.
 
 !!! note "The one-writer rule"
-    The agent writes **conversation** (`issue_write`, `mr_write(comment|reply)`) and **notes**. The operator writes reviews, merges, labels, `Issue.status.status`, `MergeRequest.status.status`, and every stage transition. No agent ever writes `Task.status.stage`.
+    The agent writes **conversation** (`issue_write`, `mr_write(comment|reply)`) and **notes**. The operator writes reviews, merges, labels, `Issue.status.status`, `MergeRequest.status.status`, and every state transition. No agent ever writes `Task.status.state`.
 
 ---
 
@@ -74,7 +74,8 @@ The operator exposes two webhook routes on a shared HTTP listener:
 Before a webhook event can mint a new Task the operator applies two security checks:
 
 - **Provider mismatch guard** - rejects deliveries routed to the wrong SCM provider.
-- **Reporter allowlist** - a new `clarify` Task is only minted when the event author is a
+- **Reporter allowlist** - a new `implement`-origin Task (`spec.kind: implement`, the role
+  `clarify` used to play) is only minted when the event author is a
   maintainer (`spec.scm.maintainerLogins`) or an account in `spec.scm.reporterLogins`
   (Project-level, overridable per-Repository via `RepositorySpec.reporterLogins`). An empty
   allowlist is open (default). This is the prompt-injection intake gate: with it set, unknown
@@ -114,10 +115,10 @@ spec:
   repositoryRef: tatara-cli     # empty except documentation
   dedupKey: "iss:tatara-cli#17" # a FIELD, never a label - see below
   payload:
-    agentKind: clarify          # the pod to spawn
+    agentKind: implement        # the pod to spawn
     newTask:                    # exactly one of newTask / taskRef is set
-      name: my-project-clarify-2026-07-12-a1b2c
-      kind: clarify              # the ORIGIN kind
+      name: my-project-implement-2026-07-12-a1b2c
+      kind: implement            # the ORIGIN kind (SweepIssueKind)
       goal: "..."
       projectRef: my-project
       issueKeys: ["tatara-cli#17"]
@@ -140,8 +141,8 @@ field-indexed lookup on `queuedEventDedupKey`.
 
 | Origin kind | Dedup key |
 |---|---|
-| `clarify` (new issue) | `iss:<repo>#<number>`, and a deterministic Task name so a redelivered webhook collides on `Create` (`AlreadyExists`) |
-| `implement` (agent kind, not an origin) | No separate `QueuedEvent` - the handoff is a stage-driven respawn (`taskRef`) on the same Task the `clarify` dedup key already admitted |
+| `implement` (new issue - `SweepIssueKind`, the role `clarify` used to play) | `iss:<repo>#<number>`, and a deterministic Task name so a redelivered webhook collides on `Create` (`AlreadyExists`) |
+| `implement` (as an **agent kind**, on a different origin's Task) | No separate `QueuedEvent` - the handoff is a state-driven respawn (`taskRef`) on the same Task its own origin's dedup key already admitted |
 | `review` | None - multiple review Tasks per PR are intentional |
 | `incident` | `sha256(Grafana groupKey)[:16]` |
 | `brainstorm`, `documentation`, `refine` | Caller-supplied key (e.g. `brainstorm-<project>`, `documentation-<project>`) |
@@ -285,17 +286,17 @@ Everything triggered by an **accepted** `submit_outcome` and not reachable from 
 
 | Origin kind (accepted outcome) | Operator action |
 |---|---|
-| `clarify` (`decision=implement`) | Runs the [approval grammar](../operations/security/approval-gates.md#the-approval-grammar); on success, advances `stage=approved` and hands the Task to an `implement` pod |
-| `implement` / `documentation` (`action=submitted`) | Resolves `mergeOrder` (fix C2: auto-filled for the single-repo case, required and validated otherwise); stage advances to `reviewing` |
+| `implement` (`action=approved`) | Runs the [extended approval grammar](../operations/security/approval-gates.md#the-approval-grammar) - citation plus plan-hash pin; on success, advances `state=under-implementation` and the same pod goes on to write code |
+| `implement` / `documentation` (`action=submitted`) | Resolves `mergeOrder` (fix C2: auto-filled for the single-repo case, required and validated otherwise); state advances to `awaiting-review` |
 | `review` (`verdict=approve`) | Reads the **live** PR head, posts a `COMMENT`-event SCM review under the bot identity (never `APPROVE` - the platform's one bot identity means GitHub 422s a self-approve), then walks `mergeOrder` and merges - see [Merge and deploy](../workflows/merge-and-deploy.md#the-merge-sequence) |
-| `review` (`verdict=request_changes`) | Posts the findings as a `COMMENT`-event review with inline comments; stage returns to `implementing` (or, for a `kind=review` Task on a human PR, parks at `awaiting-human`, bounded by `maxHumanReviewRounds`) |
+| `review` (`verdict=request_changes`) | Posts the findings as a `COMMENT`-event review with inline comments; state returns to `under-implementation` (or, for a `kind=review` Task on a human PR, parks at `awaiting-human`, bounded by `maxHumanReviewRounds`) |
 | `brainstorm` / `incident` (`action=propose`/`file_issue`) | Creates the proposed `Issue` CR(s), scoped to the alert rule for incidents |
 | `refine` | Applies folds (adopts a member Task's Issues/MRs, deletes the member), closes, and links directly - no PR, no proposal |
-| `deploying` -> `delivered` (pod-less) | Closes every owned Issue still open, citing the release, and only then stamps `deliveredAt` |
+| `deployed` -> `done` (pod-less) | Closes every owned Issue still open, citing the release, and only then stamps `deliveredAt` |
 
 No agent writes `Issue.status.status`, `MergeRequest.status.status`, a label, or
-`Task.status.stage` directly - every one of those is an operator write, gated by an accepted
-`submit_outcome` or by the pod-less `merging`/`deploying` stage logic.
+`Task.status.state` directly - every one of those is an operator write, gated by an accepted
+`submit_outcome` or by the pod-less `merged`/`deployed` state logic.
 
 ### The mirror is the ledger
 

@@ -62,7 +62,7 @@ GitHub and GitLab have dedicated noreply commit email formats for bot accounts. 
 ## Bot exclusion from approval gates
 
 `spec.scm.maintainerLogins` must NOT include `botLogin` - but the guard does not depend on that
-convention. The clarify agent judges whether a maintainer's comment approves and cites it; the
+convention. The `implement` agent judges whether a maintainer's comment approves and cites it; the
 operator grants nothing on that judgment alone - `restapi.verifyApprovalScope` independently
 verifies **who** posted the cited comment and **that the quoted text is really there**. The bot
 is excluded **structurally**:

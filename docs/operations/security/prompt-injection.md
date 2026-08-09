@@ -107,10 +107,13 @@ absent. **No profile, for any agent kind, exposes a merge action.**
 
 ## Layer 6: Maintainer approval before implementation
 
-Even if an injected issue body tricks a `clarify` agent into a bad plan, no code is written until a
-verified project maintainer's comment exists and the operator confirms it independently. **The
-agent judges whether a comment approves; it does not get to decide that on the operator's
-behalf.**
+Even if an injected issue body tricks the `implement` agent into a bad plan at the approval-gate
+turn, no code is written until a verified project maintainer's comment exists and the operator
+confirms it independently. **The agent judges whether a comment approves; it does not get to
+decide that on the operator's behalf.** Since #521 the same pod that judges approval goes on to
+write the code, so the operator's plan-hash pin (`plan_note_id`, re-checked immediately before
+any code-writing turn) is what still stops a plan swapped after grant, now that a separate
+`clarify` pod is no longer the boundary between conversation and code.
 
 An agent can *report* that approval happened; it cannot *make* it so. The agent's
 `submit_outcome(decision=implement)` carries a `reason` citing who approved and why, plus
@@ -178,11 +181,11 @@ regex answering it is the same category error the wordlist was.
 
 A second LLM adjudicator re-checking the first agent's verdict was also considered and rejected: a
 second model reading the same untrusted thread is attackable by the same injection, and it adds a
-second surface without removing the first. It would also double the cost of every clarify turn for
-a check that does not change what it is fundamentally unable to see.
+second surface without removing the first. It would also double the cost of every implement
+approval-gate turn for a check that does not change what it is fundamentally unable to see.
 
 Do not read the blast radius here as "at most one unwanted pull request." A forged verdict reaches
-`approved`, then `implementing`, then a real PR; the review pod's own verdict is a second
+`under-implementation`, then a real PR; the review pod's own verdict is a second
 independent judgment, not a re-check of this one, and on `approve` the operator merges on green CI
 with no further human step. From there, the push-CD pipeline tags and publishes a release, and the
 deploy repo applies it to the cluster. Treat the approval gate as a production-change gate,
@@ -207,7 +210,7 @@ because a forged approval that survives review is one.
 1. **Always set `reporterLogins`** - enumerate explicitly who can drive agent activity.
 2. **Always set `maintainerLogins`** - it is closed by default (an empty list means nothing can ever be approved), but populate it with the real accounts you trust to release work into implementation.
 3. **Enable branch protection that forbids direct pushes to `main`** on every enrolled repository. Do **not** add a rule requiring an approving review: the platform has one bot identity and a forge will not let it approve its own pull request, so such a rule can never be satisfied and would deadlock every merge. See [Bot Identity](bot-identity.md#one-identity-and-what-it-costs).
-4. **Write unambiguous approval comments.** There is no configured wordlist any more - the clarify agent judges meaning - so a maintainer who wants to be unmistakable should still say something a reasonable reader could not confuse with a conditional or a question: "go ahead, I approve this" reads better than "sure, why not".
+4. **Write unambiguous approval comments.** There is no configured wordlist any more - the `implement` agent judges meaning - so a maintainer who wants to be unmistakable should still say something a reasonable reader could not confuse with a conditional or a question: "go ahead, I approve this" reads better than "sure, why not".
 5. **Monitor intake rejections** - a reporter-allowlist drop is counted as `operator_webhook_events_total{result="ignored"}` (there is no `dropped` result value; querying `result="dropped"` returns nothing and any alert on it would silently never fire). Note `ignored` also covers other benign no-op events (bot-authored, non-actionable actions), so scope the query by `kind`/`action` when alerting.
 6. **Alert on `operator_unexpected_merge_total`** - a merge the operator did not initiate. Under one bot identity this is the detection control that stands in for the prevention control the forge cannot give you.
 7. **Audit commits** - `git log --author=<botEmail>` to review all autonomous commits.

@@ -15,6 +15,11 @@
 # Matching is case-insensitive. An HTML comment renders invisibly in mkdocs,
 # so the published page is unaffected. Bash 3.2 (macOS) compatible - no
 # mapfile, no associative arrays, no `${var,,}`.
+#
+# `parkReason` was removed from TERMS: it was dead after the first
+# task-centric redesign folded it into `stageReason`, but the #521 lifecycle
+# redesign UN-RETIRED it as `status.parkReason`, orthogonal to the new
+# `status.state`. A term can come back; this list is not append-only.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -42,7 +47,7 @@ TERMS='lifecycleState|cascadeStage|deployedVersion|deployArtifact|deployDeadline
 |approvalRequired|maxTurns\b|TaskSource\b
 |gateEnteredAt|lastActivityAt|deadlineAt\b|headBranch\b|prNumber\b
 |mergeCommitSHA|mergedHeadSHA|cumulativeTokens|lifecycleIterations
-|parkReason|approvedByMaintainer|autoApproved\b|mergeWaitDeadline
+|approvedByMaintainer|autoApproved\b|mergeWaitDeadline
 |reviewResolveDeadline|issueLinks|prLinks\b
 |discoveredIssues|linksSyncedURLs|writebackSkip4xxAttempts|disarmFailures'
 
