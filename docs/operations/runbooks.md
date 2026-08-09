@@ -754,7 +754,7 @@ sum by (parkReason) (increase(operator_task_parked_total{namespace="tatara",job=
     what the live rule queries today. Kept here because a gap this alert missed
     is invisible in the metric's history, not just in the rule.
 
-**Symptoms:** `Operator task pod-recreation budget exhausted` (`alerts/tatara-operator.yaml`, warning) fires on any Task parking in 1h with `parkReason=pod-recreation-exhausted`. `Operator agent pod force-deleted at TTL` (same file, warning) fires on any agent pod, by `agent_kind`, force-deleted at TTL in 1h.
+**Symptoms:** `Operator task pod-recreation budget exhausted` (`alerts/tatara-operator.yaml`, warning) fires on any Task parking in 1h with `parkReason=pod-recreation-exhausted`. `Operator agent pod force-deleted at TTL` (same file, warning) fires on more than 2 agent pods, by `agent_kind`, force-deleted at TTL in 1h, for 15m. It selects `outcome="force_deleted"` only. tatara-observability#96 raised it from "any" and lengthened the `for` deliberately: once work loss moved onto its own rule (below), a single force-delete with an intact handoff is not actionable.
 
 **What it means:** The first is the readiness clock's terminal case: a pod exists but never becomes Ready within the 5-minute `podReadyTimeout`, the operator respawns it, and once `stats.podRecreations` exceeds `maxPodRecreations` (3) the Task parks at `pod-recreation-exhausted` (no re-entry, so it ages out and the next sweep re-mints the still-open issue) - investigate pod evictions, node pressure, and OOM-kills on the wrapper workload.
 
@@ -780,7 +780,9 @@ sum by (agent_kind, handoff) (increase(operator_agent_pod_ttl_expired_total{name
 <a id="tatara-runbook-operator-agent-pod-ttl-stopped-with-no-handoff-captured"></a><!-- alert: "Operator agent pod TTL-stopped with no handoff captured" status: covered -->
 ## Agent pod TTL-stopped with no handoff captured
 
-**Symptoms:** No alert rule serves this anchor yet. `tatara-observability` still alerts on `Operator agent pod force-deleted at TTL`, which selects `outcome="force_deleted"` - the wrong dimension, see the runbook above. The anchor is registered here ahead of the rule so that a `Operator agent pod TTL-stopped with no handoff captured` rule selecting `handoff="none"` has somewhere to link the day it lands. Until then this is a **query you run**, not an alert that pages you: the PromQL below is the whole signal.
+**Symptoms:** `Operator agent pod TTL-stopped with no handoff captured` (`alerts/tatara-operator.yaml`, warning) fires on any agent pod, by `agent_kind`, TTL-stopped in 1h with `handoff="none"`, for 5m. It is the work-loss signal; the sibling `Operator agent pod force-deleted at TTL` rule above is a wrapper-health signal on the other, independent label and is deliberately kept.
+
+This rule ships in tatara-observability#96, which is gated on this page: `check_runbook_urls.py` derives each alert's docs anchor from its rule name and fails closed on a dangling one, so this section has to land first. Until #96 merges, the PromQL below is a **query you run** rather than an alert that pages you.
 
 **What it means:** Silent work loss, and the Task will look healthy. The G.7 stop sequence guarantees `Task.status.notes` is non-empty after every TTL stop, but `handoff=none` is the case where non-empty is not the same as useful. Both sources of a handoff failed at once:
 
