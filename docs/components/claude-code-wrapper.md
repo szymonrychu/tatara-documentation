@@ -79,9 +79,9 @@ Every pod's turn-0 context bundle is rendered fresh by the operator, identically
 1. **The wrapper stops admitting normal turns past `t0`.** Any `POST /v1/messages` with `handoff` unset or `false` after `t0` gets `410 Gone`. It still accepts exactly one turn with `handoff: true` - without that carve-out, the handoff turn in step 3 would be refused by this same rule, and `Task.status.notes` would end up empty on every TTL stop.
 2. **The operator waits for any in-flight turn's callback**, bounded by `TURN_TIMEOUT_SECONDS`. A pod is mid-turn at TTL expiry essentially always, and `POST /v1/messages` already `409`s while a turn is in flight, so the handoff turn cannot simply be submitted immediately.
 3. **The operator submits exactly one `handoff: true` turn**, asking the agent to call `task_note(kind=handoff)` with everything the next pod needs, bounded by `TURN_TIMEOUT_SECONDS`.
-4. **Hard cap at `t0 + 2*TURN_TIMEOUT_SECONDS + 60s`.** On that cap, or on any `410`/`409`/5xx from step 3, the operator writes a synthetic handoff note in-process from the last turn's final text plus which repos were pushed, then force-deletes the pod.
+4. **Hard cap at `t0 + 2*TURN_TIMEOUT_SECONDS + 60s`.** On that cap, or on any `410`/`409`/5xx from step 3, the operator writes a synthetic handoff note in-process from the last-turn continuation state on the Task (`status.lastTurnFinalText` and `status.lastTurnPushedRepos`), then stops the pod - force-deleting it only if the graceful stop fails against a pod that is still there.
 
-`Task.status.notes` is never empty after a TTL stop: either the agent wrote a handoff note, or the operator wrote a synthetic one.
+`Task.status.notes` is never empty after a TTL stop: either the agent wrote a handoff note, or the operator wrote a synthetic one. When there is no last-turn continuation state to synthesize from either, the note that lands is an explicit placeholder and the stop is counted as `handoff="none"` - see the [runbook](../operations/runbooks.md#tatara-runbook-operator-agent-pod-ttl-stopped-with-no-handoff-captured).
 
 ## Lifecycle hooks
 

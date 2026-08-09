@@ -90,7 +90,7 @@ everything else in it:
 <notes total="62" rendered="50" elided="12" fetch="task_context(task=tatara-implement-2026-07-12-m4z8q, notes=all)">
   <note agent="implement" at="2026-07-12T10:31Z" kind="handoff" source="agent">Scope locked. 3 repos.</note>
   <note agent="implement" at="2026-07-12T11:02Z" kind="plan" source="agent">Guard the reaper on podStartedAt plus a live-turn probe.</note>
-  <note agent="operator" at="2026-07-12T13:00Z" kind="handoff" source="operator">TTL stop. Last turn's final text: ...</note>
+  <note agent="operator" at="2026-07-12T13:00Z" kind="handoff" source="operator">TTL stop. Last turn's final text: ... Repos pushed: ... No agent handoff was captured.</note>
 </notes>
 ```
 

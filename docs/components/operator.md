@@ -182,7 +182,7 @@ The operator exposes Prometheus series on `:9090/metrics`. A representative subs
 | `operator_task_stage_age_seconds` | gauge | task, stage, kind | Time in the current stage, observable against the F.4 deadline table |
 | `operator_illegal_stage_transition_total` | counter | from, to | A transition outside the fixed table was attempted - any nonzero value is a code bug |
 | `operator_task_parked_total` | counter | stage, stageReason | Which parks actually happen |
-| `operator_agent_pod_ttl_expired_total` | counter | agent_kind, outcome | `outcome` = `agent_handoff`\|`synthetic_handoff`\|`force_deleted` |
+| `operator_agent_pod_ttl_expired_total` | counter | agent_kind, outcome, handoff | Two independent dimensions: `outcome` = `graceful`\|`force_deleted` (how the pod stopped), `handoff` = `agent`\|`synthetic`\|`none` (how continuation state was captured). `handoff=none` is the work-loss bucket for a TTL stop (a pod lost before its TTL respawns without a note and is not counted here) |
 | `operator_agent_contract_mismatch_total` | counter | expected, got, image | The contract-version handshake failed - any nonzero value is critical |
 | `operator_merge_cursor_stalled_seconds` | gauge | task, repo | A sequential merge that stopped advancing |
 | `operator_unexpected_merge_total` | counter | repo | An MR found merged with no `mergeCursor` advance - the accepted-risk detector |
