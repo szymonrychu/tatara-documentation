@@ -198,7 +198,7 @@ documented exception) - see [the park flag](#the-park-flag) below.
 | `under-implementation` | `refined` | the plan pinned at grant no longer matches the plan note (`plan-hash-mismatch`) - the cheap path back to the gate, never a park |
 | `under-implementation` | `done` | the nightly documentation batch declined or its budget elapsed: `done(doc-timeout)`, no MR opened |
 | `under-implementation` | `rejected` | a human closed the driving issue mid-flight |
-| `awaiting-review` | `under-implementation` | `submit_outcome(action=request_changes)` **AND** `spec.kind != review` **AND** `reviewRounds < maxReviewRounds`, or an `approve` whose **live CI** at the reviewed head has failed. Gated on `pendingReview == nil` |
+| `awaiting-review` | `under-implementation` | `submit_outcome(verdict=request_changes)` **AND** `spec.kind != review` **AND** `reviewRounds < maxReviewRounds`, or an `approve` whose **live CI** at the reviewed head has failed. Gated on `pendingReview == nil` |
 | `awaiting-review` | `merged` | `submit_outcome(verdict=approve)` **AND** `spec.kind != review`. Gated on `pendingReview == nil`, and on the live CI at the reviewed head not being red |
 | `awaiting-review` | `done` | `mr-merged-externally`: a `kind=review` Task whose every owned MR merged externally before/while reviewing - no open MR to post an outcome against, so the operator finalizes the honest finished work |
 | `awaiting-review` | `rejected` | `mr-closed-externally` (the review target was abandoned), `mr-taken-over` (a maintainer took the MR over and this parent owns zero MRs), or a human closed the driving issue |
