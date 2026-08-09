@@ -60,10 +60,11 @@ runtime components; see [Components](../components/index.md).)
 Every custom resource is `tatara.dev/v1alpha1`, namespaced: `Project`, `Repository`, `Task`, `QueuedEvent`, `Issue`, and `MergeRequest`. There is no `Subtask` CRD and no `WorkItem` type - `WorkItem` was never a CRD to begin with (it was an embedded Go slice on `Task.Status`), and the whole notion is gone along with `Subtask`. <!-- stale-ok: Subtask, WorkItem -->
 
 `Task` is the unit of work: `spec.kind` is its immutable origin (`brainstorm`,
-`incident`, `clarify`, `refine`, `review`, or `documentation`), and `status.stage` is
-where it currently sits in a 15-member state machine that only the operator ever
-writes. See [Ownership & GC](ownership.md) for how the six CRDs own and release each
-other, and [Task Stages](../reference/task-stages.md#the-transition-table) for the
+`incident`, `implement`, `refine`, `review`, `documentation`, or `takeover`), and
+`status.state` is where it currently sits in an 8-member state machine that only
+the operator ever writes, plus the orthogonal `status.parkReason` flag. See
+[Ownership & GC](ownership.md) for how the six CRDs own and release each
+other, and [Task State Machine](../reference/task-stages.md#the-transition-table) for the
 full enum and transition table.
 
 ## Component overview

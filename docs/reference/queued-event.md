@@ -39,15 +39,15 @@ label selector on the `QueuedEvent`.
 ```go
 type QueuedEventPayload struct {
     AgentKind string                `json:"agentKind"`           // required
-    TaskRef   string                `json:"taskRef,omitempty"`   // existing Task (stage-driven spawn)
+    TaskRef   string                `json:"taskRef,omitempty"`   // existing Task (state-driven spawn)
     NewTask   *QueuedTaskBlueprint  `json:"newTask,omitempty"`   // blueprint for a Task that does not exist yet
 }
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `agentKind` | string | **Required.** The pod to spawn: `brainstorm`, `incident`, `clarify`, `refine`, `review`, `documentation`, or `implement` |
-| `taskRef` | string | Names an existing Task - a stage-driven spawn (e.g. `approved -> implementing`) |
+| `agentKind` | string | **Required.** The pod to spawn: `brainstorm`, `incident`, `refine`, `review`, `documentation`, or `implement` - six values, `clarify` folded into `implement` at #521 |
+| `taskRef` | string | Names an existing Task - a state-driven spawn (e.g. `refined -> under-implementation`) |
 | `newTask` | `QueuedTaskBlueprint` | The blueprint for a Task that does not exist yet - a mint |
 
 Exactly one of `taskRef` / `newTask` is set. `QueuedTaskBlueprint` carries the deterministic
@@ -59,7 +59,7 @@ owned `issueKeys`, `alertRules`, and any `labels`/`annotations` to apply to the 
 | Field | Type | Description |
 |---|---|---|
 | `state` | enum | `Queued` or `Admitted` |
-| `taskRef` | string | Name of the Task created (or already existing, for a stage-driven spawn) on admission |
+| `taskRef` | string | Name of the Task created (or already existing, for a state-driven spawn) on admission |
 | `admittedAt` | timestamp | When this event was admitted |
 
 ## Queue classes and capacity
@@ -85,25 +85,25 @@ When a new `QueuedEvent` arrives with a `dedupKey` that matches an existing `Que
 `Admitted` event, the new event is dropped. This prevents duplicate Tasks when, for example, a
 webhook fires twice or a cron overlaps with a still-running task for the same issue.
 
-For `clarify` events the dedup key is the issue's natural key, `iss:<repo>#<number>`. The
-operator uses a fixed `name` (not `generateName`) to make admission idempotent even if the
-QueuedEvent is re-created.
+For a new-issue `implement`-origin Task (`SweepIssueKind`, the role `clarify` used to play) the
+dedup key is the issue's natural key, `iss:<repo>#<number>`. The operator uses a fixed `name`
+(not `generateName`) to make admission idempotent even if the QueuedEvent is re-created.
 
 ## Inspecting the queue
 
 ```sh
 kubectl -n tatara get queuedevents
 # NAME                        SEQ   CLASS    KIND             STATE
-# my-project-12345            17    normal   clarify          Queued
+# my-project-12345            17    normal   implement        Queued
 # my-project-alert-98765      18    alert    incident         Admitted
 
 kubectl -n tatara describe queuedevent my-project-12345
 ```
 
 A `Queued` event that stays `Queued` for a long time indicates the queue is at capacity. Check
-currently running Tasks by stage instead - `Task` has no `status.phase` field: <!-- stale-ok: status.phase -->
+currently running Tasks by state instead - `Task` has no `status.phase` field: <!-- stale-ok: status.phase -->
 
 ```sh
 kubectl -n tatara get tasks -l tatara.dev/project=my-project \
-  -o custom-columns=NAME:.metadata.name,STAGE:.status.stage,REASON:.status.stageReason
+  -o custom-columns=NAME:.metadata.name,STATE:.status.state,PARK:.status.parkReason
 ```

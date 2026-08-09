@@ -73,6 +73,12 @@ When bumping a release by hand, always update BOTH:
 
 A chart-only bump leaves the old image running.
 
+## Agent pin coverage guard {: #agent-pin-coverage-guard }
+
+`values/project-*/common.yaml`'s `skillsRef` (agent-skills git ref) and the `tatara-claude-code-wrapper` image tag are **hand-managed**, unlike the chart/image pins above - no release pipeline bumps them. `tatara-agent-skills`' own release only rewrites the wrapper image's *baked-in* `TATARA_SKILLS_REF` default, never this per-project field, and the operator falls back to `skillsRef: main` when it is empty (see [`Project.spec.agent.skillsRef`](../reference/project.md#agentspec)) - so an uncovered or floated project silently ships whatever lands on `tatara-agent-skills` `main` next.
+
+`check_agent_pins()` (`.github/scripts/check_pin_coverage.py`) guards against that: it walks every `values/project-*/common.yaml` and fails when `skillsRef` or the wrapper image tag is missing, or is not an exact `vX.Y.Z` tag. It rides the existing `check_pin_coverage.py` entry point, so both the lint workflow and the `cd-pin-coverage` pre-commit hook enforce it with no extra wiring.
+
 ## Enrollment CRs
 
 Project and Repository CRs are declared as helmfile values under `values/project-*/common.yaml` and rendered by the `tatara-project` chart. This replaces the prior approach of raw YAML presync manifests - enrollment is now declarative and diff-visible.

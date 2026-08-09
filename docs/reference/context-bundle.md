@@ -16,7 +16,7 @@ The bundle is what an agent pod sees at turn 0. It is rendered by the operator (
 Element order is fixed: `issue*` (ascending by repo, then number), `merge_request*` (same ordering), `events?`, `notes?`. Attribute order is fixed as written. Timestamps are RFC3339 UTC to the **minute** (`2006-01-02T15:04Z`) - second precision is prompt noise and churns the golden file.
 
 ```xml
-<task_context task="tatara-clarify-2026-07-12-m4z8q" kind="clarify" stage="clarifying" agent="clarify" project="tatara">
+<task_context task="tatara-implement-2026-07-12-m4z8q" kind="implement" stage="refined" agent="implement" project="tatara">
   <issue repo="tatara-operator" number="291" state="open" status="approved" url="https://github.com/szymonrychu/tatara-operator/issues/291">
     <title>Reaper phase race</title>
     <author>szymonrychu</author>
@@ -26,7 +26,7 @@ Element order is fixed: `issue*` (ascending by repo, then number), `merge_reques
       <comment author="szymonrychu-bot" at="2026-07-12T10:30Z" bot="true" external_id="1234502">Scope locked.</comment>
     </comments>
   </issue>
-  <merge_request repo="tatara-operator" number="295" state="open" status="new" ci="green" mergeable="true" head_branch="task/tatara-clarify-2026-07-12-m4z8q" head_sha="abc1234" url="https://github.com/szymonrychu/tatara-operator/pull/295">
+  <merge_request repo="tatara-operator" number="295" state="open" status="new" ci="green" mergeable="true" head_branch="task/tatara-implement-2026-07-12-m4z8q" head_sha="abc1234" url="https://github.com/szymonrychu/tatara-operator/pull/295">
     <title>fix: reaper skips a Task with a live turn</title>
     <author>szymonrychu-bot</author>
     <body>Closes #291.</body>
@@ -35,8 +35,8 @@ Element order is fixed: `issue*` (ascending by repo, then number), `merge_reques
       <comment author="szymonrychu-bot" at="2026-07-12T11:20Z" bot="true" path="internal/controller/reaper.go" line="88" external_id="1234571" in_reply_to="1234560">Review: request_changes. The probe must read podStartedAt, not creationTimestamp.</comment>
     </comments>
   </merge_request>
-  <notes total="62" rendered="50" elided="12" fetch="task_context(task=tatara-clarify-2026-07-12-m4z8q, notes=all)">
-    <note agent="clarify" at="2026-07-12T10:31Z" kind="handoff" source="agent">Scope locked. 3 repos: operator, cli, wrapper.</note>
+  <notes total="62" rendered="50" elided="12" fetch="task_context(task=tatara-implement-2026-07-12-m4z8q, notes=all)">
+    <note agent="implement" at="2026-07-12T10:31Z" kind="handoff" source="agent">Scope locked. 3 repos: operator, cli, wrapper.</note>
     <note agent="implement" at="2026-07-12T11:02Z" kind="plan" source="agent">Guard the reaper on podStartedAt + a live turn probe.</note>
     <note agent="operator" at="2026-07-12T11:20Z" kind="note" source="operator">Review requested changes on tatara-operator!295 @ abc1234:
       [high] internal/controller/reaper.go:88 - the probe must read podStartedAt, not creationTimestamp.</note>
@@ -45,7 +45,7 @@ Element order is fixed: `issue*` (ascending by repo, then number), `merge_reques
 
 ## Your assignment
 
-You are the clarify agent on Task tatara-clarify-2026-07-12-m4z8q (stage: clarifying).
+You are the implement agent on Task tatara-implement-2026-07-12-m4z8q (stage: refined).
 <...skill-driven assignment text, appended by the prompt builder, never by
    GET /tasks/{t}/context...>
 
@@ -84,7 +84,7 @@ forges `status="approved"` into the `<merge_request>` element unless `"` is esca
 **Untrusted-content marking.** Every note carries `source`:
 
 ```xml
-<note agent="clarify"  at="2026-07-12T10:31Z" kind="handoff" source="agent">Scope locked...</note>
+<note agent="implement" at="2026-07-12T10:31Z" kind="handoff" source="agent">Scope locked...</note>
 <note agent="operator" at="2026-07-12T13:00Z" kind="handoff" source="operator">TTL stop. ...</note>
 ```
 

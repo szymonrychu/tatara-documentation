@@ -183,11 +183,12 @@ agent:
 ```
 
 `modelByKind` / `effortByKind` key on **`Task.status.agentKind`** (the
-running agent), not `Task.spec.kind` (the immutable origin). The seven valid
-keys are `brainstorm`, `incident`, `clarify`, `implement`, `review`,
-`refine`, `documentation`. A missing or empty entry falls back to the
+running agent), not `Task.spec.kind` (the immutable origin). The six valid
+keys are `brainstorm`, `incident`, `implement`, `review`,
+`refine`, `documentation` - `clarify` is gone as of the #521 lifecycle
+redesign, folded into `implement`. A missing or empty entry falls back to the
 project-wide `model`/`effort`. The locked default tiering is
-`brainstorm`/`incident`/`clarify`/`implement`/`review` on Opus at `high`
+`brainstorm`/`incident`/`implement`/`review` on Opus at `high`
 effort, and `documentation`/`refine` on Sonnet - both live projects run this
 default unmodified.
 
@@ -231,21 +232,30 @@ stops admitting new turns, waits for the in-flight turn's callback (bounded by
 `turnTimeoutSeconds`), submits one final handoff turn ("your pod is being
 stopped; call `task_note(kind=handoff)` with everything the next pod needs"),
 and hard-caps at `t0 + 2 * turnTimeoutSeconds + 60s`. On the cap, or on any
-409/5xx, the operator writes a **synthetic handoff note in-process** from
-`Task.status.lastTurn` - the `finalText` and `pushedRepos` persisted by whichever
-path finalised the turn, the turn-complete callback or the poll backstop that
-recovers turns whose callback never arrived - and stops the pod, force-deleting
-it only if the graceful stop fails.
+409/5xx, the operator writes a **synthetic handoff note in-process** from the
+last-turn continuation state on the Task -
+`status.lastTurnFinalText` and `status.lastTurnPushedRepos`, persisted by
+whichever path finalised the turn, the turn-complete callback or the poll
+backstop that recovers turns whose callback never arrived - and stops the pod.
+It force-deletes only if the graceful stop fails against a pod that is still
+there.
 
 `Task.status.notes` is therefore **never empty after a TTL stop**. Either the
 agent wrote a handoff, or the operator wrote one for it.
 
-Non-empty is not the same as useful, and the metric distinguishes them. If
-`status.lastTurn` is absent too - no turn in this stage ever produced a final
-message or a push - the operator has nothing to synthesize from and writes a
-PLACEHOLDER note saying so, counted as `handoff="none"` on
-`operator_agent_pod_ttl_expired_total`. That is silent work loss and has its own
+Non-empty is not the same as useful, and the metric distinguishes them. If the
+last-turn continuation state is empty too - no turn in this stage ever produced
+a final message or a push - the operator has nothing to synthesize from and
+writes a PLACEHOLDER note saying so, counted as `handoff="none"` on
+`operator_agent_pod_ttl_expired_total` and on
+`operator_agent_synthetic_handoff_empty_total`. That is silent work loss and has
+its own
 [runbook](runbooks.md#tatara-runbook-operator-agent-pod-ttl-stopped-with-no-handoff-captured).
+
+Note that `outcome` and `handoff` are **independent**: `outcome` records only
+how the pod came down (`graceful` or `force_deleted`), and a stop where the
+agent handed off perfectly but the wrapper then refused to tear down cleanly is
+`outcome=force_deleted, handoff=agent` - no work was lost.
 
 ---
 

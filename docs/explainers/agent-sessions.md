@@ -108,9 +108,9 @@ are just tools - the same as any other capability. It calls `query` (memory
 retrieval) or `submit_outcome` (reporting its result) the same way it calls a
 file-read tool.
 
-The full tool surface is small (20 tools total) and scoped per **agent kind** -
-`brainstorm`, `incident`, `clarify`, `refine`, `implement`, `review`, or
-`documentation`. A brainstorm pod gets broader tool access than a review pod;
+The full tool surface is small (21 tools total) and scoped per **agent kind** -
+`brainstorm`, `incident`, `refine`, `implement`, `review`, or
+`documentation` (six values; `clarify` folded into `implement` at #521). A brainstorm pod gets broader tool access than a review pod;
 the operator sets the `TATARA_TOOL_PROFILE` environment variable to the agent
 kind, and `tatara-cli` filters its registered tool list at startup, failing
 **closed** on an unrecognized profile rather than serving everything.
@@ -120,13 +120,14 @@ kind, and `tatara-cli` filters its registered tool list at startup, failing
 ## One pod, many pods: how a Task survives
 
 A `Task` is a durable Kubernetes object. It can live for hours or days and pass
-through many stages (`clarifying`, `approved`, `implementing`, `reviewing`,
-`merging`, ...). A **pod is not the Task** - it is one bounded run against it.
+through several states (`refined`, `under-implementation`, `awaiting-review`,
+`merged`, ...). A **pod is not the Task** - it is one bounded run against it.
 The pod's name is computed independently of the Task's own name (see
 [Pod naming](../reference/task-stages.md#pod-naming)), and `Project.spec.agentPodTTLSeconds`
 (default 3600s, minimum 300s) caps how long that one pod may live. When a Task
-needs a `clarify` pod, then later an `implement` pod, then a `review` pod, those
-are three separate, single-purpose pods against the same Task - not one long
+needs an `implement` pod for its approval-gate conversation, then later an
+`implement` pod for the code, then a `review` pod, those
+are separate, single-purpose pod runs against the same Task - not one long
 session resumed three times.
 
 There is no session-resume mode. There is no continuation key, no conversation

@@ -57,7 +57,8 @@ capacity accordingly.
 The wrapper binary itself is minimal; the `claude` process is the memory consumer,
 and peak memory is driven by the working-tree size and turn transcript, not the
 model. `Project.spec.agent.modelByKind` / `effortByKind` key on the **agent
-kind** (`brainstorm|incident|clarify|refine|review|documentation|implement`), not
+kind** (`brainstorm|incident|refine|review|documentation|implement` - six
+values, `clarify` folded into `implement` at #521), not
 the Task's origin `kind` - see [Tuning](tuning.md#cap-spend) for per-kind
 model/effort tiering.
 
@@ -126,7 +127,7 @@ GitHub/GitLab retry webhook deliveries on 5xx. If the operator is briefly unavai
 Tatara components should run under tight NetworkPolicies:
 
 - **Operator ingress:** 443 (webhook/REST) from ingress controller
-- **Agent pods (clarify/implement/review):** in-cluster only (port 443 to operator REST, MCP, memory)
+- **Agent pods (implement/review):** in-cluster only (port 443 to operator REST, MCP, memory)
 - **Agent pods (brainstorm with internet source):** `ipBlock: 0.0.0.0/0` egress, scoped by pod label `tatara.io/egress: internet`
 - **tatara-memory:** ingress from operator and agent pods only
 - **Neo4j:** ingress from tatara-memory only
@@ -172,7 +173,7 @@ kubectl apply -f charts/tatara-operator/templates/crds.yaml
     burning a turn budget against a 404ing tool surface. Watch
     `operator_agent_contract_mismatch_total` immediately after any operator or
     agent-image upgrade - see [Observability](observability.md) and the
-    [runbook](runbooks.md#failedagent-contract-mismatch) if it fires.
+    [runbook](runbooks.md#parkedagent-contract-mismatch) if it fires.
 
 ## Rollback
 

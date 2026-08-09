@@ -40,7 +40,7 @@ per-kind gating table.
 The pod's only path forward is `submit_outcome`:
 
 ```json
-{"folds":[{"task":"tatara-clarify-2026-07-10-a1b2c"}],
+{"folds":[{"task":"tatara-implement-2026-07-10-a1b2c"}],
  "closes":[{"repo":"tatara-operator","number":288,"reason":"duplicate of #291"}],
  "links":[{"repo":"tatara-operator","number":295,"isPR":true}]}
 ```

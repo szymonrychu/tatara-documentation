@@ -15,7 +15,7 @@ The central component of the tatara platform. A controller-runtime Kubernetes op
 - Provisions per-project memory stacks (CNPG Postgres + Neo4j + LightRAG + tatara-memory service).
 - Schedules repo-ingest jobs (`tatara-memory-repo-ingester`) on push and on cron.
 - Admits queued work against per-project agent-pod concurrency (`maxConcurrentAgents`), then spawns `tatara-claude-code-wrapper` pods for agent turns.
-- Drives the Task stage machine end to end: `triaging` classifies the origin and mints `Issue` CRs, a kind-specific agent stage runs a pod, `approved` gates admission, `implementing` -> `reviewing` -> `merging` -> `deploying` -> `delivered`, with a nightly batch `documenting` stage.
+- Drives the Task state machine end to end: `new` classifies the origin and mints `Issue` CRs, `refined` runs the approval gate (an `implement` pod, for most origins) and, once granted, code, `under-implementation` -> `awaiting-review` -> `merged` -> `deployed` -> `done`, with the nightly documentation batch minted straight into `under-implementation`.
 - Writes results back to the SCM through a mirror-first REST layer: opens MRs, posts comments, posts review verdicts as `COMMENT`-type reviews (never a forge-native approve), and merges directly once a review approves and CI is green.
 - Walks the sequential per-repo merge order (`spec.mergeOrder`) after review, re-verifying the live head SHA and CI status immediately before each merge.
 - Reaps orphaned agent pods and GCs terminal Tasks and stale-labelled Issues/MergeRequests per a fixed retention table.
@@ -50,13 +50,32 @@ internal/obs/                      # JSON slog + Prometheus metrics
 charts/tatara-operator/            # cluster-agnostic Helm chart + CRDs
 ```
 
-## The Task stage machine
+## The Task state machine
 
-Every `Task` carries `status.stage`, one of 15 values: `triaging`, `brainstorming`, `clarifying`, `investigating`, `refining`, `approved`, `implementing`, `reviewing`, `merging`, `deploying`, `delivered`, `documenting`, `rejected`, `failed`, `parked`. Only the operator writes `status.stage` - an agent never does. A transition outside the fixed table is rejected and counted (`operator_illegal_stage_transition_total`).
+Every `Task` carries `status.state`, one of 8 values: `new`, `refined`,
+`under-implementation`, `awaiting-review`, `merged`, `deployed`, `done`, `rejected`.
+Whether it is stalled is a separate, orthogonal field, `status.parkReason` (28
+closed values, empty when not parked) - the pre-#521 machine folded parking
+into the stage enum itself, which is how `parked` ended up simultaneously a
+stage, a terminal, and a pod-less marker. Only the operator writes
+`status.state` / `status.parkReason` - an agent never does. A transition
+outside the fixed table is rejected and counted
+(`operator_illegal_stage_transition_total` - the metric kept its pre-redesign
+name).
 
-`Task.spec.kind` is the **origin**, immutable, one of `brainstorm`, `incident`, `clarify`, `refine`, `review`, `documentation`. `Task.status.agentKind` is the **currently running agent**, one of those six plus `implement` - `implement` exists only as an agent kind, never as a Task origin. Most pod-spawning stages map 1:1 to an agent kind and spawn a pod named after that kind and the Task's target (see [Pod naming](../reference/task-stages.md#pod-naming)); `triaging`, `approved`, `merging`, and `deploying` run no pod at all - they are pure operator logic.
+`Task.spec.kind` is the **origin**, immutable, one of `brainstorm`, `incident`,
+`implement`, `refine`, `review`, `documentation`, `takeover`. `Task.status.agentKind`
+is the **currently running agent**, one of six: `brainstorm`, `incident`, `implement`,
+`refine`, `review`, `documentation`. `implement` is both an agent kind and, since
+#521, an origin kind - it is `SweepIssueKind`, the value stamped on any Task minted
+from a new issue (webhook or backlog sweep), the same role `clarify` used to play
+before it was deleted platform-wide. The three **live** states (`refined`,
+`under-implementation`, `awaiting-review`) map to an agent kind and spawn a pod
+named after that kind and the Task's target (see
+[Pod naming](../reference/task-stages.md#pod-naming)); `new`, `merged`, and
+`deployed` run no pod at all - they are pure operator logic.
 
-For full details on the transition table, the three-clock deadline model (admission / readiness / work), and the per-stage retention windows, see [Architecture: the stage machine](../architecture/ownership.md) and [Approval gates](../operations/security/approval-gates.md#the-approval-grammar).
+For full details on the transition table, the three-clock deadline model (admission / readiness / work), and the per-state retention windows, see [the Task state machine reference](../reference/task-stages.md) and [Approval gates](../operations/security/approval-gates.md#the-approval-grammar).
 
 Admission is a separate concern from the stage machine: a producer stashes a `QueuedEvent` (class `normal` or `alert`), and the dispatcher admits it against the project's agent-pod pool before any pod is spawned.
 
@@ -120,7 +139,7 @@ Once a Task's review approves, the operator walks `spec.mergeOrder` sequentially
 
 ## Reaper and GC
 
-A background sweep keeps state bounded. Every terminal stage ages out on a fixed clock: `parked` (except `backlog-sweep`, which is exempt - it owns an Issue at zero agent cost and is reaped only when that Issue closes) after 7 days, `failed` after 7 days, `rejected` after 24 hours, `delivered` after 48 hours (and only once the nightly documentation batch has covered it, or it provably has nothing to document). The reaper also GCs orphaned agent pods (pods whose owning Task is gone or terminal, after a grace period). Each path is metered so leaks are visible - see [Metrics](#metrics).
+A background sweep keeps state bounded. Every terminal ages out on a fixed clock: a park (except `backlog-sweep`, which is exempt - it owns an Issue at zero agent cost and is reaped only when that Issue closes) after 7 days, `rejected` after 24 hours, `done` after 48 hours (and only once the nightly documentation batch has covered it, or it provably has nothing to document). There is no separate `failed` terminal any more - every pre-#521 `failed(...)` reason is now either a park or lands directly on `rejected`. The reaper also GCs orphaned agent pods (pods whose owning Task is gone or terminal, after a grace period). Each path is metered so leaks are visible - see [Metrics](#metrics).
 
 ## Leader election and metrics
 
@@ -150,7 +169,7 @@ Operator configuration is env scalars. The webhook signing secrets are **not** o
     There is no global `WEBHOOK_SECRET` or `GRAFANA_WEBHOOK_SECRET`. The SCM HMAC secret is read from the Secret named by `Project.spec.scmSecretRef` (key `webhookSecret`); the Grafana alert-webhook bearer secret is read from `Project.spec.grafana.secretRef` (key `webhookSecret`). Each Project supplies its own.
 
 !!! note "The contract-version handshake"
-    Every agent pod is injected with `TATARA_CONTRACT_VERSION=2`. Before submitting a pod's first turn, the operator reads `GET /v1/session` from the wrapper and asserts the reported `contractVersion` matches. On mismatch (or a missing field, meaning an old wrapper), the Task fails instantly with `stageReason=agent-contract-mismatch`, before a single turn is submitted - see [tatara-claude-code-wrapper](claude-code-wrapper.md#contract-version-handshake).
+    Every agent pod is injected with `TATARA_CONTRACT_VERSION=4`. Before submitting a pod's first turn, the operator reads `GET /v1/session` from the wrapper and asserts the reported `contractVersion` matches. On mismatch (or a missing field, meaning an old wrapper), the Task parks instantly with `parkReason=agent-contract-mismatch`, before a single turn is submitted - see [tatara-claude-code-wrapper](claude-code-wrapper.md#contract-version-handshake).
 
 ## Metrics
 

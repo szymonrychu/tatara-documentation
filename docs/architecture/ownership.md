@@ -361,7 +361,7 @@ cadence is keyed on the Task's stage:
 | every other `parked` reason | daily sync, plus webhook-driven updates, **plus** an on-demand sync of that issue's comments whenever a non-bot pending event arrives |
 
 The on-demand sync is not an optimisation. A non-bot comment un-parks a
-`parked(identity-unverified)` Task to `conversing` and spawns a fresh clarify
+`parked(identity-unverified)` Task and spawns a fresh `implement`
 pod, and that pod needs the approving comment **in the mirror, with its
 external id**, both to render it into the turn-0 bundle the agent cites from
 and because the operator's `restapi.verifyApprovalScope` enforces single-use

@@ -55,7 +55,7 @@ tatara-operator (webhook server)
   v
 QueuedEvent created
   |
-  | The clarify agent judges the thread and CITES a comment (external_id +
+  | The implement agent judges the thread and CITES a comment (external_id +
   |   verbatim quote). The OPERATOR independently verifies structure, not
   |   intent - the citation exists, its author is a verified non-bot
   |   maintainer, the quote truly occurs in the body the operator holds,
@@ -94,7 +94,7 @@ the merge itself - see
 |---|---|
 | Webhook authenticity | HMAC-SHA256 signature validation |
 | Issue intake gate | `reporterLogins` allowlist |
-| Implementation approval | The [approval grammar](approval-gates.md#the-approval-grammar): the clarify agent judges whether a comment approves and cites it; the operator verifies the citation exists, its author is a verified non-bot maintainer, its quoted text truly occurs in the body the operator holds, and it has not already been consumed - pinned as single-use `ApprovalEvidence`. There is no most-recent-comment check; that judgment is the agent's. `maintainerLogins` is closed by default (an empty list approves nothing) |
+| Implementation approval | The [approval grammar](approval-gates.md#the-approval-grammar): the `implement` agent judges whether a comment approves and cites it, plus pins the plan it wants approved; the operator verifies the citation exists, its author is a verified non-bot maintainer, its quoted text truly occurs in the body the operator holds, and it has not already been consumed - pinned as single-use `ApprovalEvidence`. There is no most-recent-comment check; that judgment is the agent's. `maintainerLogins` is closed by default (an empty list approves nothing) |
 | Code merge gate | The **operator** merges, on an accepted review verdict, on green CI, at the exact reviewed head SHA. No MCP tool exposes merge; the forge's native merge-on-green is never armed. The gate is operator logic, not a forge control - see the accepted risk on the approval-gates page |
 | API authentication | OIDC bearer tokens, per-service audience |
 | Agent tool surface | `TATARA_TOOL_PROFILE` per task kind; 20 tools, fail-closed |

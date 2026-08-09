@@ -6,7 +6,13 @@ title: From Issue to PR
 
 *Follow one GitHub issue through the whole tatara machine - from the moment you click "Submit" to the moment the change is merged and deployed.*
 
-The single source of truth for where a piece of work stands is `Task.status.stage`, a Kubernetes-native field you can watch with `kubectl get tasks`. The operator also projects a small, per-project-configurable set of labels onto the SCM issue as a read-only mirror of `Issue.status.status` and `Task.status.stage` - so you do not need cluster access to follow along - but the labels are a **one-way projection**, never a control input. Nothing in the operator ever reads a label to decide what happens next; a Task's status changes only from the transition table, driven by `submit_outcome` calls and comment-grammar checks. One label you will see referenced by name throughout the platform's docs and runbooks is `tatara-parked`, applied whenever a Task is in any `parked` reason - see [Approval Gates](../operations/security/approval-gates.md#labels-are-write-only) for the full projection rule.
+The single source of truth for where a piece of work stands is `Task.status.state`, a Kubernetes-native field you can watch with `kubectl get tasks`. The operator also projects a small, per-project-configurable set of labels onto the SCM issue as a read-only mirror of `Issue.status.status` and `Task.status.state` - so you do not need cluster access to follow along - but the labels are a **one-way projection**, never a control input. Nothing in the operator ever reads a label to decide what happens next; a Task's status changes only from the transition table, driven by `submit_outcome` calls and comment-grammar checks. One label you will see referenced by name throughout the platform's docs and runbooks is `tatara-parked`, applied whenever a Task carries any `parkReason` - see [Approval Gates](../operations/security/approval-gates.md#labels-are-write-only) for the full projection rule.
+
+!!! info "Since the #521 lifecycle redesign: `clarify` is `implement`"
+    This page describes the platform after the #521 lifecycle redesign folded the `clarify` agent
+    kind into `implement` (both as the running agent and as the Task origin) and replaced the old
+    15-member `status.stage` with an 8-member `status.state` plus the orthogonal
+    `status.parkReason` flag.
 
 ---
 
@@ -14,100 +20,100 @@ The single source of truth for where a piece of work stands is `Task.status.stag
 
 You create a GitHub issue in any repository enrolled in your tatara Project. The title and body are your only inputs; tatara reads them verbatim.
 
-**Task stage:** *(none yet)*
+**Task state:** *(none yet)*
 
 If `Project.spec.scm.reporterLogins` is populated, the issue author must be the bot, a maintainer, or an allowed reporter, or the event is dropped at intake. Left empty (the shipped default), any author's issue is accepted. Either way, opening an issue does not itself grant anything - it only gets a Task minted.
 
-This page follows the full path - issue opened, `clarify` runs first.
+This page follows the full path - issue opened, `implement`'s approval-gate conversation runs first.
 
 ---
 
 ## Step 2 - The operator mints a Task
 
-The operator sees the new open issue in an enrolled repository, mirrors it as an `Issue` custom resource, and mints a `Task` custom resource with `spec.kind: clarify` that owns it. The Task is the durable, project-scoped unit that carries state across the whole implementation stream - every Issue and MergeRequest it owns, plus `status.notes`, an append-only journal of plans, handoffs, and free-text continuation state every pod reads at turn 0.
+The operator sees the new open issue in an enrolled repository, mirrors it as an `Issue` custom resource, and mints a `Task` custom resource with `spec.kind: implement` that owns it (`SweepIssueKind` - the origin role `clarify` used to play). The Task is the durable, project-scoped unit that carries state across the whole implementation stream - every Issue and MergeRequest it owns, plus `status.notes`, an append-only journal of plans, handoffs, and free-text continuation state every pod reads at turn 0.
 
 ```yaml
 apiVersion: tatara.dev/v1alpha1
 kind: Task
 metadata:
-  name: myproject-clarify-2026-07-12-a3f9d  # <project>-<kind>-<date>-<uid5>
+  name: myproject-implement-2026-07-12-a3f9d  # <project>-<kind>-<date>-<uid5>
 spec:
   projectRef: myproject
-  kind: clarify
+  kind: implement
   goal: "Support dark mode in the dashboard"
 status:
-  stage: triaging
+  state: new
 ```
 
-**Task stage:** `triaging` - no pod runs here; the operator classifies the origin and, by `spec.kind`, drives the transition to the matching agent stage.
+**Task state:** `new` - no pod runs here; the operator classifies the origin and, by `spec.kind`, drives the transition to the matching agent state.
 
 ---
 
-## Step 3 - `clarify` reads the issue
+## Step 3 - `implement` reads the issue
 
-`triaging` transitions to `clarifying`, and the operator schedules a pod named `myproject-clarify-2026-07-12-a3f9d-clarify` - a container running `tatara-claude-code-wrapper` with `tatara-cli` as its MCP server, `TATARA_KIND=clarify`. The pod:
+`new` transitions to `refined`, and the operator schedules a pod named `imp-myproject-<repo>-i<issue>` - a container running `tatara-claude-code-wrapper` with `tatara-cli` as its MCP server, `TATARA_KIND=implement`. The pod:
 
 1. Clones the repository.
 2. Reads the operator-rendered context bundle: the Issue, its comments, and any prior `status.notes` from an earlier pod on this same Task - built fresh every turn, there is no resume mode.
 3. Loads the code knowledge graph from tatara-memory.
 4. Presents everything to the agent and waits for a decision.
 
-`clarify` has read-only access to the repository and issue at this stage - it does not write code. It is also a **live polling pod**: the operator re-spawns it on every new comment on an owned issue, not just once. See [Clarify](../workflows/clarify.md) for the full workflow.
+At this point `implement` has read-only access to the repository and issue - it does not write code yet. It is also a **live polling pod**: the operator re-spawns it on every new comment on an owned issue, not just once. See [Implement](../workflows/implement.md) for the full workflow.
 
 ---
 
-## Step 4 - `clarify` decides: should we do this?
+## Step 4 - `implement` decides: should we do this?
 
-The agent reads the issue and the codebase and calls `submit_outcome(decision=...)`.
+The agent reads the issue and the codebase and calls `submit_outcome(action=...)`.
 
-### Path A - close
+### Path A - rejected
 
-The issue is out of scope, already fixed elsewhere, or not actionable. The agent calls `submit_outcome(decision=close, reason=...)`. The operator posts the reason as a comment and closes the issue.
+The issue is out of scope, already fixed elsewhere, or not actionable. The agent calls `submit_outcome(action=rejected, reason=...)`. The operator posts the reason as a comment and closes the issue.
 
-**Task stage:** `rejected` - then the issue closes.
+**Task state:** `rejected` - then the issue closes.
 
 ### Path B - discuss
 
-The issue needs clarification, a design choice, or human input. The agent calls `submit_outcome(decision=discuss, reason=...)`, posting its questions, and the pod tears down (no cost while waiting).
+The issue needs clarification, a design choice, or human input. The agent calls `submit_outcome(action=discuss, reason=...)`, posting its questions, and the pod tears down (no cost while waiting).
 
-**Task stage:** `clarifying` (waiting; pod-less until the next comment)
+**Task state:** `refined` (waiting; pod-less until the next comment)
 
-The Task keeps re-spawning `clarify` on every new non-bot comment on the thread until a maintainer's comment satisfies the approval grammar (see Path C) or the 24-hour `clarifying` budget elapses with no approval, at which point the Task parks `awaiting-human`.
+The Task keeps re-spawning `implement` on every new non-bot comment on the thread until a maintainer's comment satisfies the approval grammar (see Path C) or the idle budget (`ConversationIdleDefault`, 60m by default, once a pod is up) elapses with no approval, at which point the Task parks `awaiting-human`.
 
 !!! danger "The agent judges meaning; only the operator's independent structural check grants anything"
-    Even when `clarify` itself concludes the issue is implement-ready and calls
-    `submit_outcome(decision=implement, approval_citations=...)`, the agent's judgment is
+    Even when `implement` itself concludes the issue is ready and calls
+    `submit_outcome(action=approved, approval_citations=...)`, the agent's judgment is
     informational: the operator independently re-verifies each cited comment against the
-    thread. A citation whose comment does not exist, whose author is not a verified
+    thread, plus the pinned plan note's hash. A citation whose comment does not exist, whose author is not a verified
     non-bot maintainer, or whose quote does not genuinely occur in the body the operator
     holds means no approval, regardless of what the agent decided. This applies
     uniformly - a bot-authored brainstorm proposal and a human-filed issue are gated
     identically; there is no fast path for either. See
     [Approval Gates](../operations/security/approval-gates.md#the-approval-grammar).
 
-### Path C - implement
+### Path C - approved
 
-The agent decides this is worth building and calls `submit_outcome(decision=implement, reason=..., approval_citations=[{id, quote}, ...])`, citing who approved and why for every **live** Issue it owns that a maintainer has actually commented on - an Issue with no maintainer comment has nothing to cite and is not required to carry one; it either satisfies the `autoApproveTataraProposals` carve-out or refuses on its own. The operator independently re-reads its own mirror and checks, for every live Issue this Task owns that has a citation to check: does the cited comment exist, is its author in `maintainerLogins` and never the bot, does the quoted text genuinely occur in the comment body, and has it not already been consumed? There is no requirement that the cited comment be the thread's most recent maintainer comment - the agent, not the operator, is responsible for reading whether a later comment withdraws an earlier approval.
+The agent decides this is worth building and calls `submit_outcome(action=approved, reason=..., plan_note_id=..., approval_citations=[{id, quote}, ...])`, citing who approved and why for every **live** Issue it owns that a maintainer has actually commented on - an Issue with no maintainer comment has nothing to cite and is not required to carry one; it either satisfies the `autoApproveTataraProposals` carve-out or refuses on its own. `plan_note_id` names the plan the operator will hash and re-check before any code is written. The operator independently re-reads its own mirror and checks, for every live Issue this Task owns that has a citation to check: does the cited comment exist, is its author in `maintainerLogins` and never the bot, does the quoted text genuinely occur in the comment body, and has it not already been consumed? There is no requirement that the cited comment be the thread's most recent maintainer comment - the agent, not the operator, is responsible for reading whether a later comment withdraws an earlier approval.
 
-- **Every live owned Issue passes:** the operator stamps `Issue.status.approval` on each and moves `Task.status.stage` to `approved`.
-- **Any live owned Issue fails:** the Task parks `identity-unverified` (HTTP 200, not an error, and nothing is posted to the issue thread - the refusal lives only in the operator's logs, notes and metrics). The next non-bot comment on any owned thread un-parks the Task to `conversing`, spawning a fresh clarify pod that submits its own fresh citation.
+- **Every live owned Issue passes:** the operator stamps `Issue.status.approval` on each and moves `Task.status.state` to `under-implementation`.
+- **Any live owned Issue fails:** the Task parks `identity-unverified` (HTTP 200, not an error, and nothing is posted to the issue thread - the refusal lives only in the operator's logs, notes and metrics). The next non-bot comment on any owned thread un-parks the Task, spawning a fresh `implement` pod that submits its own fresh citation.
 
-**Task stage:** `approved` (only once the citation check passes for every live owned Issue; otherwise `parked(identity-unverified)`)
+**Task state:** `under-implementation` (only once the citation and plan-hash checks pass for every live owned Issue; otherwise `parked(identity-unverified)`)
 
 ---
 
 ## Step 5 - `implement` writes the code
 
-Once admitted from the queue, `approved` transitions to `implementing` and a pod spawns (`...-implement`, `TATARA_KIND=implement`). It may work across every repo the Task owns MRs in - a run is not scoped to just the repo the issue was filed in.
+Once the approval gate grants, `refined` transitions to `under-implementation` and the same pod - or its next turn on this Task - picks up the coding work (still `TATARA_KIND=implement`). It may work across every repo the Task owns MRs in - a run is not scoped to just the repo the issue was filed in.
 
-**Task stage:** `implementing`
+**Task state:** `under-implementation`
 
 The agent:
 
 1. Re-reads the issue and its conversation thread from the context bundle.
 2. Queries the code knowledge graph for relevant context.
 3. Plans the change - for large or cross-repo work it tiers out sub-agents (see [subagent tiering](../workflows/implement.md#subagent-tiering)).
-4. Writes code, commits, and pushes to branch `task/myproject-clarify-2026-07-12-a3f9d`.
+4. Writes code, commits, and pushes to branch `task/myproject-implement-2026-07-12-a3f9d`.
 5. Calls `submit_outcome(action=submitted, title=..., body=..., change_significance=..., merge_order=[...])` - `change_significance` (`major`/`minor`/`patch`, driving the semver tag on push-CD repos) is required and, once set, can only be raised by a later reviewer, never lowered. `merge_order` is required whenever the Task's MRs span more than one repo.
 
 The operator then opens the pull request, referencing the owned issue. If the agent instead calls `submit_outcome(action=declined, decline_reason=...)` - for example, the fix already shipped on a sibling branch - the Task parks `implement-declined` and no PR is opened.
@@ -116,11 +122,11 @@ A pod that never becomes Ready within 5 minutes of creation is respawned automat
 
 ---
 
-## Step 6 - `implementing` -> `reviewing`
+## Step 6 - `under-implementation` -> `awaiting-review`
 
-`submit_outcome(action=submitted)` with at least one owned MR open moves the Task straight to `reviewing` - there is no separate CI-polling stage the Task sits in; CI status is read as part of the review and merge sequence itself.
+`submit_outcome(action=submitted)` with at least one owned MR open moves the Task straight to `awaiting-review` - there is no separate CI-polling state the Task sits in; CI status is read as part of the review and merge sequence itself.
 
-**Task stage:** `reviewing`
+**Task state:** `awaiting-review`
 
 ---
 
@@ -128,20 +134,20 @@ A pod that never becomes Ready within 5 minutes of creation is respawned automat
 
 A `review` pod spawns against the opened PR (see [PR / MR Review](../workflows/review.md)). It reads the diff read-only and calls `submit_outcome(verdict=...)`:
 
-- **`verdict=approve`** - the operator reads the **live** PR head SHA (never the mirror), posts a `COMMENT`-type review under the bot identity carrying the verdict (GitHub 422s a self-authored `APPROVE` or `REQUEST_CHANGES` either way - there is only one bot identity), stamps `MergeRequest.status.reviewedSHA`, and moves the Task to `merging`.
-- **`verdict=request_changes`** - the Task returns to `implementing` with the review's findings as context, bounded by `maxReviewRounds` (default 3; beyond it the Task parks `review-loop-exhausted`).
+- **`verdict=approve`** - the operator reads the **live** PR head SHA (never the mirror), posts a `COMMENT`-type review under the bot identity carrying the verdict (GitHub 422s a self-authored `APPROVE` or `REQUEST_CHANGES` either way - there is only one bot identity), stamps `MergeRequest.status.reviewedSHA`, and moves the Task to `merged`.
+- **`verdict=request_changes`** - the Task returns to `under-implementation` with the review's findings as context, bounded by `maxReviewRounds` (default 3; beyond it the Task parks `review-loop-exhausted`).
 
-**Task stage:** `reviewing` until a verdict lands, then `merging` or back to `implementing`.
+**Task state:** `awaiting-review` until a verdict lands, then `merged` or back to `under-implementation`.
 
-At `merging` the operator walks `Task.spec.mergeOrder` sequentially: for each repo it re-reads the live head, merges only if it still matches `reviewedSHA` and CI is green, and sends the Task back to `reviewing` if the head moved underneath it (bounded by `headMoveReentries`, cap 3, failing at `head-moving`). See [Merge and Deploy](../workflows/merge-and-deploy.md#the-merge-sequence) for the full sequence - this is an **operator** action end to end; no MCP tool exposes merge, and auto-merge is never armed on a tatara-opened PR. <!-- stale-ok: auto-merge -->
+At `merged` the operator walks `Task.spec.mergeOrder` sequentially: for each repo it re-reads the live head, merges only if it still matches `reviewedSHA` and CI is green, and sends the Task back to `awaiting-review` if the head moved underneath it (bounded by `headMoveReentries`, cap 3, parking at `head-moving`). See [Merge and Deploy](../workflows/merge-and-deploy.md#the-merge-sequence) for the full sequence - this is an **operator** action end to end; no MCP tool exposes merge, and auto-merge is never armed on a tatara-opened PR. <!-- stale-ok: auto-merge -->
 
 ---
 
 ## Step 8 - Deploy and delivery
 
-Once every repo in `mergeOrder` is merged, `merging` moves to `deploying` - still pod-less. When every owned MR shows `merged` and the release has actually landed, the operator closes every owned issue with a citing comment and moves the Task to `delivered`.
+Once every repo in `mergeOrder` is merged, `merged` moves to `deployed` - still pod-less. When every owned MR shows `merged` and the release has actually landed, the operator closes every owned issue with a citing comment and moves the Task to `done`.
 
-**Task stage:** `deploying`, then `delivered`.
+**Task state:** `deployed`, then `done`.
 
 `MergeRequest.status.significance` (set from the implement Task's `change_significance`, only ever raised by a reviewer) drives the semver tag the release job cuts. See [semver push-CD](../workflows/merge-and-deploy.md#semver-push-cd) for the tag-cut-to-cluster-apply chain.
 
@@ -162,37 +168,34 @@ sequenceDiagram
 
     Dev->>GH: Open issue #42
     GH-->>Op: webhook
-    Op->>Op: mint Task (kind=clarify), stage=triaging
-    Op->>Op: stage=clarifying
+    Op->>Op: mint Task (kind=implement), state=new
+    Op->>Op: state=refined
 
-    Note over Op,Pod: clarify pod running
+    Note over Op,Pod: implement pod running (approval-gate turn)
 
-    Op->>Pod: schedule clarify pod
+    Op->>Pod: schedule implement pod
     Pod->>GH: fetch issue + comments
-    Pod-->>Op: submit_outcome(decision=implement, no citation yet)
+    Pod-->>Op: submit_outcome(action=approved, no citation yet)
     Op->>Op: verifyApprovalScope: no comment to cite; park(identity-unverified)
 
     M->>GH: Comment: "go ahead, I approve!"
     GH-->>Op: webhook (comment event)
-    Op->>Op: sync comment mirror; un-park to conversing (no grant here)
+    Op->>Op: sync comment mirror; un-park (no grant here)
 
-    Note over Op,Pod: fresh clarify pod running
-
-    Op->>Pod: schedule clarify pod
-    Pod->>GH: fetch refreshed comments
-    Pod-->>Op: submit_outcome(decision=implement, approval_citations=[{id, quote}])
-    Op->>Op: verify M in maintainerLogins, quote occurs verbatim, not previously consumed
-    Op->>Op: Issue.status.approval stamped; stage=approved
-
-    Op->>Op: admitted; stage=implementing
-
-    Note over Op,Pod: implement pod running
+    Note over Op,Pod: fresh implement pod running
 
     Op->>Pod: schedule implement pod
+    Pod->>GH: fetch refreshed comments
+    Pod-->>Op: submit_outcome(action=approved, plan_note_id=..., approval_citations=[{id, quote}])
+    Op->>Op: verify M in maintainerLogins, quote occurs verbatim, not previously consumed, plan hash matches
+    Op->>Op: Issue.status.approval stamped; state=under-implementation
+
+    Note over Op,Pod: same pod (or its next turn) writes code
+
     Pod->>GH: clone repo, write code, commit, push
     Pod-->>Op: submit_outcome(action=submitted, change_significance=minor)
     Op->>GH: open PR
-    Op->>Op: stage=reviewing
+    Op->>Op: state=awaiting-review
 
     Op->>Rev: schedule review pod
 
@@ -203,24 +206,24 @@ sequenceDiagram
 
     Op->>GH: read live PR head
     Op->>GH: post COMMENT review (verdict in body)
-    Op->>Op: stage=merging
+    Op->>Op: state=merged
 
     Op->>GH: Merge(expectedHeadSHA=reviewedSHA)
-    Op->>Op: stage=deploying
+    Op->>Op: state=deployed
     Op->>GH: close issue #42, citing the release
-    Op->>Op: stage=delivered
+    Op->>Op: state=done
 ```
 
 ---
 
 ## What to do when a Task is Parked
 
-A Task enters `parked` (with a specific `stageReason`) when the operator cannot proceed without human input: the citation check found nothing to grant, the review-round cap was hit, CI never went green within the stage deadline, or the agent explicitly declined. Not every park reason posts a comment explaining itself: `identity-unverified` specifically posts **nothing** to the issue thread - the refusal is visible only in the operator's own logs, `Task.status.notes`, and the `operator_approval_refused_total` metric, never on the thread a maintainer is watching. Where the operator does post an explanatory comment for other park reasons, the [comment turn-taking gate](../operations/security/bot-identity.md) can still withhold a repeat one - e.g. a Task that keeps parking on the same unanswered thread stops re-commenting after the first note - but for `identity-unverified` there was never a first note to begin with.
+A Task parks (with a specific `parkReason`) when the operator cannot proceed without human input: the citation check found nothing to grant, the review-round cap was hit, CI never went green within the state deadline, or the agent explicitly declined. Not every park reason posts a comment explaining itself: `identity-unverified` specifically posts **nothing** to the issue thread - the refusal is visible only in the operator's own logs, `Task.status.notes`, and the `operator_approval_refused_total` metric, never on the thread a maintainer is watching. Where the operator does post an explanatory comment for other park reasons, the [comment turn-taking gate](../operations/security/bot-identity.md) can still withhold a repeat one - e.g. a Task that keeps parking on the same unanswered thread stops re-commenting after the first note - but for `identity-unverified` there was never a first note to begin with.
 
 Your options:
 
-- **Comment on the issue.** For `awaiting-human` or `identity-unverified`, any non-bot comment un-parks the Task to `conversing` (or re-enters `clarifying`), spawning a fresh agent pod to read it, as appropriate to the stage reason.
-- **Comment as a maintainer** to give the next clarify pod something unambiguous to cite as approval - there is no configured phrase to match, only the agent's judgment and the operator's independent verification of that citation.
+- **Comment on the issue.** For `awaiting-human` or `identity-unverified`, any non-bot comment un-parks the Task, spawning a fresh agent pod to read it, as appropriate to the park reason.
+- **Comment as a maintainer** to give the next `implement` pod something unambiguous to cite as approval - there is no configured phrase to match, only the agent's judgment and the operator's independent verification of that citation.
 - **Fix the underlying problem** (e.g., a failing test) and comment to resume; approval already recorded earlier in the same Task is not re-consumed.
 
-Every `parked` reason except `backlog-sweep` ages out on its own retention window (7 days by default) and is reaped after a final comment - it does not wait indefinitely.
+Every park reason except `backlog-sweep` ages out on its own retention window (7 days by default) and is reaped after a final comment - it does not wait indefinitely.

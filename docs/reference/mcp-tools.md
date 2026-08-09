@@ -19,8 +19,20 @@ serves only the always-on set and logs WARN - and it does not register
 loud rather than silent.
 
 `TATARA_TOOL_PROFILE` is the **agent** kind (`Task.status.agentKind`), one of
-seven: `brainstorm`, `incident`, `clarify`, `implement`, `review`, `refine`,
+**six**: `brainstorm`, `incident`, `implement`, `review`, `refine`,
 `documentation`.
+
+!!! info "`clarify` folded into `implement` (contract 4)"
+    The #521 lifecycle redesign deleted `clarify` as a kind, platform-wide.
+    Its three decisions - `implement` / `close` / `discuss` - became `action`
+    values (`approved` / `rejected` / `discuss`) on the `implement` outcome,
+    so the pod that judges the approval grammar is the same pod that goes on
+    to write the code. `implement` absorbed clarify's `issue_write` grant and
+    its memory-recall tools; there is deliberately **no** `"clarify"` key
+    anywhere in the profile or schema maps any more - `resolveProfile` fails
+    closed, so a pod still reporting that profile gets no tools and no
+    `submit_outcome` at all, rather than a live path around the gate. See
+    [Approval Gates](../operations/security/approval-gates.md).
 
 ## The five tool groups
 
@@ -30,7 +42,7 @@ seven: `brainstorm`, `incident`, `clarify`, `implement`, `review`, `refine`,
 | SCM | 4 | `scm_read`, `issue_write`, `mr_write`, `mr_takeover_request` |
 | Code graph | 4 | `code_search`, `code_context`, `code_graph`, `code_explain` |
 | Memory | 5 | `memory_query`, `memory_describe`, `memory_write`, `memory_entity`, `memory_edges` |
-| Outcome | 1 | `submit_outcome` (one name, seven schemas) |
+| Outcome | 1 | `submit_outcome` (one name, six schemas) |
 
 ## The profile gating table
 
@@ -38,28 +50,34 @@ Always-on for every profile, including the fail-closed empty one: `task_get`,
 `task_context`, `task_note`, `project_get`, `repo_list`,
 `report_internal_issue`.
 
-| tool | brainstorm | incident | clarify | implement | review | refine | documentation |
-|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
-| `submit_outcome` | yes | yes | yes | yes | yes | yes | yes |
-| `task_get` / `task_context` / `task_note` | yes | yes | yes | yes | yes | yes | yes |
-| `project_get` / `repo_list` / `report_internal_issue` | yes | yes | yes | yes | yes | yes | yes |
-| `task_list` | yes | yes | - | - | - | yes | - |
-| `scm_read` | yes | yes | yes | yes | yes | yes | yes |
-| `issue_write` | - | - | yes | - | - | yes | - |
-| `mr_write` | - | - | - | yes | yes | comment-only* | yes |
-| `mr_takeover_request` | - | - | - | yes | yes | - | - |
-| `code_search` | yes | yes | yes | yes | yes | - | yes |
-| `code_context` | yes | yes | yes | yes | yes | - | yes |
-| `code_graph` | yes | yes | - | yes | yes | - | yes |
-| `code_explain` | yes | yes | yes | yes | yes | - | yes |
-| `memory_query` / `memory_describe` | yes | yes | yes | yes | yes | yes | yes |
-| `memory_write` | yes | yes | - | yes | - | - | yes |
-| `memory_entity` | yes | yes | - | - | - | - | yes |
-| `memory_edges` | - | yes | - | - | - | - | yes |
+| tool | brainstorm | incident | implement | review | refine | documentation |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|
+| `submit_outcome` | yes | yes | yes | yes | yes | yes |
+| `task_get` / `task_context` / `task_note` | yes | yes | yes | yes | yes | yes |
+| `project_get` / `repo_list` / `report_internal_issue` | yes | yes | yes | yes | yes | yes |
+| `task_list` | yes | yes | - | - | yes | - |
+| `scm_read` | yes | yes | yes | yes | yes | yes |
+| `issue_write` | - | - | yes | - | yes | - |
+| `mr_write` | - | - | yes | yes | comment-only* | yes |
+| `mr_takeover_request` | - | - | yes | yes | - | - |
+| `code_search` | yes | yes | yes | yes | - | yes |
+| `code_context` | yes | yes | yes | yes | - | yes |
+| `code_graph` | yes | yes | yes | yes | - | yes |
+| `code_explain` | yes | yes | yes | yes | - | yes |
+| `memory_query` / `memory_describe` | yes | yes | yes | yes | yes | yes |
+| `memory_write` | yes | yes | yes | - | - | yes |
+| `memory_entity` | yes | yes | - | - | - | yes |
+| `memory_edges` | - | yes | - | - | - | yes |
 
 \* `refine`'s `mr_write` is restricted to `action=comment` by a cli-side and
 operator-side check, not by the schema. It is the only non-uniform cell in
 the table.
+
+`implement` absorbed the deleted `clarify` profile's grants: the merged
+agent conducts the conversation on the issue **and** writes the code, so it
+needs `issue_write` and clarify's memory recall tools. It deliberately does
+**not** gain `task_list` (denied to implement, same as before) and does
+**not** gain `memory_entity` or `memory_edges`.
 
 Counts are derived from the table above, not quoted from a summary line: each
 profile is 21 minus the cells the table marks `-` for it (the always-on row
@@ -69,18 +87,19 @@ and `submit_outcome` are never denied, so they never subtract).
 |---|---|:--:|
 | brainstorm | `issue_write`, `mr_write`, `mr_takeover_request`, `memory_edges` | 17 |
 | incident | `issue_write`, `mr_write`, `mr_takeover_request` | 18 |
-| clarify | `task_list`, `mr_write`, `mr_takeover_request`, `code_graph`, `memory_write`, `memory_entity`, `memory_edges` | 14 |
-| implement | `task_list`, `issue_write`, `memory_entity`, `memory_edges` | 17 |
+| implement | `task_list`, `memory_entity`, `memory_edges` | 18 |
 | review | `task_list`, `issue_write`, `memory_write`, `memory_entity`, `memory_edges` | 16 |
 | refine | `code_search`, `code_context`, `code_graph`, `code_explain`, `memory_write`, `memory_entity`, `memory_edges`, `mr_takeover_request` | 13 |
 | documentation | `task_list`, `issue_write`, `mr_takeover_request` | 18 |
 
-Counts: brainstorm 17, incident 18, clarify 14, implement 17, review 16,
-refine 13, documentation 18.
+Counts: brainstorm 17, incident 18, implement 18, review 16, refine 13,
+documentation 18. `implement` moved from 17 to 18 when it absorbed
+`issue_write` from the deleted `clarify` profile - its only cell that
+changed.
 
-`task_list` goes to the broad-context trio only, because a clarify / implement
-/ review pod that can list every Task can wander into another Task's work.
-`issue_write` is clarify plus refine; brainstorm and incident file issues
+`task_list` goes to the broad-context trio only, because an implement /
+review pod that can list every Task can wander into another Task's work.
+`issue_write` is implement plus refine; brainstorm and incident file issues
 through `submit_outcome`, so the proposal cap and dedup still apply. `code_*`
 is denied to refine - a backlog groomer reads issues, not code.
 Graph-mutating memory tools are denied to conversational and reviewing pods.
@@ -128,17 +147,54 @@ green run's logs are never fetched.
 
 ## `submit_outcome`
 
-One name, seven schemas. REST: `POST /tasks/{task}/outcome`, body
+One name, **six schemas** - down from seven when `clarify`'s was deleted
+rather than merged: `implement`'s action enum grew the three approval-gate
+actions instead. REST: `POST /tasks/{task}/outcome`, body
 `{"kind":"<profile>","payload":{...}}`.
 
 `kind` must equal `Task.status.agentKind` (409 on mismatch - the pod's claim
 is not trusted). The call is idempotent for the same
-`(task, agentKind, stage)`, and it 409s when the Task is in a terminal
-stage.
+`(task, agentKind, state)`, and it 409s when the Task is in a terminal
+state.
 
-=== "implement / documentation"
+=== "implement"
 
-    Identical schema for both profiles.
+    **Five actions.** `submitted` and `declined` are the pre-redesign pair;
+    `approved`, `discuss` and `rejected` are the three folded-in `clarify`
+    decisions, gated behind [the extended approval grammar](../operations/security/approval-gates.md).
+
+    ```json
+    {"type":"object","properties":{
+      "task":{"type":"string"},
+      "action":{"type":"string","enum":["submitted","declined","approved","discuss","rejected"]},
+      "title":{"type":"string","description":"MR title. Required when action=submitted."},
+      "body":{"type":"string","description":"MR body. Required when action=submitted."},
+      "change_significance":{"type":"string","enum":["major","minor","patch"],
+        "description":"Required when action=submitted. major=backward-incompatible; minor=backward-compatible feature; patch=fix. YOU own this level - a reviewer may raise it but can never lower it."},
+      "merge_order":{"type":"array","items":{"type":"string"},
+        "description":"REQUIRED when this task's MRs span more than one repo: the Repository CR names in dependency order, first-merged first. There is NO default. Get it wrong and a downstream repo ships against an API that has not merged yet."},
+      "decline_reason":{"type":"string","description":"Required when action=declined."},
+      "reason":{"type":"string","description":"ALWAYS required for action=approved, action=discuss and action=rejected. For approved, say in plain words WHAT you are treating as the go-ahead: name the maintainer and why you read their comment as approval, or - when tatara proposed this issue itself and no human has commented - say exactly that."},
+      "approving_maintainer":{"type":"string","description":"Required for action=approved WHENEVER you are citing a human comment as the go-ahead: the login of the maintainer whose comment you are citing. Send it together with approval_citations - both, or neither, never one alone. OMIT BOTH only when tatara proposed this issue itself and no human has commented on it. It is a DECLARATION, not an authority - the operator refuses if it is not a verified maintainer, and refuses again if it does not match the author of the comment cited."},
+      "plan_note_id":{"type":"string","description":"ALWAYS required for action=approved, including when no human commented: the id returned by the task_note(kind=\"plan\") call that wrote the plan being approved. The operator hashes that note's body at grant and re-checks the hash before you write code, so a plan swapped after approval is refused."},
+      "approval_citations":{"type":"array","items":{"type":"object","properties":{
+          "id":{"type":"string"},"quote":{"type":"string"}},
+        "required":["id","quote"]},
+        "description":"Required for action=approved whenever a maintainer has commented, sent together with approving_maintainer: ONE entry per issue this task owns. id is the comment's external_id, copied verbatim from your turn-0 bundle. quote is a VERBATIM substring of that comment's body. If a LATER maintainer comment withdraws the approval you would otherwise cite, send action=discuss instead."}},
+     "required":["action"],"additionalProperties":false}
+    ```
+
+    `action=approved` does not by itself advance the Task - the operator
+    independently re-verifies the citation via `restapi.verifyApprovalScope`
+    and refuses (parking at `identity-unverified`, HTTP 200) if it does not
+    hold up. This is the same grammar `clarify` used to run, now driven from
+    inside the same pod that goes on to write the code.
+
+=== "documentation"
+
+    Its own schema, split out of `implement`'s during the clarify fold: a
+    documentation agent has no approval gate to drive, so it never gets the
+    three gate actions.
 
     ```json
     {"type":"object","properties":{
@@ -182,25 +238,6 @@ stage.
     bot identity, so the forge rejects a self-approve; the operator posts a
     COMMENT review carrying the verdict and then merges. The merge is the
     approval of record.
-
-=== "clarify"
-
-    ```json
-    {"type":"object","properties":{
-      "task":{"type":"string"},
-      "decision":{"type":"string","enum":["implement","close","discuss"]},
-      "reason":{"type":"string","description":"Required. For decision=implement, say in plain words WHO approved and WHY you read their comment as approval."},
-      "approval_citations":{"type":"array","items":{"type":"object","properties":{
-          "id":{"type":"string"},"quote":{"type":"string"}},
-        "required":["id","quote"]},
-        "description":"Required for decision=implement whenever a maintainer has commented: ONE entry per issue this task owns. id is the external_id of the maintainer comment you are citing, copied verbatim from the <comment external_id=\"...\"> attribute already in your turn-0 bundle - do NOT re-crawl to find it; it does NOT have to be the newest comment on the thread. quote is a VERBATIM substring of that same comment's body. YOU judge whether the comment approves; the operator re-reads the comment itself and refuses if the id does not name a maintainer-authored non-bot comment on that issue, if your quote is not in it, or if it already approved once. If a LATER maintainer comment withdraws the approval you would otherwise cite, send decision=discuss instead - do not cite a withdrawn approval. Omit only when no human has commented at all."}},
-     "required":["decision","reason"],"additionalProperties":false}
-    ```
-
-    There is no `most_recent` clause anywhere in this schema or in the operator's check: the
-    operator verifies the citation exists, its author, and the quote - never sequence. Reading
-    whether a later maintainer comment withdraws an earlier approval is entirely on you; cite the
-    withdrawal (`decision=discuss`), do not cite the stale approval.
 
 === "brainstorm"
 
@@ -376,7 +413,7 @@ NOT create a durable SCM issue.
 
 `validate_skills.py`'s checks (frontmatter, the `gh`/`glab` ban, one
 hand-crafted merge-instruction regex) never verified that a documented call
-like `submit_outcome(decision="implement")` or `mr_write(action="open")`
+like `submit_outcome(action="approved")` or `mr_write(action="open")`
 still matches this page's schema. A renamed tool or a stale enum value read
 fine to a human reviewer and failed only at agent runtime.
 

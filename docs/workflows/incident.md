@@ -5,12 +5,12 @@ title: Incident Response
 # Incident Response
 
 When a Grafana alert fires, the tatara operator receives a webhook, deduplicates it against
-any already-running investigation, and spawns a project-scoped `incident` Task at the
-`investigating` stage. The agent queries Grafana live, diagnoses the problem, and submits an
+any already-running investigation, and spawns a project-scoped `incident` Task at
+`state=refined`. The agent queries Grafana live, diagnoses the problem, and submits an
 outcome that either files exactly one evidence-backed issue - carrying an additive
 `tatara-incident` label so it is immediately visible as incident-originated - or declares a
-confirmed false positive. `investigating` is the stage the `incident` origin kind enters at
-`triaging`, and it runs the `incident` agent kind - see the
+confirmed false positive. `refined` is the state the `incident` origin kind enters after
+triage (`state=new`), and it runs the `incident` agent kind - see the
 [origin-kind table](index.md#origin-kinds-and-the-agent-kind-each-one-spawns).
 
 ---
@@ -162,12 +162,14 @@ or
 cites which rule(s) fired and why it reached its verdict, confirmed or not.
 
 - **`file_issue`:** the operator creates the issue in the named repository, mints the Issue CR
-  **under this same Task** - the incident Task, not a fresh one - and moves the stage
-  `investigating -> clarifying`. The issue is additively marked `tatara-incident`
-  (configurable, below) for its entire lifetime, independent of whatever stage its owning Task
-  is in - this is what lets it be filtered and dashboarded on incident-origin without a
-  separate issue type.
-- **`false_positive`:** the stage moves `investigating -> rejected`. No issue is created, and
+  under this same Task - the incident Task, not a fresh one - and moves the Task's state
+  `refined -> done`. The incident Task's own life ends there; the issue is additively marked
+  `tatara-incident` (configurable, below) for its entire lifetime, independent of whatever Task
+  currently owns it - this is what lets it be filtered and dashboarded on incident-origin without
+  a separate issue type. A fresh `implement`-origin Task picks the issue up once ownership lapses,
+  through the same orphan-adoption path any newly-owned issue goes through - not a continuation of
+  the incident Task itself.
+- **`false_positive`:** the state moves `refined -> rejected`. No issue is created, and
   `status.documentedBy` stays permanently empty - a false positive owns no merged MR, so it is
   never eligible for the nightly [documentation](documentation.md) batch either.
 
@@ -248,14 +250,14 @@ sequenceDiagram
     Operator->>Operator: Compute groupHash = sha256(groupKey)[:16]
     Operator->>Queue: EnqueueEvent(dedupKey=groupHash, class=alert, priority=0)
     Note over Queue: Duplicate fire -> AlreadyExists, drop
-    Queue->>Task: Admit -> create incident Task at investigating<br/>label tatara.dev/alert-group=<hash><br/>annotation tatara.dev/grafana-alert=<ctx>
+    Queue->>Task: Admit -> create incident Task at state=refined<br/>label tatara.dev/alert-group=<hash><br/>annotation tatara.dev/grafana-alert=<ctx>
     Task->>Agent: Spawn pod with grafana-mcp
     Agent->>Agent: Query Grafana (PromQL/LogQL/<br/>dashboards/alert rule)
     Agent->>Agent: Form diagnosis
     Agent->>Task: submit_outcome(action=file_issue, alert_rules, reason)
     Task->>SCM: Operator creates the issue,<br/>mints the Issue CR under this Task
     SCM-->>Task: Issue URL
-    Task->>Task: stage: investigating -> clarifying
+    Task->>Task: state: refined -> done (this Task's life ends here)
 ```
 
 ---
