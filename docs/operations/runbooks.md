@@ -827,6 +827,43 @@ kubectl -n tatara get task <task-name> -o jsonpath='{range .status.notes[*]}{.at
 
 ---
 
+<a id="tatara-runbook-operator-agent-pod-recreation-loop"></a><!-- alert: "Operator agent pod recreation loop" status: covered -->
+## Agent pod recreation loop
+
+**Symptoms:** `Operator agent pod recreation loop` (`alerts/tatara-operator.yaml`, **critical**) fires when a single project recreates more than 6 agent pods in 1h, sustained 15m, broken out by `project`.
+
+**What it means:** This is the replacement for the `maxPodRecreations` cap, and it is a page rather than a park on purpose. The operator used to bound pod churn by parking the Task at `parkReason=pod-recreation-exhausted` once the recreation budget was spent - see [Agent pod lost mid-stage](#tatara-runbook-operator-task-pod-recreation-budget-exhausted) above for the shape that used to take. That cap is being removed: the platform's rule is now "TTL always decides", and no feature exceeds a 24h residency cap. The direct, accepted cost of removing the cap is that a boot-crash loop is no longer bounded by anything short of that 24h cap - at a 5-minute respawn cycle that is roughly 288 pods. This alert is the only thing standing between a crash loop and a day of wasted pods, which is why it pages at critical instead of parking the Task silently.
+
+`operator_pod_recreations_total{project,kind}` counts a recreation from all three paths that respawn a pod for a live Task: a live pod that ended with no agent handoff, a pod lost mid-state, and a pod that never became Ready inside `podReadyTimeout`. It is a rate signal, not a per-Task budget - a project running many Tasks legitimately recreates more pods than a quiet one, so read the `project` breakdown together with how many Tasks that project has in flight before concluding anything.
+
+Six per hour is comfortably above the ordinary rate. A single Task in a tight respawn loop reaches it in half an hour on its own.
+
+**Diagnosis:**
+```promql
+sum by (project) (increase(operator_pod_recreations_total{namespace="tatara",job="tatara-operator"}[1h]))
+sum by (project, kind) (increase(operator_pod_recreations_total{namespace="tatara",job="tatara-operator"}[1h]))
+```
+Then find which Task is looping, and why:
+```bash
+kubectl -n tatara get tasks -o custom-columns=NAME:.metadata.name,STATE:.status.state,RECREATIONS:.status.stats.podRecreations | sort -k3 -n -r | head
+kubectl -n tatara get pods -l tatara.io/task=<task-name> --sort-by=.metadata.creationTimestamp
+kubectl -n tatara describe pod <newest-pod> | grep -A5 -i "evicted\|oom\|node-pressure\|failed"
+kubectl -n tatara logs <previous-pod> -c wrapper --previous --tail=200
+```
+
+**Fix:** Split the loop by cause first, because the three recreation paths need different fixes.
+
+1. **Pod never becomes Ready.** The wrapper is failing to boot: a bad image pin, a missing or rotated secret, a bootstrap clone that cannot reach the forge. `Operator agent boot crash budget exhausted` and `Wrapper agent container stuck waiting` normally fire alongside; the wrapper's `--previous` log has the reason. Fix the pin or the credential - there is no operator-side retry that resolves it.
+2. **Pod lost mid-state.** Node-level eviction, memory pressure, or an OOM-kill on the node the `wrapper` workload landed on. Same remediation as [Agent pod lost mid-stage](#tatara-runbook-operator-task-pod-recreation-budget-exhausted): fix the node condition or raise the agent memory limit.
+3. **Live pod ended with no agent handoff.** The agent pod exited without writing a handoff note, so the operator re-armed it. This is the path most likely to loop indefinitely, because nothing about it is self-limiting; read the wrapper log for what ended the session.
+
+If a single Task is responsible and the cause is not fixable in the moment, park it by hand rather than letting it burn the residency window:
+```bash
+kubectl -n tatara patch task <task-name> --subresource=status --type=merge -p '{"status":{"parkReason":"operator-error"}}'
+```
+
+---
+
 <a id="tatara-runbook-operator-agent-turn-timeout-spike"></a><!-- alert: "Operator agent turn timeout spike" status: covered -->
 ## Agent turn timeout spike
 
@@ -845,6 +882,46 @@ sum(increase(operator_turn_timeout_total{namespace="tatara",job="tatara-operator
 ```
 
 **Fix:** Identify which Task(s) and pods are hitting the timeout from the operator logs, then check the wrapper's own logs for the hang signature (a wedged Claude session, an unresponsive PTY, an MCP call that never returns). A single wedged pod respawns and costs one turn; a sustained spike across many Tasks points at something systemic - an MCP dependency (memory, operator API) hanging under load rather than one bad turn. Escalate to a human if the pattern repeats across unrelated Tasks.
+
+---
+
+<a id="tatara-runbook-operator-agent-stall-probe-unanswered"></a><!-- alert: "Operator agent stall probe unanswered" status: covered -->
+<a id="tatara-runbook-wrapper-agent-blocked-inside-a-tool-call"></a><!-- alert: "Wrapper agent blocked inside a tool call" status: covered -->
+## Stall probe unanswered / agent blocked inside a tool call
+
+**Symptoms:** `Operator agent stall probe unanswered` (`alerts/tatara-operator.yaml`, warning) fires when more than 3 stall probes in 1h come back `unanswered` or `never_delivered`, sustained 15m. `Wrapper agent blocked inside a tool call` (`alerts/tatara-wrapper.yaml`, warning) fires when more than 3 probes in 1h finish `never_delivered`, sustained 15m - the same population seen from inside the pod.
+
+**What it means:** Read the two outcomes separately. They are not two thresholds on one symptom; they are two different diagnoses, and only one of them is a timeout.
+
+`never_delivered` is the interesting one, and it is a **positive diagnosis, not an absence of evidence**. The probe is written onto the PTY as a paste sequence, and the claude session logs a `queue-operation` `enqueue` line for it immediately - before anything is delivered to the model. Delivery happens at the next TOOL-CALL BOUNDARY, at which point a matching `remove` (or `dequeue`) line is written. So an `enqueue` with no matching `remove` means the session accepted the text and then never reached another tool-call boundary: **the agent is blocked inside one single long-running tool call.** Measured behaviour: a 70-second sleep buffered a probe for 58.2s and it was delivered normally afterwards; a tool call that never returns means the probe is never delivered at all. This is not the wrapper being unresponsive and it is not the model being slow to think - it is one tool invocation that has not come back.
+
+Common causes, in the order worth checking: a network call with no client-side timeout (an MCP tool, a forge API, a memory query), a `git` or package-manager command waiting on a prompt that will never be answered, a shell command reading from a stdin nobody writes to, or a genuinely enormous build or test run.
+
+`unanswered` is the weaker signal: the probe WAS delivered - a tool-call boundary was reached and the model saw it - but no `TATARA-ALIVE` reply came back before the grace window elapsed. That is consistent with a model that is working through a long turn and did not treat the probe as worth answering, and it is also consistent with a genuinely wedged session. A handful of these is not by itself an incident; a rising rate with no `never_delivered` alongside points at the probe wording or `stallProbeGraceSeconds` being too tight rather than at a hung agent.
+
+Neither outcome kills a turn on its own. The operator escalates on its own schedule: probe, wait `stallProbeGraceSeconds`, re-probe, and only past `stallProbeMaxAttempts` does it interrupt the session and run the ordinary stop-and-hand-off sequence. So this alert reports that the escalation path is being exercised, not that work has already been lost.
+
+**Diagnosis:**
+```promql
+sum by (outcome) (increase(operator_stall_probe_total{namespace="tatara",job="tatara-operator"}[1h]))
+sum by (outcome) (increase(ccw_probe_outcomes_total[1h]))
+```
+The `sent` outcome is the denominator - compare it against `answered` to see what fraction of probes the fleet is actually replying to. `unsupported` means the pod is running a wrapper build with no `/v1/probe` endpoint, and the operator fell back to the pre-probe stall handling for it; that is a rollout-skew signal, not a stall.
+
+Find the blocked pod and what it is blocked on:
+```bash
+kubectl -n tatara get tasks -o custom-columns=NAME:.metadata.name,STATE:.status.state,PROBE:'.metadata.annotations.tatara\.dev/stall-probe-id',AT:'.metadata.annotations.tatara\.dev/stall-probe-at'
+kubectl -n tatara logs <pod-name> -c wrapper --tail=300 | grep -i "queue-operation\|probe"
+kubectl -n tatara exec <pod-name> -c wrapper -- ps -eo pid,etimes,args --sort=-etimes | head -20
+```
+The `ps` line is the one that usually names the culprit outright: the longest-running child of the claude process IS the tool call that has not returned.
+```logql
+{namespace="tatara", container="wrapper"} | json | line_format "{{.msg}}" |~ "queue-operation|probe"
+```
+
+**Fix:** For `never_delivered`, kill the hung tool call rather than the pod - the session, its transcript and its context all survive an interrupt, and the operator's escalation will interrupt it anyway once the attempts are spent. Let that happen unless the pod is blocking something urgent. If the same tool hangs repeatedly across unrelated Tasks, that is the real fix target: give the offending MCP server or client call a timeout, or stop the agent skill from invoking the interactive form of the command. Escalate to `tatara-claude-code-wrapper` when a probe is `never_delivered` while `ps` shows no long-running child at all - that combination means the transcript tailer is not seeing the `remove`, which is a wrapper bug rather than a hung tool.
+
+For `unanswered`, confirm the turn is genuinely making progress (`ccw_tool_calls_total` still climbing for that pod, new assistant text landing) before treating it as a hang. If it is progressing, the probe grace window is too short for the workload and belongs in [Tuning](tuning.md); if it is not, let the escalation run and read the handoff note the stop captures.
 
 ---
 
@@ -896,6 +973,37 @@ sum by (from, to) (increase(operator_illegal_stage_transition_total{namespace="t
 ```
 
 **Fix:** There is no operational remediation - the Task itself is not corrupted (the rejected transition never applied), but the code path that attempted it needs a fix in the operator's transition table. Capture the `from`/`to` labels and the Task name from the log line and file it as a bug against `tatara-operator`; this is not something a restart or a config change resolves.
+
+---
+
+<a id="tatara-runbook-operator-live-entry-blocked"></a><!-- alert: "Operator live entry blocked" status: covered -->
+## Live entry blocked by the live-pod ceiling
+
+**Symptoms:** `Operator live entry blocked` (`alerts/tatara-operator.yaml`, warning) fires when a project refuses more than 10 live entries in 1h with `reason=live-ceiling-full`, sustained 15m, broken out by `project`.
+
+**What it means:** A human event arrived for a Task that would have been taken live - a reply on an issue or a merge request, the thing a live agent pod exists to answer - and the operator refused to admit it because that project was already at `maxLivePods`. The event is not lost; the Task waits. But every refusal is a conversation that did not get a live agent when a human was actually at the keyboard, which is the single most expensive kind of latency this platform produces.
+
+This is the metric that answers whether a concurrency raise actually bought anything. `maxLivePods` is clamped to `maxConcurrentAgents - 1`, so raising the agent ceiling without raising the live ceiling moves the constraint but does not relieve live starvation at all - the extra slots go to non-live work. Watch this rule across a raise: if `live-ceiling-full` refusals do not fall, the raise did not reach the live lane.
+
+Only `reason=live-ceiling-full` is a saturation signal. The other refusal reasons on `operator_live_entry_declined_total` are ordinary and deliberately not alerted: `not-a-live-state` (the Task is not in a live state, by far the most common), `task-parked`, `task-done`, `rounds-exhausted`.
+
+The un-park side has its own, separately-named refusal: a parked Task that a human event would wake is refused with `no-live-room` on `operator_unpark_declined_total{kind}` - a different metric with a different label. Same ceiling, different door. Check it alongside this one; neither rule sees the other's refusals.
+
+**Diagnosis:**
+```promql
+sum by (project) (increase(operator_live_entry_declined_total{namespace="tatara",job="tatara-operator",reason="live-ceiling-full"}[1h]))
+sum by (project, reason) (increase(operator_live_entry_declined_total{namespace="tatara",job="tatara-operator"}[6h]))
+sum by (parkReason) (increase(operator_unpark_declined_total{namespace="tatara",job="tatara-operator",kind="no-live-room"}[6h]))
+max by (project) (operator_live_pods{namespace="tatara",job="tatara-operator"})
+```
+```bash
+kubectl -n tatara get project <project> -o jsonpath='{.spec.maxLivePods}{" "}{.spec.maxConcurrentAgents}{"\n"}'
+kubectl -n tatara get tasks -o custom-columns=NAME:.metadata.name,PROJECT:.spec.projectRef,STATE:.status.state,PARK:.status.parkReason | grep <project>
+```
+
+**Fix:** Confirm the live pods holding the ceiling are doing live work rather than sitting on it. A Task in a live state with no human waiting still holds a slot until its conversation-idle budget elapses and it hands off and parks `awaiting-human`; a fleet full of those is the ceiling being held by conversations nobody is having. If that is the picture, the idle budget is the knob, not the ceiling.
+
+If the live pods are genuinely serving live conversations, this is a capacity call: raise `maxLivePods` for that project in `tatara-helmfile` `values/project-<name>/common.yaml`, and raise `maxConcurrentAgents` with it if the clamp (`maxConcurrentAgents - 1`) is what is actually binding. Both are per-project; see [Tuning](tuning.md). Raising the live ceiling raises the ceiling on concurrent model spend too - do not raise it to silence the alert without deciding that the spend is wanted.
 
 ---
 
