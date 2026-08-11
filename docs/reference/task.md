@@ -112,7 +112,7 @@ type TaskSpec struct {
 | `alertRules` | `[]string` | no | Grafana alert-rule names that triggered an incident Task. `MaxItems=50` |
 | `dedupKey` | string | no | The incident **alert-group hash**. Empty on every non-incident Task |
 | `documentsTasks` | `[]string` | no | The delivered Tasks this nightly documentation batch covers. `MaxItems=100` |
-| `maxTurnsPerTask` | int | no | Per-Task override of the **lifetime** turn backstop across every pod of this Task. Zero means `Project.spec.agent.maxTurnsPerTask` (default 300) |
+| `maxTurnsPerTask` | int | no | **Deprecated, zero effect** (see [`Project.spec.agent.maxTurnsPerTask`](project.md#agentspec)). Kept on the schema only because it still round-trips from stored Tasks and old callers. |
 
 !!! danger "`mergeOrder` has no lexical default"
     A multi-repo Task without a `mergeOrder` is a validation failure, not a
@@ -122,12 +122,12 @@ type TaskSpec struct {
     redesign exists to prevent. A default that is wrong in the most important case
     is worse than no default.
 
-The old single `spec.maxTurns` is gone, split in two. <!-- stale-ok: maxTurns -->
-`maxTurnsPerPod` (default
-40) caps **one pod run**, and `maxTurnsPerTask` (default 300) caps the
-**lifetime** across every pod. **The `implement` agent kind is exempt from
-`maxTurnsPerPod`** - a long, healthy coding run must not be cut off - and the
-lifetime cap is what bounds that exemption.
+The old single `spec.maxTurns` is gone, split into `maxTurnsPerPod` / `maxTurnsPerTask` <!-- stale-ok: maxTurns -->
+(the split survives on the schema), and both of those - along with `maxReviewRounds`
+and `maxPodRecreations` - are now deprecated with zero enforcement. A turn or
+round count measures how much an agent has done, not whether it is stuck; see
+[`Project.spec.agent`](project.md#agentspec) for what replaced them (probe-based
+stall detection and a hardcoded 24h residency cap).
 
 ---
 
@@ -158,6 +158,7 @@ lifetime cap is what bounds that exemption.
 | `deployReentries` | int | Bounds the `deployed` re-entry cycle. Cap 3, then `parked(deploy-blocked)` |
 | `headMoveReentries` | int | Bounds the `awaiting-review` / `merged` moved-head cycle. Cap 3, then `parked(head-moving)`. **This one spawns a review pod every lap** |
 | `ciRedReentries` | int | Bounds the re-implement cycle when live CI on the reviewed head goes red after approval. Cap 3, then `parked(ci-blocked)` |
+| `ciWaitSince` | time | Set while the operator holds an **un-parked** Task waiting for a pending pipeline on its own open owned MR to resolve, at outcome-submission time. Not a park and not a new state - a parked Task cannot be driven, and this hold needs to keep reconciling. Bounded at 30 minutes (`CIWaitDeadline`), then the Task advances anyway. Cleared on every exit: CI goes green (`awaiting-review`), CI goes red (`enterCIRed`, back into implement), or the deadline passes |
 | `humanReviewRounds` | int | Bounds the un-park cycle of a `review`-kind Task. Cap 5 (`maxHumanReviewRounds`), then it stays parked. **Also spawns a pod every lap** |
 | `pinnedPlanNoteId` | string | The plan note's id, pinned at `action=approved` grant. The operator hashes that note's body at grant and re-checks it before code is written - a plan swapped after approval routes back to `refined` (`plan-hash-mismatch`) instead of proceeding |
 | `foldInFlight` | `[]string` | The member Tasks a refine umbrella is mid-adoption of. The reaper **skips** anything named here |
@@ -234,12 +235,12 @@ type TaskStats struct {
 | Field | Description |
 |---|---|
 | `tokensInput` / `tokensOutput` / `tokensCacheRead` / `tokensCacheCreation` | Token accounting across every pod of this Task |
-| `turns` | **Lifetime** turns across every pod. Checked against `maxTurnsPerTask`; at the cap, `parked(turn-budget-exhausted)` |
+| `turns` | **Lifetime** turns across every pod. No longer checked against a cap - `maxTurnsPerTask` is deprecated and `turn-budget-exhausted` no longer occurs. Observability only |
 | `podRuns` | Pods this Task has run |
 | `wallSeconds` | Total agent wall time |
 | `agentsRun` | The agent kinds that have run. `MaxItems=50` |
 | `issueCount` / `mrCount` | Owned `Issue` / `MergeRequest` counts. Both are print columns |
-| `podRecreations` | Pod respawns **within the current state**. At `maxPodRecreations` (3) the Task parks at `pod-recreation-exhausted`. **Reset to 0 on every transition** |
+| `podRecreations` | Pod respawns **within the current state**. No longer capped - `maxPodRecreations` is deprecated and `pod-recreation-exhausted` no longer occurs; a Task now respawns indefinitely up to the [residency cap](task-stages.md#the-deadline-invariant) (24h). Still counted (feeds `operator_pod_recreations_total`, labeled by `reason` since [tatara-operator#587](https://github.com/szymonrychu/tatara-operator/pull/587)) so the compensating alert has data. **Reset to 0 on every transition** |
 | `notesSpilled` | Notes evicted to `tatara-memory` by the byte guard |
 | `notesSpilledRefs` | One `track_id` per spill batch. It **accumulates** - a single scalar ref would orphan every earlier batch. Read back with `task_context(notes=all)` |
 

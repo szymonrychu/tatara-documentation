@@ -198,7 +198,7 @@ documented exception) - see [the park flag](#the-park-flag) below.
 | `under-implementation` | `refined` | the plan pinned at grant no longer matches the plan note (`plan-hash-mismatch`) - the cheap path back to the gate, never a park |
 | `under-implementation` | `done` | the nightly documentation batch declined or its budget elapsed: `done(doc-timeout)`, no MR opened |
 | `under-implementation` | `rejected` | a human closed the driving issue mid-flight |
-| `awaiting-review` | `under-implementation` | `submit_outcome(verdict=request_changes)` **AND** `spec.kind != review` **AND** `reviewRounds < maxReviewRounds`, or an `approve` whose **live CI** at the reviewed head has failed. Gated on `pendingReview == nil` |
+| `awaiting-review` | `under-implementation` | `submit_outcome(verdict=request_changes)` **AND** `spec.kind != review`, or an `approve` whose **live CI** at the reviewed head has failed. Gated on `pendingReview == nil`. (The `reviewRounds < maxReviewRounds` condition that used to gate this edge was deleted along with the ceiling - see [Cycle caps](#cycle-caps).) |
 | `awaiting-review` | `merged` | `submit_outcome(verdict=approve)` **AND** `spec.kind != review`. Gated on `pendingReview == nil`, and on the live CI at the reviewed head not being red |
 | `awaiting-review` | `done` | `mr-merged-externally`: a `kind=review` Task whose every owned MR merged externally before/while reviewing - no open MR to post an outcome against, so the operator finalizes the honest finished work |
 | `awaiting-review` | `rejected` | `mr-closed-externally` (the review target was abandoned), `mr-taken-over` (a maintainer took the MR over and this parent owns zero MRs), or a human closed the driving issue |
@@ -264,6 +264,20 @@ of whichever state the Task is already in, not a fourth state, and it is a
 `handoff-stalled`, `ownership-lost`, `merge-auth-refused`, `ci-red`,
 `ci-blocked`.
 
+!!! note "`turn-budget-exhausted`, `review-loop-exhausted`, `pod-recreation-exhausted` are retired"
+    The ceilings that produced these three (`maxTurnsPerTask`, `maxReviewRounds`,
+    `maxPodRecreations`) were deleted in [tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582):
+    a turn, round, or respawn count measures how much an agent has done, not
+    whether it is stuck. They stay in the closed vocabulary only because stored
+    Tasks can still carry them and old status writes must still validate. Every
+    Task that was parked on one of these three at rollout was released exactly
+    once by a migration (`driveRetiredUnparks`, latched by the
+    `tatara.dev/retired-park-migrated` annotation; anything parked >48h was left
+    to age out instead, since a wake-up there would just burn tokens
+    rediscovering dead work). No live path parks a Task on any of the three
+    going forward - see [Cycle caps](#cycle-caps) and
+    [the deadline invariant](#the-deadline-invariant) for what replaced them.
+
 **The park clock outranks every state clock.** Its budget is
 `ParkRetention` (7d), except `parked(backlog-sweep)`, which **never** ages
 out - it is not stalled work, it is the durable, pod-less owner of an Issue
@@ -288,14 +302,22 @@ current state**, never stored:
   (cap 3 each), never `under-implementation`.
 - `no-outcome`: re-enters `under-implementation`, requiring zero owned MRs
   merged.
-- Every other reason (`review-loop-exhausted`, `implement-declined`,
-  `stage-deadline`, `admission-starved`, `turn-budget-exhausted`,
-  `pod-recreation-exhausted`, `fold-adoption-unverified`, `doc-timeout`,
+- Every other reason (`implement-declined`, `stage-deadline`,
+  `admission-starved`, `fold-adoption-unverified`, `doc-timeout`,
   `operator-error`, `triage-stalled`, `name-too-long`, `ci-red`, ...) has
   **no re-entry**: it ages out at `ParkRetention` and is reaped. The next
   sweep re-mints the still-open issue as `parked(backlog-sweep)`, which owns
   it at zero cost; a human comment then promotes that fresh Task through
-  `new`, as new work, not a resurrected zombie.
+  `new`, as new work, not a resurrected zombie. `review-loop-exhausted`,
+  `turn-budget-exhausted`, and `pod-recreation-exhausted` used to be in this
+  same no-re-entry group; they were released by the one-time migration noted
+  above instead and no longer occur going forward.
+- A `kind=review` Task parked `awaiting-human` also un-parks automatically,
+  with no human reply needed, the moment every owned MergeRequest goes
+  terminal externally (merged or closed) - see [tatara-operator#595](https://github.com/szymonrychu/tatara-operator/pull/595).
+  It resolves `done`/`rejected` per the [transition table](#the-transition-table)
+  above rather than re-entering `awaiting-review`; a park exists to wait for a
+  human, and the human's answer (the PR's own fate) already arrived.
 
 ---
 
@@ -312,18 +334,21 @@ paused (`maxConcurrentAgents == 0`).
 **2. Readiness** - from `podStartedAt`, 5 minutes (`PodReadyTimeout`). Armed
 once the pod exists but has not become Ready. **On breach the pod
 respawns** (`podRecreations` increments); it does **not** terminate the
-Task. Only past `podRecreations > maxPodRecreations` (3) does the Task park
-at `pod-recreation-exhausted`.
+Task, and there is no longer a respawn count that does - a boot-crash loop is
+now bounded only by [residency](#residency-the-dead-man-switch), 24h, backstopped
+by an alert on `operator_pod_recreations_total` (see
+[Runbooks](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)).
 
 **3. Work / idle** - for the three **live** states, this is an **idle
 clock**, not a work budget: armed only while no turn is in flight, from the
 latest of the last human comment, the pod becoming Ready, or the end of the
 last turn. Its budget is `Project.spec.scm.conversationIdleMinutes` (default
 `ConversationIdleDefault`, 60m). An agent mid-turn is never idle by this
-clock - the bound on the work itself is the per-turn stall timeout plus the
-lifetime `maxTurnsPerTask`, not this clock. For the two **operator-driven**
-states (`merged`, `deployed`) it is an ordinary work budget from
-`stateEnteredAt`.
+clock - the bound on the work itself is the per-turn probe/stall escalation
+(see [Agent Execution](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop))
+plus [residency](#residency-the-dead-man-switch), not this clock. For the two
+**operator-driven** states (`merged`, `deployed`) it is an ordinary work
+budget from `stateEnteredAt`.
 
 ### The budgets
 
@@ -351,22 +376,53 @@ trip; only the *deadline* resets.
     only while no turn is in flight, so a silently-working agent is never
     mistaken for an idle conversation and parked mid-turn.
 
-Every live state additionally exits on `parked(turn-budget-exhausted)`
-(`stats.turns >= maxTurnsPerTask`, default 300) and
-`parked(pod-recreation-exhausted)`. `maxTurnsPerPod` (default 40) never
-terminates the Task either - it stops the pod via the TTL handoff and
-respawns, spending one `podRecreations`. **`implement` is exempt from
-`maxTurnsPerPod`**: a long, healthy coding run must not be cut off.
+No live state exits on a turn or pod-recreation count any more.
+`turn-budget-exhausted` and `pod-recreation-exhausted` are retired (see
+[the park flag](#the-park-flag)); `maxTurnsPerPod` (default 40) is
+**deprecated with zero effect** - it never terminated the Task, and no longer
+stops the pod either. What bounds an agent that never converges is
+[residency](#residency-the-dead-man-switch), below - a hard 24h ceiling, not a
+work budget.
+
+---
+
+## Residency: the dead-man switch
+
+A **fourth** clock, orthogonal to the three above: a cumulative bound on
+total time in a live state, tracked across the whole round trip - re-parks,
+re-entries, and all - not reset by any of the events that reset the other
+three. `stage.ResidencyCapAll = 24h`, a **hardcoded constant, not a
+Project-configurable field**, applied uniformly to `refined`,
+`under-implementation`, and `awaiting-review` since
+[tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582)
+(previously kind-specific: 24h / 6h / 4h respectively).
+
+It exists for the population none of the other three clocks can reach: a
+wedged pod, a boot-crash loop, or an operator bug that the probe/stall
+machinery and the ordinary idle clock never see. It is deliberately a
+constant rather than a CRD field, because a CRD field can be pruned silently
+by structural-schema pruning when the schema and a values file fall out of
+lockstep - and the failure mode of a silently-pruned dead-man switch is no
+dead-man switch at all.
+
+Every feature this platform ships is bound by this one invariant: **nothing
+exceeds 24h residency in a live state, ever.** The known cost of widening
+6h/4h to 24h is that a genuinely wedged Task now holds a concurrency slot up
+to four times longer; the compensating control is headroom in
+`maxConcurrentAgents` plus the `operator_pod_recreations_total` alert (see
+[Runbooks](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)).
 
 ---
 
 ## Cycle caps
 
-Six cycles exist, and all six are bounded:
+Five cycles remain bounded (`reviewRounds` / `review-loop-exhausted` was
+retired along with `maxReviewRounds` - see [the park flag](#the-park-flag) -
+so the `reviewing <-> implementing` cycle is no longer capped by a round
+count; [residency](#residency-the-dead-man-switch) is the backstop instead):
 
 | Cycle | Counter | Cap | On exhaustion | Spawns a pod per lap? |
 |---|---|---|---|---|
-| `awaiting-review` and `under-implementation` | `reviewRounds` (on the MergeRequest) | 3 | `parked(review-loop-exhausted)` | yes |
 | `merged` and `parked(merge-timeout)` | `mergeReentries` | 3 | `parked(merge-blocked)`\* | no |
 | `deployed` and `parked(deploy-timeout)` | `deployReentries` | 3 | `parked(deploy-blocked)`\* | no |
 | `awaiting-review` and `merged` (the head moved) | `headMoveReentries` | 3 | `parked(head-moving)` | **yes** |

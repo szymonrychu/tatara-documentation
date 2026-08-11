@@ -48,7 +48,8 @@ lookup, never a label selector.
 | `status` | `new` \| `approved` \| `needs-changes` \| `rejected` | **The platform's review state.** Operator-owned, written only from an accepted review `submit_outcome` |
 | `headBranch` | `string` | The PR/MR's source branch <!-- stale-ok: headBranch --> |
 | `headSHA` | `string` | The mirror's last-synced head commit. **Never trusted for a merge or an approval decision** - see below |
-| `ciStatus` | `none` \| `pending` \| `running` \| `green` \| `red` | Last-synced CI status at `headSHA` |
+| `ciStatus` | `none` \| `pending` \| `running` \| `green` \| `red` | Last-synced CI status at `headSHA`. Kept live by webhook ingest (`check_suite`/`check_run`/`status` on GitHub, `Pipeline Hook` on GitLab) since [tatara-operator#592](https://github.com/szymonrychu/tatara-operator/pull/592), backstopped by a 5-minute poll for MRs owned by a live Task (1h/24h mirror cadence otherwise). Before #592 this only got set at MR-mint time and stayed `""` forever for an MR the agent opened itself - rendered in the agent's context bundle as `ci`/`ci_updated_at`, see [The Context Bundle](context-bundle.md). A single `check_run`/commit-status context can only prove `red`; only an aggregate (the check-suite conclusion, the GitLab pipeline status, or a live re-read) writes `green` |
+| `ciUpdatedAt` | `*Time` | When `ciStatus` was last stamped. Omitted from the agent's context bundle entirely if never observed, so a stale reading is visibly stale rather than silently absent |
 | `mergeable` | `bool` | Whether the forge reports the PR/MR as mergeable |
 | `comments` | [`[]Comment`](issue.md#comment) (max 200) | Same `Comment` shape as `Issue`, including the inline-review fields (`path`, `line`, `inReplyTo`, `reviewRound`) |
 | `commentCount` | `int` | `len(comments) + spilledComments` |
@@ -98,9 +99,10 @@ patch.
 
 ### `reviewRounds`
 
-Counts **accepted** `request_changes` verdicts. At
-`Project.spec.agent.maxReviewRounds` (default 3) the Task parks with
-`stageReason=review-loop-exhausted`.
+Counts **accepted** `request_changes` verdicts. Observability only -
+`maxReviewRounds` is deprecated with zero effect and `review-loop-exhausted`
+no longer occurs; the `reviewing <-> implementing` cycle is no longer capped
+by a round count (see [Task Stages](task-stages.md#the-park-flag)).
 
 ### `pendingReview` is the crash-safety intent record
 
@@ -117,6 +119,24 @@ never be spawned to fix findings that have not been recorded yet.
 The marker itself lives on the forge and is written last, so it can only
 ever mean "everything for this round landed" - see
 [the GitLab ordering rule](../workflows/merge-and-deploy.md#gitlab-has-no-review-object).
+
+### CI readiness gate on submission
+
+Since [tatara-operator#594](https://github.com/szymonrychu/tatara-operator/pull/594),
+an `implement` or review-`approve` `submit_outcome` is judged against every
+open MR the submitting Task owns **before** anything is written - no claim,
+note, transition, or park. Any of three conditions on an open owned MR
+refuses the call with a structured `409 {"reason":"pr-not-ready", "blocked":
+[{repo, number, headSHA, blockers, detail}]}`: red `ciStatus`, a real base
+conflict, or an unanswered `request_changes` (that MR's live head still equal
+to `reviewedSHA`). A forge read error fails **open** - a flaky forge must
+never wedge a submission. Refused this way, the agent's prompt instructs it
+to loop and resolve, bounded to roughly 20 minutes.
+
+Separately, `Task.status.ciWaitSince` (see [Task](task.md#taskstatus)) is the
+operator's own hold on a still-**pending** pipeline: up to 30 minutes waiting
+for `ciStatus` to resolve before advancing anyway. Not a park - the Task stays
+un-parked so it keeps reconciling on the 5-minute CI backstop.
 
 ---
 

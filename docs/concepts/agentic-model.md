@@ -231,12 +231,13 @@ at every layer.
 
 | Parameter | CRD field | Default | Effect |
 |---|---|---|---|
-| Max turns per pod run | `Project.spec.agent.maxTurnsPerPod` | `40` | Caps one pod's run. **`implement` is exempt** - a long healthy coding run is not cut off mid-work |
-| Max turns per Task, lifetime | `Project.spec.agent.maxTurnsPerTask` / `Task.spec.maxTurnsPerTask` | `300` | Applies to every agent kind, `implement` included - this is what bounds the `implement` exemption above |
-| Turn inactivity timeout | `spec.agent.turnTimeoutSeconds` | `1800` (30 min) | A turn fails only after this long with no agent output |
-| Review rounds (non-`review` Task) | `Project.spec.agent.maxReviewRounds` | `3` | `request_changes` cycles above this cap park the Task at `review-loop-exhausted` |
-| Human review rounds (`review`-kind Task) | `maxHumanReviewRounds` | `5` | Bounds the `awaiting-human` <-> `reviewing` cycle on a human's own PR |
-| Pod recreations | `Project.spec.agent.maxPodRecreations` | `3` | A pod that never becomes Ready within 5 minutes of creation respawns, not fails, up to this budget; past it the Task fails at `pod-recreation-exhausted` |
+| Max turns per pod run | `Project.spec.agent.maxTurnsPerPod` | `40` | **Deprecated, zero effect.** Used to cap one pod's run (`implement` exempt) |
+| Max turns per Task, lifetime | `Project.spec.agent.maxTurnsPerTask` / `Task.spec.maxTurnsPerTask` | `300` | **Deprecated, zero effect.** A turn count measures how much an agent has done, not whether it is stuck - see the [residency cap](../reference/task-stages.md#residency-the-dead-man-switch) for what replaced it |
+| Turn inactivity timeout | `spec.agent.turnTimeoutSeconds` | `1800` (30 min) | **No longer fails the turn.** Triggers a probe instead; only an unanswered escalation past `stallProbeMaxAttempts` interrupts the session - see [Stall detection](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop) |
+| Review rounds (non-`review` Task) | `Project.spec.agent.maxReviewRounds` | `3` | **Deprecated, zero effect.** The `reviewing <-> implementing` cycle is no longer capped by a round count |
+| Human review rounds (`review`-kind Task) | `maxHumanReviewRounds` | `5` | Bounds the `awaiting-human` <-> `reviewing` cycle on a human's own PR. Still active |
+| Pod recreations | `Project.spec.agent.maxPodRecreations` | `3` | **Deprecated, zero effect.** A pod that never becomes Ready still respawns, uncapped; repeated respawns are now an alert (`operator_pod_recreations_total`), not a Task failure |
+| Residency, all three live states | hardcoded, not a field | `24h` | The dead-man switch that replaced the three deprecated rows above: a hard cumulative bound, uniform across `refined`/`under-implementation`/`awaiting-review` |
 
 ### Queue capacity
 

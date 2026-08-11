@@ -180,10 +180,12 @@ The dispatcher spawns a `tatara-claude-code-wrapper` Pod (plus a Service) on adm
 independently of the Task itself (see [Pod naming](../reference/task-stages.md#pod-naming)). One
 pod is created per pod-spawn and is reused across
 every turn within that spawn; the operator submits each turn to the existing pod and only
-re-creates it when it has crashed or failed its readiness probe, bounded by
-`agent.maxPodRecreations` (default `3`, reset to `0` on every stage transition) after which the
-Task fails at `pod-recreation-exhausted`. A pod that never becomes Ready within the fixed 5-minute
-readiness window is a respawn, not an immediate failure.
+re-creates it when it has crashed or failed its readiness probe. `agent.maxPodRecreations` is
+deprecated with zero effect - respawns are uncapped, bounded only by the
+[24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch) and watched by the
+`operator_pod_recreations_total` alert (see [Runbooks](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)).
+A pod that never becomes Ready within the fixed 5-minute readiness window is a respawn, not an
+immediate failure.
 
 The Pod receives Task identity and context via environment variables:
 

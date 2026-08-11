@@ -118,7 +118,9 @@ The agent:
 
 The operator then opens the pull request, referencing the owned issue. If the agent instead calls `submit_outcome(action=declined, decline_reason=...)` - for example, the fix already shipped on a sibling branch - the Task parks `implement-declined` and no PR is opened.
 
-A pod that never becomes Ready within 5 minutes of creation is respawned automatically, not failed, up to `maxPodRecreations` (default 3); a pod that runs past `agentPodTTLSeconds` is stopped with a guaranteed handoff note in `status.notes` and a fresh pod picks up the same Task. `implement` is the one agent kind exempt from `maxTurnsPerPod` - a long healthy coding run is not cut off mid-work, bounded instead by the Task-lifetime `maxTurnsPerTask` (default 300).
+Since [tatara-operator#594](https://github.com/szymonrychu/tatara-operator/pull/594), step 5's `submit_outcome` is itself gated: if the Task already owns an **open** MR with red CI, a real base conflict, or an unanswered `request_changes`, the call is refused outright with a structured `409` before anything is written, and the agent's prompt tells it to wait for its own pipeline (bounded ~20 minutes) and resubmit. See [CI readiness gate](../reference/merge-request.md#ci-readiness-gate-on-submission).
+
+A pod that never becomes Ready within 5 minutes of creation is respawned automatically, uncapped (`maxPodRecreations` is deprecated with zero effect - see [Runbooks](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)); a pod that runs past `agentPodTTLSeconds` is stopped with a guaranteed handoff note in `status.notes` and a fresh pod picks up the same Task. `maxTurnsPerPod` (`implement`'s per-pod turn cap, with `implement` itself exempt) and the Task-lifetime `maxTurnsPerTask` that used to bound that exemption are both deprecated with zero effect; what bounds a runaway Task now is the [24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch).
 
 ---
 
@@ -135,7 +137,7 @@ A pod that never becomes Ready within 5 minutes of creation is respawned automat
 A `review` pod spawns against the opened PR (see [PR / MR Review](../workflows/review.md)). It reads the diff read-only and calls `submit_outcome(verdict=...)`:
 
 - **`verdict=approve`** - the operator reads the **live** PR head SHA (never the mirror), posts a `COMMENT`-type review under the bot identity carrying the verdict (GitHub 422s a self-authored `APPROVE` or `REQUEST_CHANGES` either way - there is only one bot identity), stamps `MergeRequest.status.reviewedSHA`, and moves the Task to `merged`.
-- **`verdict=request_changes`** - the Task returns to `under-implementation` with the review's findings as context, bounded by `maxReviewRounds` (default 3; beyond it the Task parks `review-loop-exhausted`).
+- **`verdict=request_changes`** - the Task returns to `under-implementation` with the review's findings as context. `maxReviewRounds` is deprecated with zero effect - the `reviewing <-> implementing` cycle is no longer capped by a round count (see the [residency cap](../reference/task-stages.md#residency-the-dead-man-switch) for the backstop that replaced it). The same review-`approve` outcome is also subject to the CI readiness gate above - a red or unresolved MR refuses the approval outright.
 
 **Task state:** `awaiting-review` until a verdict lands, then `merged` or back to `under-implementation`.
 

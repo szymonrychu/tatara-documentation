@@ -48,6 +48,7 @@ All `/v1/*` require an OIDC bearer token (audience `tatara-claude-code-wrapper`)
 | `POST` | `/v1/messages` | Submit a turn `{text, callbackUrl?, handoff?}` -> `202 {turnId}`; `409` turn in flight; **`410 Gone`** past the pod's TTL deadline |
 | `GET` | `/v1/messages` | Turn history `[{turnId, state, startedAt, completedAt}]` |
 | `GET` | `/v1/messages/{turnId}` | Full turn result: `{state, finalText, usage, stopReason, error?}` |
+| `POST` | `/v1/interrupt` | Writes a single ESC byte to the PTY under `ptyMu` -> `202`; `503` if there is no live PTY. **Never `409`** - this is the one endpoint meant to act on a turn that is already in flight. See [Interrupting a turn](#interrupting-a-turn) below. |
 | `GET` | `/v1/session` | The six existing fields (`state`, `turnsCompleted`, `model`, `repo`, ...) **plus `contractVersion`** <!-- stale-ok: turnsCompleted --> |
 | `GET` | `/v1/transcript` | Full JSONL session transcript (debug) |
 | `DELETE` | `/v1/session` | Graceful shutdown, pod exits |
@@ -55,6 +56,20 @@ All `/v1/*` require an OIDC bearer token (audience `tatara-claude-code-wrapper`)
 
 !!! danger "`POST /v1/interject` is deleted, not deprecated"
     The endpoint raced the Stop hook against the ring-buffer tailer: injecting text mid-turn had no ordering guarantee against the hook reading the transcript at turn-end, so a well-timed interject could be silently lost or attributed to the wrong turn. It was live in production until this release (the operator drove it from a `PendingInterjections` drain loop). It is removed in the same change that removes the operator's drain loop, operator first, so the wrapper never 404s a call the operator is still making. `Session.Interject` and `ErrNotBusy` are deleted with it. <!-- stale-ok: /v1/interject, PendingInterjections -->
+
+## Interrupting a turn
+
+`POST /v1/interrupt` ([tatara-claude-code-wrapper#158](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/158)) is not a revival of `/v1/interject` - it does not inject content into a turn, it ends one. It writes a single ESC byte to the PTY, which the CLI treats as a genuine interrupt: it lands synchronously (~40ms) even mid-tool-call, and unlike a paste (which the CLI only consumes at the next tool-call boundary) it reaches exactly the case worth interrupting - a turn wedged inside one long tool call. The session, its transcript, and the full conversation context all survive; the next turn runs normally in the same session.
+
+An interrupted turn produces no `end_turn` message and no Stop hook fires, so nothing would otherwise clear `mgr.current` - the session would sit `busy` forever and every future `POST /v1/messages` would `409` permanently. `transcript.WasInterrupted` detects the two literal markers the CLI writes (`[Request interrupted by user for tool use]` mid-tool-call, `[Request interrupted by user]` mid-stream) as the **last** entry in the conversation - a marker earlier in history must not resolve a *later* live turn - and `Manager.completeAfterInterrupt` resolves it as `State=failed`, `StopReason=interrupted`, keeping whatever partial output exists. Resolution polls the transcript (200ms, bounded at 30s) rather than depending on the log tailer, since `CCW_LOG_TRANSCRIPT=false` means there is no tailer at all. Past that deadline the turn is left alone and counted as `ccw_interrupts_total{result="unconfirmed"}` - the operator can still see it in `Snapshot`.
+
+This is the wrapper side of the operator's stall escalation: probe, wait, probe again, and only past `stallProbeMaxAttempts` does the operator call this endpoint and run the ordinary stop-and-handoff sequence. See [Agent Execution](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop).
+
+## The wrapper no longer kills a turn on inactivity
+
+Before [tatara-claude-code-wrapper#158](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/158), `TURN_TIMEOUT_SECONDS` of silence failed the turn outright. It now calls `markStallSuspected` instead: stamps `stallSuspectedSince` (once per stall, left alone across re-arms so it measures how long the silence has lasted), increments `ccw_turn_stall_suspected_total`, logs a warning, and **re-arms** - it never kills the turn itself. The wrapper's rationale: its only signal was the transcript going quiet, and a single subagent run can silence it for 35+ minutes while the pod works flat out, so the timer's most common firing was never actually a hang. Cleared by genuine transcript activity or by the turn completing; a probe-originated exchange does **not** clear it, so the operator's own escalation cannot erase its own evidence.
+
+**After this change the only wrapper-side bound on a turn already in flight is the pod's TTL** (`admit()`/PodTTL refuses new work past the deadline; it never touches a turn already running). Killing a stalled turn is now entirely the operator's call, made through the probe/interrupt escalation above.
 
 ## Contract-version handshake
 
@@ -71,6 +86,13 @@ See [tatara-cli](cli.md#contract-version-handshake) for the third defense: the c
 There is no `--resume`, no session replay, and no transcript persisted to S3. `CONVERSATION_SESSION_ID`, `CONVERSATION_OBJECT_KEY`, and `HANDOFF_KEY` are all deleted, and the wrapper makes no fork/replay decision at all. <!-- stale-ok: CONVERSATION_SESSION_ID, CONVERSATION_OBJECT_KEY, HANDOFF_KEY, --resume -->
 
 Every pod's turn-0 context bundle is rendered fresh by the operator, identically every time. Continuity between one pod and the next pod of the same Task comes entirely from `Task.status.notes` - the append-only journal every pod reads at turn 0 - not from replaying a transcript. When a pod is stopped (TTL, crash, or graceful shutdown), the thing that must survive is a note in that journal, not a resumable session; see [Pod TTL: the stop sequence](#pod-ttl-the-stop-sequence) below for how the operator guarantees one is always written.
+
+What *does* need to survive between pods is the git state on disk, and two changes since the redesign harden that path:
+
+- **A merge conflict on resume no longer fails the boot.** Bootstrap resumes an existing remote task branch and merges the repo's base branch into it ([tatara-claude-code-wrapper#159](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/159)). A conflict used to abort the whole bootstrap - `Render` failed, the pod never became Ready, and the operator respawned it every ~5 minutes toward the residency cap, for zero turns. Now the conflict arm returns a nil error (`merge --abort` still runs, leaving a clean tree - never conflict markers published to the branch), and the finding is injected into the agent's global CLAUDE.md as the hard-requirement first job to resolve. The operator side of this carries a matching, independently-injected turn-0 prompt rule for `implement`/`documentation` Tasks resuming a branch ([tatara-operator#586](https://github.com/szymonrychu/tatara-operator/pull/586)) - belt-and-suspenders with the wrapper's own CLAUDE.md block above.
+- **Resuming a workspace repairs it instead of trusting it** ([tatara-claude-code-wrapper#161](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/161), prerequisite for the [persistent workspace PVC](../reference/project.md#workspacespec)). `PrepareWorkspace` runs before the clone-skip check: a `.git` that fails validity probes is re-cloned; stale lock files (`index.lock`, `HEAD.lock`, etc.) are swept unconditionally; an in-progress merge/rebase/cherry-pick/revert/bisect is aborted; uncommitted tracked changes are **committed** (never stashed or discarded - a stash is invisible to the turn finalizer's own `git add -A`); and local-vs-remote branch divergence is reconciled by **merge only**, never `-B`/force-reset, so local commits (including ones never pushed) are never destroyed. The precedence, always: uncommitted local work > local commits > remote task-branch commits > base branch.
+
+The task branch is also now pushed **mid-turn**, not only at turn end: a `BRANCH_PUSH_INTERVAL_SECONDS`-interval (default 120s) push-only safety net ([tatara-claude-code-wrapper#160](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/160)) runs alongside the metrics pusher. Push-only, deliberately - no `git add`, no `git commit` - so it can never race the agent's own git calls or publish a half-edited tree; nothing-to-push and a non-fast-forward rejection are both treated as success. This closed a real gap: a pod OOMKilled mid-turn had committed work that never reached origin, because `/workspace` is the container's writable layer and does not survive the pod. The agent's global CLAUDE.md now states plainly that the branch is pushed every couple of minutes and a commit is public the moment it is made - "commit then amend" is not a supported workflow, since force-push is on the deny list.
 
 ## Pod TTL: the stop sequence
 
@@ -111,9 +133,10 @@ All scalars via env (from chart ConfigMap `envFrom`):
 | `MODEL` | `""` (empty) | Claude model ID. The wrapper bakes **no** default; the operator sets the model per Task from `Project.spec.agent.model` / `modelByKind`. |
 | `PERMISSION_MODE` | `bypassPermissions` | Claude permission mode |
 | `REPO_URL` / `REPO_BRANCH` | - | Repository to clone (optional) |
-| `TURN_TIMEOUT_SECONDS` | `1800` | Per-turn inactivity timeout; also bounds each step of the [pod TTL stop sequence](#pod-ttl-the-stop-sequence) |
+| `TURN_TIMEOUT_SECONDS` | `1800` | Per-turn inactivity window; also bounds each step of the [pod TTL stop sequence](#pod-ttl-the-stop-sequence). **No longer kills the turn** - see [The wrapper no longer kills a turn on inactivity](#the-wrapper-no-longer-kills-a-turn-on-inactivity) |
 | `BOOT_TIMEOUT_SECONDS` | `60` | Max wait for boot quiescence |
 | `AGENT_POD_TTL_SECONDS` | `3600` (from `Project.spec.agentPodTTLSeconds`) | Bounds this pod's life; the wrapper computes `t0` from it and enforces the [stop sequence](#pod-ttl-the-stop-sequence) |
+| `BRANCH_PUSH_INTERVAL_SECONDS` | `120` | Periodic **push-only** safety net for the task branch, independent of the end-of-turn commit+push. `0` disables. See [Continuity across pods](#continuity-across-pods-no-session-resume) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | - | Claude subscription OAuth token. This is what the operator actually injects (from the `anthropicSecretName` Secret, key `oauth-token`); Claude Code reads it directly. |
 | `ANTHROPIC_API_KEY` | - | Alternative metered Anthropic API key. Supported (used to pre-seed the trust dialog) but **not** what the deployed platform injects. |
 
@@ -131,3 +154,7 @@ File/list config is mounted under `/etc/wrapper` (chart values: `globalClaudeMd`
 | `ccw_turn_in_flight` | gauge | Turns currently in flight (0 or 1) |
 | `ccw_bootstrap_duration_seconds` | histogram | Full bootstrap (`Render()`) duration |
 | `ccw_tool_calls_total` | counter | Agent tool calls observed in the transcript by tool and outcome |
+| `ccw_interrupts_total{result}` | counter | `POST /v1/interrupt` outcomes, including `unconfirmed` when resolution polling hits its 30s deadline |
+| `ccw_turn_stall_suspected_total` | counter | Inactivity-timer firings since it stopped killing turns - see [The wrapper no longer kills a turn on inactivity](#the-wrapper-no-longer-kills-a-turn-on-inactivity) |
+| `ccw_safety_push_total{result}` | counter | Periodic `BRANCH_PUSH_INTERVAL_SECONDS` push-only safety-net attempts |
+| `ccw_bootstrap_reconcile_total{result}` | counter | Resume-time base-branch reconcile outcomes: `merged`, `up_to_date`, `conflict`, `base_unresolved`, `fetch_fail` |

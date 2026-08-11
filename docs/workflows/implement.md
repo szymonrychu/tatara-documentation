@@ -39,7 +39,9 @@ Any of:
    the Task sits at `refined` or `under-implementation`.
 4. `awaiting-review -> under-implementation`: a `review` pod submitted
    `verdict=request_changes` on a **non-`review`-kind** Task (i.e. the platform's own
-   MR), bounded by `maxReviewRounds` (3).
+   MR). No longer bounded by `maxReviewRounds` - that cap is deprecated with zero
+   effect; the [24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch)
+   is the backstop instead.
 
 ## 2. The conversation phase: `refined`
 
@@ -191,6 +193,13 @@ only raise it, never lower it - see [semver push-CD](merge-and-deploy.md#semver-
 lexical default** - lexical order over this platform's own repos merges `cli` before `operator`,
 which is precisely the fleet outage this field exists to prevent.
 
+**The call itself can be refused.** Since [tatara-operator#594](https://github.com/szymonrychu/tatara-operator/pull/594),
+if any MR the Task already owns is open with red CI, a real base conflict, or an unanswered
+`request_changes`, `submit_outcome` returns a structured `409` and writes nothing - no claim, no
+note, no transition. The agent's own prompt tells it to loop and wait for its own pipeline
+(bounded roughly 20 minutes) before resubmitting; submitting while CI is still running is
+explicitly correct. See [CI readiness gate](../reference/merge-request.md#ci-readiness-gate-on-submission).
+
 On success, `under-implementation -> awaiting-review` (at least one owned MR must be open).
 Implement never merges its own PR and never approves its own diff - that is `review`'s job, in a
 separate pod, on a separate turn, and no MCP tool exposes a merge action to any agent kind.
@@ -207,10 +216,14 @@ and is reaped.
 
 **`implement` is the one agent kind exempt from `Project.spec.agent.maxTurnsPerPod`** (default
 40, which caps every other kind's single pod run). A long healthy coding run must not be cut off
-mid-implementation. It is bounded instead by two other things, both of which apply to every kind
-including `implement`:
+mid-implementation. `Task.spec.maxTurnsPerTask` / `Project.spec.agent.maxTurnsPerTask` used to be
+the lifetime turn cap that bounded this exemption; it is now deprecated with zero effect (a turn
+count measures how much an agent has done, not whether it is stuck). What actually bounds a
+runaway `implement` Task today:
 
-- `Task.spec.maxTurnsPerTask` / `Project.spec.agent.maxTurnsPerTask` (default 300) - the
-  **lifetime** turn cap across every pod of the Task, regardless of kind.
 - The idle/work budget on `refined` and `under-implementation` - on elapse, `parked(awaiting-human)`
   or `parked(stage-deadline)` respectively.
+- The probe/interrupt stall escalation on a turn that goes quiet mid-work - see
+  [Stall detection](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop).
+- The [24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch), a hardcoded
+  dead-man switch for whatever the first two clocks cannot reach.
