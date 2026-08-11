@@ -13,9 +13,10 @@ service (`tatara-claude-code-wrapper`) that wraps one persistent, interactive
 `claude` process and exposes it to the operator as a turn-based HTTP API.
 
 **The Task persists; the pod does not.** A pod's life is bounded by a TTL
-(`Project.spec.agentPodTTLSeconds`), and when it stops - on TTL, on a
-`maxTurnsPerPod` cap, or on a crash - the Task simply gets a new pod for the same
-stage, continuing from `Task.status.notes`, not from a resumed conversation. This
+(`Project.spec.agentPodTTLSeconds`), and when it stops - on TTL or on a crash -
+the Task simply gets a new pod for the same stage, continuing from
+`Task.status.notes`, not from a resumed conversation. (`maxTurnsPerPod` used to
+be a second stop trigger; it is deprecated with zero effect.) This
 page describes the pod's anatomy, how it boots, how turns flow through it, and how
 that handoff-and-continuity mechanism works.
 
@@ -341,9 +342,8 @@ else to resume.
 
 A pod's own lifetime is bounded by a TTL, independent of the Task's stage
 deadline (see [Task Stages](../reference/task-stages.md#the-deadline-invariant)
-for the stage-level clocks). Both a wall-clock TTL and a per-pod turn cap
-(`maxTurnsPerPod`, default 40, the `implement` agent kind exempt) drive the same
-stop sequence, anchored at:
+for the stage-level clocks). The wall-clock TTL drives the stop sequence,
+anchored at:
 
 ```
 t0 = podStartedAt + agentPodTTLSeconds

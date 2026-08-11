@@ -144,7 +144,7 @@ spec:
 | `model` | *(none)* | Claude model string, e.g. `claude-opus-4-8` or `claude-sonnet-4-6`. A single model serves all agent kinds in the Project unless overridden per kind in `modelByKind` |
 | `image` | *(none)* | Full `tatara-claude-code-wrapper` image reference (registry + tag). Pin to an explicit tag; never `latest` |
 | `effort` | `xhigh` | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`. Passed to the wrapper as the `EFFORT` env var, which drives Claude's reasoning budget |
-| `maxTurnsPerPod` | `40` | Caps turns for a single pod's run. The `implement` agent kind is **exempt** - a long healthy coding run is not cut off mid-work |
+| `maxTurnsPerPod` | `40` | **Deprecated, zero effect** - kept only because helmfile still sets it. Used to cap turns for a single pod's run (`implement` exempt) |
 | `maxTurnsPerTask` | `300` | **Deprecated, zero effect** - kept only because helmfile still sets it. What now bounds a runaway Task is a hard [24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch) |
 | `turnTimeoutSeconds` | `1800` | Per-turn inactivity window in seconds. **Does not kill the turn** - after this many seconds with no agent output, the operator probes the agent instead and only interrupts it after several unanswered probes. See [Stall detection](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop) |
 | `maxReviewRounds` | `3` | **Deprecated, zero effect.** The `reviewing` <-> `implementing` cycle is no longer capped by a round count |
@@ -615,8 +615,8 @@ spec:
     or tag; the operator uses this verbatim in every agent Pod spec.
 9.  Reasoning effort level. `xhigh` is the default and the recommended starting point. Lower
     values reduce API cost but also agent quality on complex multi-file implementation tasks.
-10. Caps turns for a single pod's run. The `implement` agent kind is exempt - a long healthy
-    coding run is not cut off mid-work.
+10. Deprecated, zero effect - kept only because helmfile still sets it. Used to cap turns for a
+    single pod's run (`implement` exempt).
 11. Deprecated, zero effect - kept only because helmfile still sets it. A 24h residency cap,
     hardcoded rather than a field, is what actually bounds a runaway Task now.
 12. Per-turn inactivity window in seconds. Does **not** kill the turn: past this many seconds

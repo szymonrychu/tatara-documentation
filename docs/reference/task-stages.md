@@ -378,12 +378,11 @@ trip; only the *deadline* resets.
 
 No live state exits on a turn or pod-recreation count any more.
 `turn-budget-exhausted` and `pod-recreation-exhausted` are retired (see
-[the park flag](#the-park-flag)); `maxTurnsPerPod` (default 40) never
-terminated the Task either - it stops the pod via the TTL handoff and
-respawns, spending one `podRecreations`. **`implement` is exempt from
-`maxTurnsPerPod`**: a long, healthy coding run must not be cut off. What
-still bounds an agent that never converges is [residency](#residency-the-dead-man-switch),
-below - a hard 24h ceiling, not a work budget.
+[the park flag](#the-park-flag)); `maxTurnsPerPod` (default 40) is
+**deprecated with zero effect** - it never terminated the Task, and no longer
+stops the pod either. What bounds an agent that never converges is
+[residency](#residency-the-dead-man-switch), below - a hard 24h ceiling, not a
+work budget.
 
 ---
 
