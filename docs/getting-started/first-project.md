@@ -144,11 +144,11 @@ spec:
 | `model` | *(none)* | Claude model string, e.g. `claude-opus-4-8` or `claude-sonnet-4-6`. A single model serves all agent kinds in the Project unless overridden per kind in `modelByKind` |
 | `image` | *(none)* | Full `tatara-claude-code-wrapper` image reference (registry + tag). Pin to an explicit tag; never `latest` |
 | `effort` | `xhigh` | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`. Passed to the wrapper as the `EFFORT` env var, which drives Claude's reasoning budget |
-| `maxTurnsPerPod` | `40` | Caps turns for a single pod's run. The `implement` agent kind is **exempt** - a long healthy coding run is not cut off mid-work; it is bounded only by `maxTurnsPerTask` below |
-| `maxTurnsPerTask` | `300` | Lifetime turn ceiling across every pod of the same Task, for every agent kind including `implement`. This is what actually bounds the `implement` exemption above |
-| `turnTimeoutSeconds` | `1800` | Per-turn inactivity window in seconds. A turn is killed only after this many seconds with **no agent output** - an actively streaming turn is never interrupted |
-| `maxReviewRounds` | `3` | Caps the `reviewing` <-> `implementing` cycle on non-`review`-kind Tasks. Beyond it the Task parks `review-loop-exhausted` |
-| `maxPodRecreations` | `3` | A pod that never becomes Ready within 5 minutes of creation is respawned, not failed, up to this budget. Past it the Task fails at `pod-recreation-exhausted` |
+| `maxTurnsPerPod` | `40` | Caps turns for a single pod's run. The `implement` agent kind is **exempt** - a long healthy coding run is not cut off mid-work |
+| `maxTurnsPerTask` | `300` | **Deprecated, zero effect** - kept only because helmfile still sets it. What now bounds a runaway Task is a hard [24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch) |
+| `turnTimeoutSeconds` | `1800` | Per-turn inactivity window in seconds. **Does not kill the turn** - after this many seconds with no agent output, the operator probes the agent instead and only interrupts it after several unanswered probes. See [Stall detection](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop) |
+| `maxReviewRounds` | `3` | **Deprecated, zero effect.** The `reviewing` <-> `implementing` cycle is no longer capped by a round count |
+| `maxPodRecreations` | `3` | **Deprecated, zero effect.** A pod that never becomes Ready still respawns, uncapped; watched by an alert (`operator_pod_recreations_total`) instead of failing the Task |
 | `permissionMode` | `bypassPermissions` | Claude Code permission mode. Leave as default; headless agents require this mode |
 
 ```yaml
@@ -616,15 +616,18 @@ spec:
 9.  Reasoning effort level. `xhigh` is the default and the recommended starting point. Lower
     values reduce API cost but also agent quality on complex multi-file implementation tasks.
 10. Caps turns for a single pod's run. The `implement` agent kind is exempt - a long healthy
-    coding run is not cut off mid-work, bounded instead by `maxTurnsPerTask` below.
-11. Lifetime turn ceiling across every pod of the same Task, for every agent kind including
-    `implement`. This is what actually bounds the `implement` exemption above.
-12. Per-turn inactivity timeout in seconds. Only a stalled turn (no output for this duration) is
-    killed. A turn actively writing files or running tests is never interrupted by this timer.
-13. Caps the `reviewing` <-> `implementing` cycle on non-`review`-kind Tasks. Beyond this many
-    `request_changes` rounds the Task parks `review-loop-exhausted`.
-14. A pod that never becomes Ready within 5 minutes of creation is respawned automatically, not
-    failed, up to this budget. Past it the Task fails at `pod-recreation-exhausted`.
+    coding run is not cut off mid-work.
+11. Deprecated, zero effect - kept only because helmfile still sets it. A 24h residency cap,
+    hardcoded rather than a field, is what actually bounds a runaway Task now.
+12. Per-turn inactivity window in seconds. Does **not** kill the turn: past this many seconds
+    with no agent output the operator probes the agent instead, and only interrupts the session
+    after several unanswered probes. A turn actively writing files or running tests is never
+    probed.
+13. Deprecated, zero effect. The `reviewing` <-> `implementing` cycle is no longer capped by a
+    `request_changes` round count.
+14. Deprecated, zero effect. A pod that never becomes Ready within 5 minutes of creation still
+    respawns, automatically and uncapped; repeated respawns are watched by an alert instead of
+    failing the Task.
 15. CNPG PostgreSQL replica count. `1` is fine for development; `3` delivers HA via synchronous
     replication and is required for production workloads.
 16. PVC storage allocated per PostgreSQL replica. Stores embedding vectors; scale with the number

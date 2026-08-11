@@ -85,8 +85,7 @@ or
 | From | Outcome | To |
 |---|---|---|
 | `reviewing` | `verdict=approve`, `spec.kind != review` | `merging` - operator posts a `COMMENT` review from the verdict, then merges (gated on `pendingReview == nil`) |
-| `reviewing` | `verdict=request_changes`, `spec.kind != review`, `reviewRounds < maxReviewRounds` (3) | `implementing` |
-| `reviewing` | `verdict=request_changes` at `maxReviewRounds` | `parked(review-loop-exhausted)` |
+| `reviewing` | `verdict=request_changes`, `spec.kind != review` | `implementing` - no longer capped by `reviewRounds < maxReviewRounds`; that cap and `review-loop-exhausted` are retired (see below) |
 | `reviewing` | either verdict, `spec.kind == review` | `parked(awaiting-human)` - see the carve-out below |
 
 ## The `review`-kind carve-out
@@ -117,8 +116,33 @@ giving the agent context about what it already reviewed.
 
 ## Budget and cycle caps
 
-`reviewing` carries a 4h stage-work budget; on elapse the Task parks at
-`parked(stage-deadline)`. The `reviewing <-> implementing` loop is capped at `maxReviewRounds`
-(3), tracked on the MergeRequest as `reviewRounds` - it increments only on `request_changes`, so
-the approve path never advances it. See [Merge and Deploy](merge-and-deploy.md#budgets-and-the-bounded-cycles)
-for the merge-side cycle caps that pick up once a verdict reaches `merging`.
+`reviewing` carries an idle-clock budget (60m default, `Project.spec.scm.conversationIdleMinutes`);
+on elapse the Task parks at `parked(awaiting-human)`. `reviewRounds`, tracked on the
+MergeRequest, still counts accepted `request_changes` verdicts, but the `maxReviewRounds` cap
+that used to bound the `reviewing <-> implementing` loop at it is deprecated with zero effect
+([tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582)) - the loop is
+now bounded only by the [24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch).
+See [Merge and Deploy](merge-and-deploy.md#budgets-and-the-bounded-cycles) for the merge-side
+cycle caps that pick up once a verdict reaches `merging`.
+
+## CI readiness gate on `approve`
+
+Since [tatara-operator#594](https://github.com/szymonrychu/tatara-operator/pull/594), an
+`approve` verdict is subject to the same readiness gate as an implement submission: if the
+owned MR has red CI or a real base conflict, the outcome is refused with a structured `409`
+before anything is written. This one is **not** dropped on an unanswered `request_changes` -
+the reviewer cannot push a fix itself, and the reviewer is documented-flaky, so a round that
+overturns a previous round's findings is legitimate. See
+[CI readiness gate](../reference/merge-request.md#ci-readiness-gate-on-submission).
+
+## Inherited workspace hazard
+
+Where the project has the [persistent workspace PVC](../reference/project.md#workspacespec)
+enabled, a review pod for an `implement`-originated Task **inherits** the same `/workspace` the
+implement stage used - not a fresh clone, because implement and review are sequential stages of
+one Task on one pod name, never concurrent writers. The read-only constraint above is a platform
+convention enforced by which MCP tools are exposed, not a filesystem permission: anything the
+review agent edits in that inherited tree is committed and pushed at turn end, landing in the
+very MR it is judging, attributed as if the implementer wrote it. The review agent is told this
+explicitly whenever the pod actually mounts the volume. This does not apply to a `review`-kind
+Task against a human's PR - that checkout is always fresh and read-only.

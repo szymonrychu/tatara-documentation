@@ -94,12 +94,15 @@ kubectl -n tatara logs <pod-name> -c wrapper --previous   # if restarted
 
 Check which of the three per-stage clocks is armed before assuming the pod itself is at fault
 (see the stage reference's clock table): a pod that never becomes ready is on the READINESS
-clock and **respawns automatically** (bounded by `maxPodRecreations`, default 3) rather than
-failing the Task outright - the terminal reason when that budget is spent is
-`pod-recreation-exhausted`, not a stalled-forever state.
+clock and **respawns automatically**, uncapped - `maxPodRecreations` is deprecated with zero
+effect ([tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582)) and
+`pod-recreation-exhausted` no longer occurs. The only remaining backstop is the
+[24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch), and the
+compensating control for a boot-crash loop bounded only by that is the
+`operator_pod_recreations_total` alert below.
 
 **Common causes:**
-1. **Boot quiescence timeout** - claude process hung during boot dialog detection. Check logs for `bootWait` timeout. This is the READINESS clock; the operator respawns the pod automatically. If you see this recurring, watch `stats.podRecreations` climb toward `maxPodRecreations` and `parkReason` land on `pod-recreation-exhausted` once exhausted.
+1. **Boot quiescence timeout** - claude process hung during boot dialog detection. Check logs for `bootWait` timeout. This is the READINESS clock; the operator respawns the pod automatically, indefinitely. If you see this recurring, watch `stats.podRecreations` climb and check the [pod-recreation-loop alert](#tatara-runbook-operator-agent-pod-recreation-loop) below rather than waiting for a park that will not come.
 2. **Anthropic credential invalid** - the wrapper authenticates with `CLAUDE_CODE_OAUTH_TOKEN`, injected from the `oauth-token` key of the Anthropic Secret (`anthropicSecretName`). An expired or revoked token fails boot. Update the Secret key and let the operator respawn the pod.
 3. **OIDC token fetch failure** - Keycloak unreachable. Check `OIDC_ISSUER` and Keycloak health.
 4. **MCP server not starting** - `tatara mcp` fails at init. Check `TATARA_MEMORY_URL` and `TATARA_OPERATOR_URL` are reachable from the pod. If instead the MCP server starts but the Task parks instantly with `parkReason=agent-contract-mismatch`, this is not a boot problem - see
@@ -754,9 +757,19 @@ sum by (parkReason) (increase(operator_task_parked_total{namespace="tatara",job=
     what the live rule queries today. Kept here because a gap this alert missed
     is invisible in the metric's history, not just in the rule.
 
+!!! danger "Dead again: `maxPodRecreations` was deprecated in tatara-operator#582"
+    `pod-recreation-exhausted` no longer occurs at all - the ceiling that
+    produced it was deleted (see [Runbooks: Agent pod recreation loop](#tatara-runbook-operator-agent-pod-recreation-loop)
+    and [Task Stages](../reference/task-stages.md#the-park-flag)). This alert's
+    query will now permanently read zero unless `tatara-observability` retires or
+    repoints it. Do not treat a quiet `Operator task pod-recreation budget
+    exhausted` as evidence pod recreations are under control - use
+    `operator_pod_recreations_total{reason}` and the pod-recreation-loop alert
+    below instead, which is what actually replaced this signal.
+
 **Symptoms:** `Operator task pod-recreation budget exhausted` (`alerts/tatara-operator.yaml`, warning) fires on any Task parking in 1h with `parkReason=pod-recreation-exhausted`. `Operator agent pod force-deleted at TTL` (same file, warning) fires when more than 2 agent pods are force-deleted at TTL in 1h, sustained 15m. It selects `outcome="force_deleted"` only - tatara-observability#96 raised the threshold from `>0`/5m to `>2`/15m, on the argument that once work loss has its own rule (below), a single force-delete with an intact handoff is not actionable.
 
-**What it means:** The first is the readiness clock's terminal case: a pod exists but never becomes Ready within the 5-minute `podReadyTimeout`, the operator respawns it, and once `stats.podRecreations` exceeds `maxPodRecreations` (3) the Task parks at `pod-recreation-exhausted` (no re-entry, so it ages out and the next sweep re-mints the still-open issue) - investigate pod evictions, node pressure, and OOM-kills on the wrapper workload.
+**What it means:** The first describes the readiness clock's **former** terminal case (see the danger box above - it no longer fires): a pod exists but never becomes Ready within the 5-minute `podReadyTimeout`, the operator respawns it, and it used to park at `pod-recreation-exhausted` once `stats.podRecreations` exceeded `maxPodRecreations` (3). Today the respawn is uncapped; investigate pod evictions, node pressure, and OOM-kills on the wrapper workload the same way, but via the [pod-recreation-loop alert](#tatara-runbook-operator-agent-pod-recreation-loop) instead of this one.
 
 The second is a **wrapper-health** signal and, on its own, **not work loss**. `operator_agent_pod_ttl_expired_total` reports two independent labels. `outcome` answers how the POD was stopped (`graceful` or `force_deleted`); `force_deleted` means the graceful G.7 stop failed against a pod that was still there - a wedged turn, an unresponsive PTY - and the operator deleted it with a zero grace period. A graceful stop that fails against a pod that has ALREADY gone is counted `graceful`, not `force_deleted`, because nothing was forced. `handoff` answers how the CONTINUATION STATE was captured, and that is the label that decides whether anything was lost. A Task whose agent wrote a perfect handoff note and whose wrapper then failed to tear down cleanly is `outcome=force_deleted, handoff=agent`: nothing is missing.
 
@@ -834,14 +847,16 @@ kubectl -n tatara get task <task-name> -o jsonpath='{range .status.notes[*]}{.at
 
 **What it means:** This is the replacement for the `maxPodRecreations` cap, and it is a page rather than a park on purpose. The operator used to bound pod churn by parking the Task at `parkReason=pod-recreation-exhausted` once the recreation budget was spent - see [Agent pod lost mid-stage](#tatara-runbook-operator-task-pod-recreation-budget-exhausted) above for the shape that used to take. That cap is being removed: the platform's rule is now "TTL always decides", and no feature exceeds a 24h residency cap. The direct, accepted cost of removing the cap is that a boot-crash loop is no longer bounded by anything short of that 24h cap - at a 5-minute respawn cycle that is roughly 288 pods. This alert is the only thing standing between a crash loop and a day of wasted pods, which is why it pages at critical instead of parking the Task silently.
 
-`operator_pod_recreations_total{project,kind}` counts a recreation from all three paths that respawn a pod for a live Task: a live pod that ended with no agent handoff, a pod lost mid-state, and a pod that never became Ready inside `podReadyTimeout`. It is a rate signal, not a per-Task budget - a project running many Tasks legitimately recreates more pods than a quiet one, so read the `project` breakdown together with how many Tasks that project has in flight before concluding anything.
+`operator_pod_recreations_total{project,kind,reason}` counts a recreation from every path that respawns a pod for a live Task. It is a rate signal, not a per-Task budget - a project running many Tasks legitimately recreates more pods than a quiet one, so read the `project` breakdown together with how many Tasks that project has in flight before concluding anything.
+
+Since [tatara-operator#587](https://github.com/szymonrychu/tatara-operator/pull/587) the `reason` label splits the cause directly - no need to guess from logs first: `PodGone` (vanished, `IsNotFound`), `OOMKilled`, `ContainerExited` (non-zero exit under a `Running` phase), `PodFailed` (phase `Failed`), `BootTimeout` (never became Ready), `NoHandoff` (a live pod ended with no agent handoff). Before #587 the operator only detected a vanished pod - a `Failed`-phase or OOMKilled pod with `RestartPolicy: Never` sat undetected for up to an hour, on the turn-inactivity clock alone.
 
 Six per hour is comfortably above the ordinary rate. A single Task in a tight respawn loop reaches it in half an hour on its own.
 
 **Diagnosis:**
 ```promql
 sum by (project) (increase(operator_pod_recreations_total{namespace="tatara",job="tatara-operator"}[1h]))
-sum by (project, kind) (increase(operator_pod_recreations_total{namespace="tatara",job="tatara-operator"}[1h]))
+sum by (project, reason) (increase(operator_pod_recreations_total{namespace="tatara",job="tatara-operator"}[1h]))
 ```
 Then find which Task is looping, and why:
 ```bash
@@ -851,11 +866,12 @@ kubectl -n tatara describe pod <newest-pod> | grep -A5 -i "evicted\|oom\|node-pr
 kubectl -n tatara logs <previous-pod> -c wrapper --previous --tail=200
 ```
 
-**Fix:** Split the loop by cause first, because the three recreation paths need different fixes.
+**Fix:** The `reason` label picks the fix directly.
 
-1. **Pod never becomes Ready.** The wrapper is failing to boot: a bad image pin, a missing or rotated secret, a bootstrap clone that cannot reach the forge. `Operator agent boot crash budget exhausted` and `Wrapper agent container stuck waiting` normally fire alongside; the wrapper's `--previous` log has the reason. Fix the pin or the credential - there is no operator-side retry that resolves it.
-2. **Pod lost mid-state.** Node-level eviction, memory pressure, or an OOM-kill on the node the `wrapper` workload landed on. Same remediation as [Agent pod lost mid-stage](#tatara-runbook-operator-task-pod-recreation-budget-exhausted): fix the node condition or raise the agent memory limit.
-3. **Live pod ended with no agent handoff.** The agent pod exited without writing a handoff note, so the operator re-armed it. This is the path most likely to loop indefinitely, because nothing about it is self-limiting; read the wrapper log for what ended the session.
+1. **`BootTimeout`.** The wrapper is failing to boot: a bad image pin, a missing or rotated secret, a bootstrap clone that cannot reach the forge. `Operator agent boot crash budget exhausted` and `Wrapper agent container stuck waiting` normally fire alongside; the wrapper's `--previous` log has the reason. Fix the pin or the credential - there is no operator-side retry that resolves it.
+2. **`PodGone` / `PodFailed` / `ContainerExited`.** Node-level eviction, memory pressure, or a non-OOM container exit on the node the `wrapper` workload landed on. Same remediation as [Agent pod lost mid-stage](#tatara-runbook-operator-task-pod-recreation-budget-exhausted): fix the node condition or raise the agent memory limit.
+3. **`OOMKilled`.** The wrapper's own workload exceeded the container memory limit. Raise `AgentSpec`'s memory limit or reduce concurrent tool/subagent load in that project's prompt. The operator writes an OOM-aware synthetic handoff note for the next pod (naming the kill time and warning that the workspace was ephemeral, so the next agent verifies branches/commits against the remote rather than trusting a note that could describe an unpushed commit) - a plain `NoHandoff` note here would be actively misleading, not just uninformative.
+4. **`NoHandoff`.** The agent pod exited cleanly but wrote no handoff note, so the operator re-armed it. This is the path most likely to loop indefinitely, because nothing about it is self-limiting; read the wrapper log for what ended the session.
 
 If a single Task is responsible and the cause is not fixable in the moment, park it by hand rather than letting it burn the residency window:
 ```bash

@@ -78,6 +78,7 @@ The operator is the only client of the public API. The full endpoint surface:
 | Method + path | Request | Response |
 |---|---|---|
 | `POST /v1/messages` | `{"text":"...","callbackUrl":"...","handoff":false}` | `202 {"turnId":"..."}`; `409` turn in flight; `410 Gone` past the pod's TTL deadline |
+| `POST /v1/interrupt` | - | `202`; `503` no live PTY. Never `409` - see [Stall detection](#stall-detection-probe-interrupt-stop) |
 | `GET /v1/messages/{turnID}` | - | `200 turn.Record` |
 | `GET /v1/messages` | - | `200 [turn.Summary]` |
 | `GET /v1/session` | - | `200` - the six existing fields, plus `contractVersion` |
@@ -202,7 +203,8 @@ stateDiagram-v2
     booting --> ready : bootWait complete
     ready --> busy : POST /v1/messages accepted
     busy --> ready : Stop hook callback received
-    busy --> ready : TURN_TIMEOUT_SECONDS elapsed<br/>(turn marked failed)
+    busy --> busy : TURN_TIMEOUT_SECONDS elapsed<br/>(stall suspected, probed, re-armed)
+    busy --> ready : POST /v1/interrupt<br/>(operator escalation, turn resolved failed)
     ready --> dead : claude exits unexpectedly
     booting --> dead : BOOT_TIMEOUT_SECONDS exceeded
     dead --> [*] : pod restarted by K8s
@@ -271,9 +273,57 @@ the turn result there, retrying with exponential backoff up to `WEBHOOK_RETRIES`
 ### Inactivity timeout
 
 If the Stop hook callback does not arrive within `TURN_TIMEOUT_SECONDS`
-(default 1800 seconds), the turn is marked `failed`, the timeout callback fires
-(delivering the failure to `callbackUrl`), and the session returns to `ready`.
-The timer/complete race is guarded: the first to fire wins.
+(default 1800 seconds), the turn is **no longer failed**. As of
+[tatara-claude-code-wrapper#158](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/158)
+the wrapper marks it stall-suspected and re-arms instead - see
+[Stall detection: probe, interrupt, stop](#stall-detection-probe-interrupt-stop)
+below for what decides whether it is actually killed.
+
+---
+
+## Stall detection: probe, interrupt, stop
+
+Killing a stalled turn moved from the wrapper to the operator. The wrapper's
+only signal was the transcript going quiet, and a single subagent run can
+silence it for 35+ minutes while the pod works flat out - so a wrapper-side
+kill on inactivity was destroying real turns to guard against a condition it
+could not actually detect. The operator has more context (the Task, the
+ability to ask the agent something) and now owns the decision end to end:
+
+1. **Suspected.** `TURN_TIMEOUT_SECONDS` of silence: the wrapper stamps
+   `stallSuspectedSince` (once per stall, not re-stamped on re-arm, so it
+   measures how long the silence has lasted), increments
+   `ccw_turn_stall_suspected_total`, and keeps the turn running.
+2. **Probed.** The operator sends `POST /v1/probe`. Delivery happens at the
+   agent's next tool-call boundary, so a healthy agent inside one long tool
+   call answers late rather than never - a measured 70s sleep buffered a
+   probe 58.2s and it was still delivered. The operator waits
+   `stallProbeGraceSeconds` (default 300, floor 60) for a reply, and retries
+   up to `stallProbeMaxAttempts` (default 2, range 1-5) times.
+3. **Interrupted.** Past the last unanswered attempt, the operator calls
+   `POST /v1/interrupt` on the wrapper - a single ESC byte on the PTY,
+   ~40ms, synchronous, even mid-tool-call. Session, transcript, and
+   conversation context all survive.
+4. **Stopped.** The interrupted turn resolves as `failed`/`interrupted` with
+   whatever partial output exists, and the ordinary
+   [pod TTL stop sequence](#pod-ttl-the-stop-sequence) hands off.
+
+Two outcomes are worth distinguishing at the metric level:
+`never_delivered` (the probe was written but no tool-call boundary was ever
+reached - the agent is blocked inside one long-running tool call, a positive
+diagnosis) versus `unanswered` (delivered, no reply before the grace window -
+consistent with a busy agent that did not treat the probe as worth
+answering, or a genuinely wedged one). See the
+[stall-probe runbook](../operations/runbooks.md#tatara-runbook-operator-agent-stall-probe-unanswered)
+for the full diagnosis playbook.
+
+**After #158 the only wrapper-side bound on a turn already in flight is the
+pod's TTL** (`admit()`/PodTTL blocks new work past the deadline; it never
+touches a turn already running). On the operator side, the corresponding
+backstop for a Task the probe machinery cannot reach at all (a wedged pod, a
+boot-crash loop, an operator bug) is the
+[24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch) -
+a hardcoded constant, not a per-Task work budget.
 
 ---
 
@@ -424,3 +474,6 @@ metrics on `/metrics`:
 | `ccw_turn_tokens_total{type,model,kind,repo,project}` | Counter | Token spend per type (`input`, `output`, `cache_read`, `cache_creation`) summed across all assistant messages in the turn, attributed to the Task kind, repo, and project |
 | `ccw_turn_cost_usd_total{kind,repo,project}` | Counter | Cumulative turn cost in USD (emitted only when `/workspace/result.json` carries `total_cost_usd`), attributed by kind, repo, and project |
 | `ccw_lifecycle_hook_total{result,hook}` | Counter | Lifecycle hook executions |
+| `ccw_interrupts_total{result}` | Counter | `POST /v1/interrupt` outcomes, including `unconfirmed` when resolution polling hits its 30s deadline |
+| `ccw_turn_stall_suspected_total` | Counter | Inactivity-timer firings since it stopped killing turns - see [Stall detection](#stall-detection-probe-interrupt-stop) |
+| `ccw_safety_push_total{result}` | Counter | Periodic push-only safety-net attempts (`BRANCH_PUSH_INTERVAL_SECONDS`) |

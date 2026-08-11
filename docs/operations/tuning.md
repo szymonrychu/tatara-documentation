@@ -201,9 +201,12 @@ default unmodified.
     agent kinds above in the same PR. <!-- stale-ok: triageIssue -->
 
 There is no separate per-task token-count backstop any more
-(`agent.maxTaskTokens` is gone). <!-- stale-ok: maxTaskTokens --> The turn-based
-lifetime cap, `agent.maxTurnsPerTask` below, is what bounds a runaway
-`implement` Task now.
+(`agent.maxTaskTokens` is gone). <!-- stale-ok: maxTaskTokens --> There is also
+no turn-count backstop any more: `agent.maxTurnsPerTask` is deprecated with
+zero effect ([tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582)) -
+a turn count measures how much an agent has done, not whether it is stuck. What
+bounds a runaway `implement` Task now is the [24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch)
+(hardcoded, not a lever) plus the probe/stall escalation below.
 
 ---
 
@@ -216,11 +219,14 @@ lifetime cap, `agent.maxTurnsPerTask` below, is what bounds a runaway
 | `maxNewTasksPerSweep` | `5` (min `1`) | Tasks one sweep pass may mint |
 | `maxOpenTasks` | `6` (min `1`) | ACTIVE Tasks (stage not in `parked` / `delivered` / `rejected` / `failed`). `parked(backlog-sweep)` Tasks do not count - they hold ownership, not work |
 | `maxBundleBytes` | `400000` (min `50000`) | Hard byte budget on a rendered context bundle |
-| `agent.maxTurnsPerPod` | `40` | One pod run. **The `implement` agent kind is EXEMPT** - a long healthy coding run must not be cut off |
-| `agent.maxTurnsPerTask` | `300` | LIFETIME turns across every pod of the Task. Applies to every kind, `implement` included. This is what bounds the exemption |
-| `agent.maxReviewRounds` | `3` | Accepted `request_changes` verdicts before `parked(review-loop-exhausted)` |
-| `agent.maxHumanReviewRounds` | `5` | Un-parks of a `review`-kind Task back to `reviewing` on a human comment. At the cap it stays parked. This is what stops a chatty PR thread spawning one review pod per comment |
-| `agent.maxPodRecreations` | `3` | Pod respawns within the current stage before `failed(pod-recreation-exhausted)`. Reset to 0 on every transition. **A pod that never becomes Ready within `podReadyTimeout` (5m of `podStartedAt`) is a respawn, not a failure** - it burns one of these, and this counter is what eventually terminates it |
+| `agent.maxTurnsPerPod` | `40` | **Deprecated, zero effect.** Kept only because helmfile still sets it |
+| `agent.maxTurnsPerTask` | `300` | **Deprecated, zero effect.** See the [residency cap](../reference/task-stages.md#residency-the-dead-man-switch) for what replaced it |
+| `agent.maxReviewRounds` | `3` | **Deprecated, zero effect.** The `reviewing <-> implementing` cycle is no longer capped by a round count |
+| `agent.maxHumanReviewRounds` | `5` | Un-parks of a `review`-kind Task back to `reviewing` on a human comment. At the cap it stays parked. This is what stops a chatty PR thread spawning one review pod per comment. Still active - not retired with the three above |
+| `agent.maxPodRecreations` | `3` | **Deprecated, zero effect.** A pod that never becomes Ready within `podReadyTimeout` (5m of `podStartedAt`) still respawns, but no longer terminates the Task - repeated respawns are now an alert (`operator_pod_recreations_total`, see [Runbooks](runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)) bounded only by the 24h residency cap |
+| `agent.turnTimeoutSeconds` | `1800` | **Meaning changed.** No longer kills the turn - after this many seconds of inactivity the operator probes the agent instead (`POST /v1/probe`), waits `stallProbeGraceSeconds` for a reply, retries up to `stallProbeMaxAttempts` times, then interrupts and runs the stop-and-handoff sequence. See [Stall probe unanswered](runbooks.md#tatara-runbook-operator-agent-stall-probe-unanswered) |
+| `agent.stallProbeGraceSeconds` | `300` (min `60`) | How long the operator waits for a stall probe to be answered before counting it unanswered |
+| `agent.stallProbeMaxAttempts` | `2` (range `1`-`5`) | Unanswered probes before the operator interrupts the session |
 
 `maxOpenTasks` is a Task-**creation** budget and `maxNewTasksPerSweep` bounds
 one sweep pass's minting - both are different levers from

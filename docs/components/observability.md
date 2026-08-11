@@ -35,9 +35,14 @@ Current rule groups:
 
 `tatara-cd` covers the merge/deploy cascade (sequential-merge stalls, apply
 failures), `tatara-quality` the model-keyed review/CI quality-feedback
-signals, and `tatara-usage-gate` the turn- and pod-recreation budget gates
-(`maxTurnsPerTask`, `maxPodRecreations`, `maxReviewRounds`) that replaced the
-retired per-Task token-budget admission gate. <!-- stale-ok: token/usage-budget gate -->
+signals, and `tatara-usage-gate` originally covered the turn- and
+pod-recreation budget gates (`maxTurnsPerTask`, `maxPodRecreations`,
+`maxReviewRounds`) that replaced the retired per-Task token-budget admission
+gate. Those three are themselves now deprecated with zero effect
+([tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582)) -
+what bounds a runaway Task today is the
+[24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch)
+plus the `operator_pod_recreations_total` alert. <!-- stale-ok: token/usage-budget gate -->
 
 `alerts/tatara-chat.yaml` (10 rules) and its log-burst rule are deleted along <!-- stale-ok: tatara-chat -->
 with the `tatara-chat` component itself. <!-- stale-ok: tatara-chat -->

@@ -29,6 +29,7 @@ Every `Repository` CR must reference a Project. Every `Task`, `QueuedEvent`, `Is
 | `maxBundleBytes` | `int` | `400000` | no | Hard byte budget for a rendered [context bundle](context-bundle.md#the-byte-budget) (~100k tokens). Oldest comments elide first, behind an explicit marker; no summarization, no model call. Minimum `50000`. |
 | `agent` | [`AgentSpec`](#agentspec) | see below | no | Configuration for the claude-code-wrapper agent pods this project spawns. |
 | `memory` | [`MemorySpec`](#memoryspec) | see below | no | Size of the per-project memory stack (Postgres + Neo4j). |
+| `workspace` | [`WorkspaceSpec`](#workspacespec) | enabled | no | Persistent per-Task `/workspace` and per-project build-cache volumes. Gated ANDed with the chart-level `agentWorkspacePvcEnabled` value, which defaults **off**. |
 | `scm` | [`ScmSpec`](#scmspec) | - | no | SCM provider binding, maintainer/reporter allowlists, labels, and cron schedules. |
 | `grafana` | [`GrafanaSpec`](#grafanaspec) | disabled | no | Optional Grafana integration for incident-response tasks. |
 | `documentation` | [`DocumentationSpec`](#documentationspec) | disabled | no | On-switch and docs-target repo for the nightly documentation agent. Requires `scm.cron.documentation.schedule` to also be set - see [`scm.cron.documentation`](#scmcrondocumentation). |
@@ -51,12 +52,14 @@ Controls every agent pod spawned by this project.
 | `model` | `string` | operator default | Claude model ID (e.g. `claude-opus-4-8` project-wide, tiered down per agent kind to `claude-sonnet-5`). When empty the wrapper's own default applies. |
 | `image` | `string` | operator default | Fully-qualified container image for the claude-code-wrapper pod. When empty the operator's compiled-in default is used. |
 | `permissionMode` | `string` | `bypassPermissions` | Claude Code permission mode. `bypassPermissions` disables interactive approval prompts inside the agent. |
-| `maxTurnsPerPod` | `int` | `40` | Ceiling on agent turns within **one pod run**. The `implement` agent kind is **exempt** - a long healthy coding run must not be cut off mid-way. |
-| `maxTurnsPerTask` | `int` | `300` | **Lifetime** ceiling across every pod of the Task, every kind included (`implement` included). This is what bounds the `maxTurnsPerPod` exemption: the Task fails once it is reached. |
-| `maxReviewRounds` | `int` | `3` | Accepted `request_changes` verdicts before the `reviewing` <-> `implementing` cycle parks the Task at `review-loop-exhausted`. |
-| `maxHumanReviewRounds` | `int` | `5` | Un-parks of a `review`-kind Task back to `reviewing` on a human PR comment. At the cap it stays parked at `awaiting-human` - a human's PR is fixed by the human. This is a **separate** counter from `maxReviewRounds`, which only moves on `request_changes` and so never advances on the human-approve path at all. |
-| `maxPodRecreations` | `int` | `3` | Pod respawns within the **current state** before the Task parks at `pod-recreation-exhausted`. Reset to `0` on every state transition. A pod that never becomes Ready within the fixed 5-minute readiness window is a respawn, not an immediate failure - it burns one of these. |
-| `turnTimeoutSeconds` | `int` | `1800` | Inactivity window per turn in seconds. A turn is killed only after this many seconds of **no streaming output** -- a turn actively producing output is never killed mid-work regardless of wall-clock age. |
+| `maxTurnsPerPod` | `int` | `40` | **Deprecated, zero effect.** Ceiling on agent turns within one pod run used to exist independently of `maxTurnsPerTask`; the field is kept only because helmfile still sets it (removing it is a breaking CRD change reserved for a later `semver:major`). |
+| `maxTurnsPerTask` | `int` | `300` | **Deprecated, zero effect.** Used to be the lifetime turn ceiling across every pod of the Task; a turn count measures how much an agent has done, not whether it is stuck, so it no longer parks or fails anything. See [stall detection](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop) and the [residency cap](task-stages.md#the-deadline-invariant) for what replaced it. |
+| `maxReviewRounds` | `int` | `3` | **Deprecated, zero effect.** Used to park the Task at `review-loop-exhausted` after this many `request_changes` verdicts; a round count measures conversation length, not convergence, so the `reviewing <-> implementing` cycle is no longer capped by this field. |
+| `maxHumanReviewRounds` | `int` | `5` | Un-parks of a `review`-kind Task back to `reviewing` on a human PR comment. At the cap it stays parked at `awaiting-human` - a human's PR is fixed by the human. Still active - unlike `maxReviewRounds` above, this counter was not retired. |
+| `maxPodRecreations` | `int` | `3` | **Deprecated, zero effect.** Used to park the Task at `pod-recreation-exhausted` after this many respawns within the current state; repeated pod death is now treated as a crash to *alert* on (`operator_pod_recreations_total`, still counted and labeled by `reason` - see [Runbooks](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)), not a Task to terminate. The [residency cap](task-stages.md#the-deadline-invariant) (24h, hardcoded, not a field) is the only remaining backstop against an endless respawn loop. |
+| `turnTimeoutSeconds` | `int` | `1800` | Inactivity window per turn in seconds. **Meaning changed**: this no longer kills the turn. After this many seconds with no agent activity the operator sends a probe (`POST /v1/probe`) instead, waits `stallProbeGraceSeconds` for a reply, retries up to `stallProbeMaxAttempts` times, and only then interrupts the session and runs the ordinary stop-and-handoff sequence. A turn actively producing output is never probed. See [stall detection](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop) in Agent Execution. |
+| `stallProbeGraceSeconds` | `int` | `300` | How long the operator waits for a stall probe to be answered before counting the attempt unanswered. The probe is delivered at the agent's next tool-call boundary, so a healthy agent inside one long tool call answers late rather than never. Minimum `60`. |
+| `stallProbeMaxAttempts` | `int` | `2` | Unanswered probes before the operator interrupts the session (`POST /v1/interrupt` on the wrapper) and runs the stop-and-handoff sequence. Range `1`-`5`. |
 | `effort` | `string` | `xhigh` | Reasoning-effort level forwarded to the wrapper as the `EFFORT` env var. Maps to Claude's extended thinking intensity. One of: `low`, `medium`, `high`, `xhigh`, `max`. |
 | `modelByKind` | `map[string]string` | `{}` | Per-**agent-kind** override of `model`, keyed on `Task.status.agentKind` (not the Task origin kind). Valid keys: `brainstorm`, `incident`, `implement`, `review`, `refine`, `documentation` - six, `clarify` folded into `implement` at #521. Locked defaults: `brainstorm`/`incident`/`implement`/`review` = `claude-opus-*`; `documentation`/`refine` = `claude-sonnet-*`. Values must start with `claude-` (max 64 chars). A missing/empty entry falls back to `model`. |
 | `effortByKind` | `map[string]string` | `{}` | Per-agent-kind override of `effort`. Same 6-key set as `modelByKind`. Values must be one of `low`, `medium`, `high`, `xhigh`, `max`. A missing/empty entry falls back to `effort`. |
@@ -123,6 +126,54 @@ Governs the per-project memory stack: a CNPG-managed Postgres cluster (LightRAG 
     `max_slot_wal_keep_size` defaults to half the WAL volume, so leave enough headroom
     for a standby resync to complete without crash-looping. Storage sizes are monotonic:
     CNPG's admission webhook rejects any shrink, so only raise these values.
+
+---
+
+### WorkspaceSpec
+
+Persistent volumes for the agent pod, replacing the container's writable layer -
+which is volatile (destroyed with the pod) and unbounded (no guarantee a node
+has room for every repo a project clones and builds). Not a speed feature by
+itself: a resumed repo costs more than a fresh shallow clone (~5s vs ~2s). The
+win is the separate build-cache volume - a cold `go build` vs. a warm one is a
+5-6x difference.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `*bool` | `true` | Tri-state: **`nil` and `true` both mean on** - an operational escape hatch for a bad rollout, not a tuning knob. Set explicitly to `false` to opt out; omitting the field is not an opt-out. |
+| `storageClass` | `string` | cluster default | Must be **RWX-capable**. The operator force-deletes and immediately reschedules agent pods (`GracePeriodSeconds: 0`), so an RWO/block-mode class (e.g. Ceph RBD) stalls every respawn in Multi-Attach. `rook-ceph-rwx` is the deployed choice. |
+| `size` | `string` | operator default | Size of the per-**Task** workspace PVC, mounted at `/workspace` and `~/.cache/pre-commit`. |
+| `cacheEnabled` | `bool` | `true` | Whether to also provision the per-**project** build-cache PVC. |
+| `cacheSize` | `string` | operator default | Size of the per-project cache PVC, mounted at `~/.cache/go-build`, `~/go/pkg/mod`, `~/.cache/pip`, `~/.npm`, and `~/.local/share/mise/downloads` (never the baked-in `mise` `installs`/`shims` dirs - mounting over those would shadow the image's own toolchain). Content-addressed (Go action-ID hash, module@version), so cross-Task sharing within a project is safe; size to the project's real build footprint, not a fixed default (a Go-heavy project's `GOCACHE`+`GOMODCACHE` alone can run into several GB, while a Python/Node project's pip/npm footprint is closer to tens of MB). |
+
+Two PVCs, two lifecycles: the per-Task workspace PVC is owned by the Task and
+deleted only on a **terminal** outcome, never on a park (a parked Task can
+resume, and destroying its workspace would defeat the point). The per-project
+cache PVC is owned by the Project and provisioned once, independent of any
+single Task.
+
+A fresh CephFS subvolume is `root:root 0755` and the agent runs as a non-root
+uid - `AgentFsGroup` plus `AgentFsGroupChangePolicy: OnRootMismatch` on the
+operator's own deployment config (not a per-Project field) fix ownership
+without a full recursive chown on every mount, which would make the cache a
+net loss on a large tree.
+
+The agent pod is not created until every PVC it mounts is **Bound** - an
+unprovisionable volume costs zero pods (bounded at a 10-minute timeout, then
+the Task parks at `operator-error`) rather than respawning indefinitely.
+
+A `review`-stage pod for an `implement` Task **inherits** the same workspace
+(sequential stages of one Task, one pod name - never concurrent writers, so
+this is not a sharing hazard by itself). It is a review hazard instead: any
+edit a review agent makes there is committed and pushed at turn end into the
+very MR it is judging, attributed as if the implementer wrote it. The review
+agent is told this explicitly when the project has the workspace enabled.
+
+!!! danger "Structural-schema pruning is silent"
+    Setting `workspace` fields before the CRD carrying them has been applied
+    to the cluster is dropped with **no error anywhere**. Verify the live CRD
+    (`kubectl get crd projects.tatara.dev -o json`) carries the fields you are
+    about to set before relying on them.
 
 ---
 
@@ -496,7 +547,7 @@ spec:
 8. `maintainerLogins` + `reporterLogins` form the security perimeter. `maintainerLogins` is not optional hardening here - it is **required** for anything to ever be approved: empty means no login can ever be cited as a maintainer approval, so no issue advances out of `refined`.
 9. MR scan every 15 minutes, issue scan hourly, brainstorm weekly on Monday morning, documentation nightly.
 10. `agentPodTTLSeconds` bounds one pod's life, not the Task. `maxNewTasksPerSweep` and `maxOpenTasks` are separate Task-minting budgets from the pod-concurrency budget (`maxConcurrentAgents`) above. `maxBundleBytes` is the hard byte cap on every rendered context bundle.
-11. `maxTurnsPerPod` bounds one pod run (the `implement` agent kind is exempt); `maxTurnsPerTask` is the lifetime backstop across every pod, all kinds included. `maxReviewRounds`/`maxHumanReviewRounds` bound the two distinct review re-entry cycles; `maxPodRecreations` bounds respawns within one stage. `modelByKind`/`effortByKind` tier specific **agent** kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a released tag to avoid `main` drift; it is hand-bumped in every project including `tatara`/`infrastructure` - no pipeline rewrites it - and `tatara-helmfile`'s `check_agent_pins()` guard fails CI if it (or the wrapper image tag) is ever left unpinned.
+11. `maxTurnsPerPod`, `maxTurnsPerTask`, `maxReviewRounds`, and `maxPodRecreations` are **deprecated with zero effect** - kept only because helmfile still sets them. `maxHumanReviewRounds` is the one survivor of the old budget group and still bounds review re-entry on human PR comments. `modelByKind`/`effortByKind` tier specific **agent** kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a released tag to avoid `main` drift; it is hand-bumped in every project including `tatara`/`infrastructure` - no pipeline rewrites it - and `tatara-helmfile`'s `check_agent_pins()` guard fails CI if it (or the wrapper image tag) is ever left unpinned.
 12. `tokenBudget` is off unless this block is present with `enabled: true`. `customWindow` mode meters absolute tokens against `tokenLimit` inside the cron-anchored `resetSchedule`/`windowDuration` window; `claudeSubscription` mode gates on wrapper-reported Claude usage percentages instead (see [TokenBudgetSpec](#tokenbudgetspec)).
 13. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `targetOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
 14. `documentation.enabled` + `documentation.repo` is the real on-switch and docs-target repo for the nightly documentation agent; `scm.cron.documentation.schedule` (above) is a separate, also-required gate - the cron `CronActivity` has no `enabled` field of its own.

@@ -109,16 +109,16 @@ Two further caps bound the mint side, independent of the concurrency gate:
 
 `agentPodTTLSeconds` (default 3600, minimum 300) bounds one pod's life, not the Task: a Task persists across as many pods as it takes, each one picking up continuity from `Task.status.notes`. `maxBundleBytes` (default 400000, roughly 100k tokens) is the hard byte budget for a rendered context bundle; the oldest comments elide first, behind an explicit marker.
 
-## Turn and pod-recreation budgets
+## Stall detection and the residency cap
 
-Token-metered spend gates (`maxTaskTokens`, the `tokenBudget` admission mode) are gone. <!-- stale-ok: maxTaskTokens --> The backstops that replace them are turn- and pod-count based, on `Project.spec.agent`:
+Token-metered spend gates (`maxTaskTokens`, the `tokenBudget` admission mode) are gone. <!-- stale-ok: maxTaskTokens --> A second generation of backstops - turn- and pod-recreation-count budgets on `Project.spec.agent` (`maxTurnsPerTask`, `maxReviewRounds`, `maxPodRecreations`) - is also gone as of [tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582) (O3): a turn, review-round, or respawn count measures how much an agent has *done*, not whether it is *stuck*, and each of those ceilings had killed healthy long-running work. `maxTurnsPerPod` and `maxHumanReviewRounds` are the two survivors - see [`AgentSpec`](../reference/project.md#agentspec) - and `maxHumanReviewRounds` is the only one still enforced.
 
-| Setting | Default | Scope |
-|---|---|---|
-| `maxTurnsPerPod` | 40 | Caps one pod run. The `implement` agent kind is **exempt** - a long healthy coding run is not cut off. |
-| `maxTurnsPerTask` | 300 | Lifetime cap across every pod of a Task, all kinds included. This is what actually bounds the `implement` exemption. |
-| `maxReviewRounds` | 3 | The `reviewing <-> implementing` cycle. |
-| `maxPodRecreations` | 3 | Respawns of a never-Ready pod within the current stage before the Task fails. |
+What replaced them is two-part:
+
+1. **Stall detection (probe, interrupt, stop).** `turnTimeoutSeconds` of inactivity no longer kills a turn - it triggers a probe (`POST /v1/probe` on the wrapper). Unanswered past `stallProbeGraceSeconds`, retried up to `stallProbeMaxAttempts`, the operator interrupts the session (`POST /v1/interrupt` - ESC on the PTY, ~40ms, session and context survive) and runs the ordinary stop-and-handoff sequence. See [Agent Execution](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop) and the [stall-probe runbook](../operations/runbooks.md#tatara-runbook-operator-agent-stall-probe-unanswered).
+2. **The residency cap.** `stage.ResidencyCapAll = 24h`, a hardcoded constant (not a Project field), applied uniformly to all three live states since O3 - a dead-man switch for the population stall detection cannot reach at all: a wedged pod, a boot-crash loop, an operator bug. See [the residency section](../reference/task-stages.md#residency-the-dead-man-switch).
+
+The accepted cost: repeated pod recreation (a boot-crash loop, say) is no longer capped short of 24h residency - at a 5-minute respawn cycle, on the order of 288 pods. The compensating control is the [`operator_pod_recreations_total` alert](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop), which pages rather than silently parking, and whose `reason` label ([tatara-operator#587](https://github.com/szymonrychu/tatara-operator/pull/587)) now distinguishes a vanished pod, an OOMKilled one, a non-zero container exit, phase `Failed`, a boot timeout, and a clean exit with no agent handoff - the operator previously only detected the vanished case, so a `Failed`-phase or OOMKilled pod sat undetected for up to an hour on the turn-inactivity clock alone. An OOMKilled pod also gets an OOM-specific synthetic handoff note, warning the next agent that the workspace was ephemeral and to verify branches/commits against the remote rather than trust a note that may describe a commit that never reached origin.
 
 ## The review post and the merge
 
@@ -136,6 +136,13 @@ Once a Task's review approves, the operator walks `spec.mergeOrder` sequentially
 
 !!! danger "Accepted risk: the merge gate is operator logic, not a forge-enforced control"
     Because the platform has one bot identity, branch protection cannot require an approving review - nothing could ever satisfy it, so enabling it would deadlock every merge. Defense-in-depth is instead: no-direct-push branch protection on every repo, a scoped GitHub App installation token (not an org-wide PAT), and `gh`/`glab`/direct-to-forge-API `curl` on the agent pod's deny-list. A pod holding a merge-capable token could still bypass the gate by calling the merge endpoint directly; this is detected, not prevented, by `operator_unexpected_merge_total`. See [Approval gates](../operations/security/approval-gates.md).
+
+## CI truth and the readiness gate
+
+Before [tatara-operator#592](https://github.com/szymonrychu/tatara-operator/pull/592), `MergeRequest.status.ciStatus` was only ever set at MR-mint time; an MR the agent opened itself stayed `""` forever, so agents had no visibility into their own pipeline and the operator advanced Tasks to `awaiting-review` without regard to a red build. Two changes close that:
+
+1. **Ingest.** The webhook server decodes GitHub `check_suite`/`check_run`/`status` and GitLab `Pipeline Hook` events (previously received and discarded) into a normalized CI status, joined onto the owning MR by head SHA. A single check-run or commit-status context can prove `red` on its own but never `green` - only an aggregate (a check-suite conclusion, a GitLab pipeline status, or a live re-read) writes `green`. Backstopped by a 5-minute poll for MRs owned by a live Task. `ciStatus`/`ciUpdatedAt` are rendered into the agent's own context bundle - see [MergeRequest](../reference/merge-request.md#mergerequeststatus).
+2. **The readiness gate.** Since [tatara-operator#594](https://github.com/szymonrychu/tatara-operator/pull/594), an `implement` or review-`approve` outcome is refused - a structured `409`, nothing written - if any open MR the Task owns has red CI, a real base conflict, or an unanswered `request_changes`. The agent is instructed to wait for its own PR's pipeline (bounded ~20 minutes) before submitting; separately, `Task.status.ciWaitSince` holds an **un-parked** Task up to 30 minutes for a still-pending pipeline before advancing anyway. See [CI readiness gate](../reference/merge-request.md#ci-readiness-gate-on-submission).
 
 ## Reaper and GC
 
@@ -183,6 +190,7 @@ The operator exposes Prometheus series on `:9090/metrics`. A representative subs
 | `operator_illegal_stage_transition_total` | counter | from, to | A transition outside the fixed table was attempted - any nonzero value is a code bug |
 | `operator_task_parked_total` | counter | stage, stageReason | Which parks actually happen |
 | `operator_agent_pod_ttl_expired_total` | counter | agent_kind, outcome, handoff | Two independent dimensions: `outcome` = `graceful`\|`force_deleted` (how the pod stopped), `handoff` = `agent`\|`synthetic`\|`none` (how continuation state was captured). `handoff=none` is the work-loss bucket for a TTL stop (a pod lost before its TTL respawns without a note and is not counted here) |
+| `operator_pod_recreations_total` | counter | project, kind, reason | Pod respawns for a live Task. `reason` one of `PodGone`, `OOMKilled`, `ContainerExited`, `PodFailed`, `BootTimeout`, `NoHandoff`. No longer capped by `maxPodRecreations` (deprecated) - see [Stall detection and the residency cap](#stall-detection-and-the-residency-cap) and the [pod-recreation-loop runbook](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop) |
 | `operator_agent_contract_mismatch_total` | counter | expected, got, image | The contract-version handshake failed - any nonzero value is critical |
 | `operator_merge_cursor_stalled_seconds` | gauge | task, repo | A sequential merge that stopped advancing |
 | `operator_unexpected_merge_total` | counter | repo | An MR found merged with no `mergeCursor` advance - the accepted-risk detector |
