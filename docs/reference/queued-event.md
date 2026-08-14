@@ -46,7 +46,7 @@ type QueuedEventPayload struct {
 
 | Field | Type | Description |
 |---|---|---|
-| `agentKind` | string | **Required.** The pod to spawn: `brainstorm`, `incident`, `refine`, `review`, `documentation`, or `implement` - six values, `clarify` folded into `implement` at #521 |
+| `agentKind` | string | **Required.** The pod to spawn: `brainstorm`, `incident`, `refine`, `review`, `documentation`, `implement`, or `upgrade` - seven values, `clarify` folded into `implement` at #521 |
 | `taskRef` | string | Names an existing Task - a state-driven spawn (e.g. `refined -> under-implementation`) |
 | `newTask` | `QueuedTaskBlueprint` | The blueprint for a Task that does not exist yet - a mint |
 

@@ -57,7 +57,7 @@ capacity accordingly.
 The wrapper binary itself is minimal; the `claude` process is the memory consumer,
 and peak memory is driven by the working-tree size and turn transcript, not the
 model. `Project.spec.agent.modelByKind` / `effortByKind` key on the **agent
-kind** (`brainstorm|incident|refine|review|documentation|implement` - six
+kind** (`brainstorm|incident|refine|review|documentation|implement|upgrade` - seven
 values, `clarify` folded into `implement` at #521), not
 the Task's origin `kind` - see [Tuning](tuning.md#cap-spend) for per-kind
 model/effort tiering.

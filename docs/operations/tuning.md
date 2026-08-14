@@ -183,9 +183,9 @@ agent:
 ```
 
 `modelByKind` / `effortByKind` key on **`Task.status.agentKind`** (the
-running agent), not `Task.spec.kind` (the immutable origin). The six valid
+running agent), not `Task.spec.kind` (the immutable origin). The seven valid
 keys are `brainstorm`, `incident`, `implement`, `review`,
-`refine`, `documentation` - `clarify` is gone as of the #521 lifecycle
+`refine`, `documentation`, `upgrade` - `clarify` is gone as of the #521 lifecycle
 redesign, folded into `implement`. A missing or empty entry falls back to the
 project-wide `model`/`effort`. The locked default tiering is
 `brainstorm`/`incident`/`implement`/`review` on Opus at `high`

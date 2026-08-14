@@ -23,7 +23,7 @@ difference between them.
 name.
 
 **`status.agentKind` is the AGENT THAT IS RUNNING RIGHT NOW.** It changes as
-the Task moves through its states. Six values.
+the Task moves through its states. Seven values.
 
 `clarify` is **gone**, platform-wide, as of the #521 lifecycle redesign - both
 as an agent kind *and* as an origin: `spec.kind: implement` is its direct
@@ -44,10 +44,16 @@ itself.
 | `review` | a PR/MR webhook (always a **human's** PR) | `new` | `awaiting-review` |
 | `documentation` | the nightly documentation batch cron | `under-implementation` | - (no triage) |
 | `takeover` | a maintainer's hand-over comment on a foreign MR | `refined` | - (no triage) |
+| `upgrade` | the project's dependency-upgrade cron (`scm.cron.upgrade`) | `under-implementation` | - (no triage) |
 
-Seven `spec.kind` values now, not six. `takeover` is the pre-existing
+Eight `spec.kind` values now, not six. `takeover` is the pre-existing
 [maintainer-gated MR hand-over](../workflows/mr-takeover.md) path, unrelated
-to the #521 rename.
+to the #521 rename. `upgrade` (2026-08-13) is the newest addition - a
+scheduled, opt-in, disabled-by-default agent that takes one
+dependency-upgrade unit per Task; like `documentation`, it mints straight
+into `under-implementation` because its `submitted`/`declined` outcome
+schema has no approval gate to drive at `refined`. See
+[Upgrade](../workflows/upgrade.md).
 
 The Task's name is `<project>-<kind>-<YYYY-MM-DD>-<uid5>`, capped at 49
 characters. Its pod's name is computed independently - see
@@ -84,7 +90,7 @@ type TaskSpec struct {
 	Goal string `json:"goal"`
 	// Kind is the ORIGIN. Immutable, baked into the name. NOT the running agent
 	// kind (that is Status.AgentKind).
-	// +kubebuilder:validation:Enum=brainstorm;incident;implement;refine;review;documentation;takeover
+	// +kubebuilder:validation:Enum=brainstorm;incident;implement;refine;review;documentation;takeover;upgrade
 	Kind string `json:"kind,omitempty"`
 	// +optional
 	// +kubebuilder:validation:MaxItems=20
@@ -107,7 +113,7 @@ type TaskSpec struct {
 | `projectRef` | string | yes | Parent `Project` CR name |
 | `repositoryRef` | string | conditional | The primary repo. Set **only** on documentation Tasks (the docs repo). Every other kind is project-scoped and leaves it empty |
 | `goal` | string | yes | The natural-language goal. **Non-evictable**: the byte guard can spill comments and notes, but it can never shrink the goal, so the goal carries a hard cap of its own (`MaxLength=16384`) or it eats the budget the guard is defending |
-| `kind` | enum | yes | The origin: `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation`, `takeover`. **Immutable**. `clarify` is gone; `implement` takes over its origin role (see above). `takeover` predates the #521 rename |
+| `kind` | enum | yes | The origin: `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation`, `takeover`, `upgrade`. **Immutable**. `clarify` is gone; `implement` takes over its origin role (see above). `takeover` predates the #521 rename; `upgrade` is the newest addition |
 | `mergeOrder` | `[]string` | conditional | The sequential, dependency-ordered list of `Repository` CR names whose MRs merge in this order. **Required** - and validated to cover every owned MR's repo - whenever the Task owns MRs in more than one repo. `MaxItems=20` |
 | `alertRules` | `[]string` | no | Grafana alert-rule names that triggered an incident Task. `MaxItems=50` |
 | `dedupKey` | string | no | The incident **alert-group hash**. Empty on every non-incident Task |
@@ -141,7 +147,7 @@ stall detection and a hardcoded 24h residency cap).
 | `parkReason` | enum | **Whether the Task is stalled**, orthogonal to `state`: a Task parks *where it is*, not into a fourth state. Empty, or one of 28 closed reasons. See [the park flag](task-stages.md#the-park-flag) |
 | `parkedAt` | time | When `parkReason` was set. The base of the park-retention clock (7d, except `backlog-sweep`, which never ages out) |
 | `parkedFromState` | string | **Observability only** for most reasons - the un-park target is re-derived from `Issue.status.status` and the owned-MR state, never read back from here - except the `no-outcome` un-park gate, which does require it to be `under-implementation` or `awaiting-review` |
-| `agentKind` | enum | The agent running now: `brainstorm`, `incident`, `refine`, `review`, `documentation`, `implement`. Six values - `clarify` is gone |
+| `agentKind` | enum | The agent running now: `brainstorm`, `incident`, `refine`, `review`, `documentation`, `implement`, `upgrade`. Seven values - `clarify` is gone |
 | `podName` | string | The current agent pod's name. See [Pod naming](task-stages.md#pod-naming) |
 | `podStartedAt` | time | Stamped when the pod is **created**, and re-stamped on every respawn. It arms the readiness clock, and it is the base of the pod TTL (`podStartedAt + agentPodTTLSeconds`). **Cleared on every transition** |
 | `stateWorkStartedAt` | time | Stamped when the pod becomes **Ready**. It arms the idle/work clock. **Cleared on every transition** |
@@ -184,7 +190,7 @@ type Note struct {
 	At    metav1.Time `json:"at"`
 	// Agent is the WRITER. The REST layer stamps it from Status.AgentKind; an
 	// agent can NEVER produce "operator".
-	// +kubebuilder:validation:Enum=brainstorm;incident;clarify;refine;review;documentation;implement;operator
+	// +kubebuilder:validation:Enum=brainstorm;incident;clarify;refine;review;documentation;implement;operator;upgrade
 	Agent string `json:"agent"`
 	// +kubebuilder:validation:Enum=note;plan;handoff
 	Kind string `json:"kind"`

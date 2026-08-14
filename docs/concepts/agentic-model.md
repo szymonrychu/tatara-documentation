@@ -79,8 +79,8 @@ single most common misreading of the model.
 
 | Field | Meaning | Values |
 |---|---|---|
-| `Task.spec.kind` | The **origin**. Why this Task exists. Immutable; baked into the Task name. | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation`, `takeover` |
-| `Task.status.agentKind` | The **running agent**. Which pod is executing right now. Changes as the Task advances. | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation` - six values |
+| `Task.spec.kind` | The **origin**. Why this Task exists. Immutable; baked into the Task name. | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation`, `takeover`, `upgrade` |
+| `Task.status.agentKind` | The **running agent**. Which pod is executing right now. Changes as the Task advances. | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation`, `upgrade` - seven values |
 
 `implement` is **both an origin and an agent kind**, since the #521 lifecycle redesign folded
 `clarify` into it on both fronts: a Task minted from a new issue gets `spec.kind: implement`

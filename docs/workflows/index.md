@@ -6,7 +6,7 @@ title: Workflows
 
 A `Task` carries two separate kind fields. `Task.spec.kind` is the **origin** - immutable, baked
 into the Task's name. `Task.status.agentKind` is the **running agent** - the pod currently doing
-the work - one of **six** values. `clarify` is gone as of the #521 lifecycle redesign: its
+the work - one of **seven** values. `clarify` is gone as of the #521 lifecycle redesign: its
 conversation-and-approval job folded into `implement`, which now runs both the approval gate
 (`refined`) and the code (`under-implementation`) - see [Implement](implement.md).
 
@@ -80,6 +80,16 @@ context. The operator - never an agent - drives every transition between them, p
 
     [:octicons-arrow-right-24: Deep Architectural Research](research.md)
 
+-   :material-arrow-up-bold-circle-outline: **Upgrade**
+
+    ---
+
+    Scheduled, opt-in, disabled by default. Takes one dependency-upgrade unit per Task, reads
+    the release notes between the current pin and the target, and carries the code and config
+    that must move with the bump - not just the pin - through review, merge and deploy.
+
+    [:octicons-arrow-right-24: Upgrade](upgrade.md)
+
 -   :material-rocket-launch-outline: **Merge and Deploy**
 
     ---
@@ -107,6 +117,7 @@ spawns the first pod:
 | `review` | `awaiting-review` | `review` |
 | `documentation` | `under-implementation` (minted straight in) | `documentation` |
 | `takeover` | `refined` (minted straight in) | `implement` |
+| `upgrade` | `under-implementation` (minted straight in) | `upgrade` |
 
 `implement` is an origin in its own right, not just an agent kind: it is
 `SweepIssueKind`, the value `MintIssueTask` stamps on any Task minted from a
@@ -116,8 +127,8 @@ the role `clarify` used to play as an origin.
 Each pod's name is computed independently of the Task's own name - see
 [Pod naming](../reference/task-stages.md#pod-naming).
 
-`refined` is a single state serving six different origins (every row above except
-`review` and `documentation`) - what distinguishes them is `Task.status.agentKind`, which the
+`refined` is a single state serving five different origins (every row above except
+`review`, `documentation` and `upgrade`) - what distinguishes them is `Task.status.agentKind`, which the
 [state machine's `AgentKindFor` table](../reference/task-stages.md#which-agent-each-state-spawns)
 derives from the origin, not the state. `implement` conducts the approval conversation there
 before ever writing code - it is reached at triage for its own origin as well as
@@ -129,5 +140,5 @@ for which tools each agent kind is gated to.
 
 !!! note "Model and effort are configured per agent kind"
     `Project.spec.agent.modelByKind` / `effortByKind` key on the **agent** kind (`brainstorm`,
-    `incident`, `implement`, `review`, `refine`, `documentation`) - the same six values as
-    `Task.status.agentKind`.
+    `incident`, `implement`, `review`, `refine`, `documentation`, `upgrade`) - the same seven
+    values as `Task.status.agentKind`.

@@ -35,6 +35,7 @@ Every `Repository` CR must reference a Project. Every `Task`, `QueuedEvent`, `Is
 | `documentation` | [`DocumentationSpec`](#documentationspec) | disabled | no | On-switch and docs-target repo for the nightly documentation agent. Requires `scm.cron.documentation.schedule` to also be set - see [`scm.cron.documentation`](#scmcrondocumentation). |
 | `queue` | [`QueueSpec`](#queuespec) | derived | no | Fine-grained admission queue tuning. |
 | `tokenBudget` | [`TokenBudgetSpec`](#tokenbudgetspec) | nil (inherits operator default, off) | no | Token-budget admission gate: pauses proactive and/or incident work once usage crosses a percentage threshold. |
+| `upgradePolicy` | [`UpgradePolicySpec`](#upgradepolicyspec) | nil (`engine: none`) | no | The resolved policy handed to the dependency-upgrade agent's turn-0 assignment: discovery engine, how far a single Task may jump, and per-level minimum release age. A top-level `spec` sibling, not nested under `scm`. Requires `scm.cron.upgrade.schedule` to also be set - see [`scm.cron.upgrade`](#scmcronupgrade). |
 
 !!! note "`maxConcurrentAgents: 0` fully pauses a project"
     The pause is **not** routed through `QueueCapacity()` (which floors at `3` and would silently un-pause). It is a direct `spec.maxConcurrentAgents == 0` check at the top of `admit()`: every scan, brainstorm, and webhook-triggered event queues but nothing is ever admitted - not even a Task already in flight that needs its next pod. See [Tuning](../operations/tuning.md).
@@ -61,8 +62,8 @@ Controls every agent pod spawned by this project.
 | `stallProbeGraceSeconds` | `int` | `300` | How long the operator waits for a stall probe to be answered before counting the attempt unanswered. The probe is delivered at the agent's next tool-call boundary, so a healthy agent inside one long tool call answers late rather than never. Minimum `60`. |
 | `stallProbeMaxAttempts` | `int` | `2` | Unanswered probes before the operator interrupts the session (`POST /v1/interrupt` on the wrapper) and runs the stop-and-handoff sequence. Range `1`-`5`. |
 | `effort` | `string` | `xhigh` | Reasoning-effort level forwarded to the wrapper as the `EFFORT` env var. Maps to Claude's extended thinking intensity. One of: `low`, `medium`, `high`, `xhigh`, `max`. |
-| `modelByKind` | `map[string]string` | `{}` | Per-**agent-kind** override of `model`, keyed on `Task.status.agentKind` (not the Task origin kind). Valid keys: `brainstorm`, `incident`, `implement`, `review`, `refine`, `documentation` - six, `clarify` folded into `implement` at #521. Locked defaults: `brainstorm`/`incident`/`implement`/`review` = `claude-opus-*`; `documentation`/`refine` = `claude-sonnet-*`. Values must start with `claude-` (max 64 chars). A missing/empty entry falls back to `model`. |
-| `effortByKind` | `map[string]string` | `{}` | Per-agent-kind override of `effort`. Same 6-key set as `modelByKind`. Values must be one of `low`, `medium`, `high`, `xhigh`, `max`. A missing/empty entry falls back to `effort`. |
+| `modelByKind` | `map[string]string` | `{}` | Per-**agent-kind** override of `model`, keyed on `Task.status.agentKind` (not the Task origin kind). Valid keys: `brainstorm`, `incident`, `implement`, `review`, `refine`, `documentation`, `upgrade` - seven, `clarify` folded into `implement` at #521. Locked defaults: `brainstorm`/`incident`/`implement`/`review` = `claude-opus-*`; `documentation`/`refine` = `claude-sonnet-*`; `upgrade` has no locked default and falls back to `model` unless set. Values must start with `claude-` (max 64 chars). A missing/empty entry falls back to `model`. |
+| `effortByKind` | `map[string]string` | `{}` | Per-agent-kind override of `effort`. Same 7-key set as `modelByKind`. Values must be one of `low`, `medium`, `high`, `xhigh`, `max`. A missing/empty entry falls back to `effort`. |
 | `skillsRef` | `string` | `main` | Git ref (branch, tag, or SHA) of the `tatara-agent-skills` repo the wrapper clones at boot. **Hand-managed, not CD-rewritten**: `tatara-agent-skills`' release pipeline only bumps the wrapper image's own baked-in `TATARA_SKILLS_REF` default, never this Project-CR field, so an empty or stale `skillsRef` here silently rides `main` (or an old tag) forever with nothing to flag it - see [tatara-operator#421](https://github.com/szymonrychu/tatara-operator/issues/421). Pin to a released tag (e.g. `v1.5.2`) and bump it by hand; `tatara-helmfile`'s `check_agent_pins()` CI/pre-commit guard fails the build if this or the wrapper image tag is missing or not a `vX.Y.Z` tag - see [tatara-helmfile](../components/helmfile.md#agent-pin-coverage-guard). |
 | `hooks` | [`LifecycleHooks`](#lifecyclehooks) | - | Optional shell commands run at fixed points in the session. |
 | `extraEnvs` | `[]EnvVar` | - | Additional environment variables appended to the wrapper container after the operator's required variables. A stray extra cannot shadow an operator-required variable. |
@@ -203,6 +204,33 @@ The real on/off switch for the nightly documentation agent, and its docs-target 
 
 ---
 
+### UpgradePolicySpec
+
+The policy the upgrade agent is handed at turn 0. The operator does not act on it - it renders
+it verbatim into the assignment. Every decision it describes (which candidate is eligible, how
+far a hop may jump) is the agent's, made against release notes the operator itself never reads.
+Nil disables nothing by itself - the real on/off switch is `scm.cron.upgrade.schedule`, below -
+but `engine` defaults to `none`, so an unset block behaves as if there were no dependency
+manifests to scan.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `engine` | `string` | `none` | `renovate` runs the Renovate CLI **read-only** inside the pod (`RENOVATE_PLATFORM=local`, `RENOVATE_DRY_RUN=full`) and reads its report as a candidate HINT, never a source of truth. `none` means the agent enumerates candidates itself by reading pins directly - the right choice for a repo with no dependency manifests, lockfiles or image tags at all. Enum `renovate`\|`none`. |
+| `majorStrategy` | `string` | `nextHopOnly` | How far one Task may jump. `nextHopOnly` proposes the next eligible release only - the smallest increment above the current pin - and walks a multi-hop chain one deployed Task at a time; the repo's current pin **is** the cursor, no chain state is persisted anywhere. `latest` jumps straight to the newest eligible release. Enum `nextHopOnly`\|`latest`. |
+| `minimumReleaseAge` | [`ReleaseAgeSpec`](#releaseagespec) | all zero | Per-level (`major`/`minor`/`patch`) minimum age, in days, a release must have before the agent will propose it. `0` is bleeding edge: take it the moment it publishes - a deliberate, accepted trade (a broken release can reach the cluster), not an oversight. |
+
+#### ReleaseAgeSpec
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `major` | `int` | `0` | Minimum age in days for a major-version release to be eligible. |
+| `minor` | `int` | `0` | Minimum age in days for a minor-version release to be eligible. |
+| `patch` | `int` | `0` | Minimum age in days for a patch-version release to be eligible. |
+
+See [Upgrade](../workflows/upgrade.md) for the full agent behavior this policy drives.
+
+---
+
 ### QueueSpec
 
 Fine-grained control over the in-operator admission queue. Omit this section entirely if the defaults derived from `maxConcurrentAgents` are sufficient.
@@ -340,6 +368,23 @@ Pre-step that fires automatically before each scan and brainstorm cycle. No inde
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `closedLookbackDays` | `int` | `30` | How far back (in days) closed issues are loaded for already-implemented detection. Zero uses the default of 30. |
+
+### `scm.cron.upgrade`
+
+The dependency-upgrade cron. **Default off** (empty `schedule`) for every project: enabling it
+lets an agent open merge requests that change deployed versions, so it is opt-in per project in
+the enrollment values, alongside [`upgradePolicy`](#upgradepolicyspec).
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `schedule` | `string` | - | 5-field cron expression. Empty disables the activity - matches `refine`'s own-schedule shape, not `documentation`'s enabled-flag shape. |
+| `maxOpenUpgrades` | `int` | `1` | Caps the project's concurrent open upgrade lanes: live upgrade Tasks plus enqueued events not yet minted into one. **Set it explicitly in the enrollment values** - a kubebuilder default applies only on write and never retroactively, so raising it later never reaches a Project CR that already exists. Range `1`-`10`. |
+
+Each due tick mints **at most one** upgrade Task, and only while open upgrade lanes sit below
+`maxOpenUpgrades`. Throughput is therefore the cron **frequency**, not a fan-out:
+`58 */4 * * *` yields up to six Tasks a day, each taking exactly one dependency-upgrade unit.
+Minting several Tasks per fire was rejected - each would self-scan and race for the same top
+candidate, and there is no agent-side task-minting tool left to partition the work with.
 
 ---
 

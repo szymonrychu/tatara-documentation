@@ -15,7 +15,7 @@ The central component of the tatara platform. A controller-runtime Kubernetes op
 - Provisions per-project memory stacks (CNPG Postgres + Neo4j + LightRAG + tatara-memory service).
 - Schedules repo-ingest jobs (`tatara-memory-repo-ingester`) on push and on cron.
 - Admits queued work against per-project agent-pod concurrency (`maxConcurrentAgents`), then spawns `tatara-claude-code-wrapper` pods for agent turns.
-- Drives the Task state machine end to end: `new` classifies the origin and mints `Issue` CRs, `refined` runs the approval gate (an `implement` pod, for most origins) and, once granted, code, `under-implementation` -> `awaiting-review` -> `merged` -> `deployed` -> `done`, with the nightly documentation batch minted straight into `under-implementation`.
+- Drives the Task state machine end to end: `new` classifies the origin and mints `Issue` CRs, `refined` runs the approval gate (an `implement` pod, for most origins) and, once granted, code, `under-implementation` -> `awaiting-review` -> `merged` -> `deployed` -> `done`, with the nightly documentation batch and each dependency-upgrade cron tick minted straight into `under-implementation`.
 - Writes results back to the SCM through a mirror-first REST layer: opens MRs, posts comments, posts review verdicts as `COMMENT`-type reviews (never a forge-native approve), and merges directly once a review approves and CI is green.
 - Walks the sequential per-repo merge order (`spec.mergeOrder`) after review, re-verifying the live head SHA and CI status immediately before each merge.
 - Reaps orphaned agent pods and GCs terminal Tasks and stale-labelled Issues/MergeRequests per a fixed retention table.
@@ -64,9 +64,9 @@ outside the fixed table is rejected and counted
 name).
 
 `Task.spec.kind` is the **origin**, immutable, one of `brainstorm`, `incident`,
-`implement`, `refine`, `review`, `documentation`, `takeover`. `Task.status.agentKind`
-is the **currently running agent**, one of six: `brainstorm`, `incident`, `implement`,
-`refine`, `review`, `documentation`. `implement` is both an agent kind and, since
+`implement`, `refine`, `review`, `documentation`, `takeover`, `upgrade`. `Task.status.agentKind`
+is the **currently running agent**, one of seven: `brainstorm`, `incident`, `implement`,
+`refine`, `review`, `documentation`, `upgrade`. `implement` is both an agent kind and, since
 #521, an origin kind - it is `SweepIssueKind`, the value stamped on any Task minted
 from a new issue (webhook or backlog sweep), the same role `clarify` used to play
 before it was deleted platform-wide. The three **live** states (`refined`,

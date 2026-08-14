@@ -109,8 +109,8 @@ retrieval) or `submit_outcome` (reporting its result) the same way it calls a
 file-read tool.
 
 The full tool surface is small (21 tools total) and scoped per **agent kind** -
-`brainstorm`, `incident`, `refine`, `implement`, `review`, or
-`documentation` (six values; `clarify` folded into `implement` at #521). A brainstorm pod gets broader tool access than a review pod;
+`brainstorm`, `incident`, `refine`, `implement`, `review`,
+`documentation`, or `upgrade` (seven values; `clarify` folded into `implement` at #521). A brainstorm pod gets broader tool access than a review pod;
 the operator sets the `TATARA_TOOL_PROFILE` environment variable to the agent
 kind, and `tatara-cli` filters its registered tool list at startup, failing
 **closed** on an unrecognized profile rather than serving everything.
