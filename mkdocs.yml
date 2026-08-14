@@ -160,6 +160,7 @@ nav:
     - Documentation: workflows/documentation.md
     - Refine: workflows/refine.md
     - Deep Architectural Research: workflows/research.md
+    - Upgrade: workflows/upgrade.md
     - Merge & Deploy: workflows/merge-and-deploy.md
     - Handing an MR to tatara: workflows/mr-takeover.md
   - Operations:

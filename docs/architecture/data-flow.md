@@ -196,7 +196,7 @@ The Pod receives Task identity and context via environment variables:
 | `TATARA_KIND` | the **agent** kind (`Task.status.agentKind`) |
 | `TATARA_TOOL_PROFILE` / `TATARA_SKILL_PROFILE` | the agent kind, one of seven |
 | `TATARA_REPO` | Repository CR name; empty except for `documentation` |
-| `TASK_BRANCH` | `task/<task-name>`, the branch the wrapper checks out and pushes |
+| `TASK_BRANCH` | the branch the wrapper checks out and pushes, injected verbatim - never construct it from the Task name. `tatara/<branchKind>-<number>-<slug>` when the Task carries a source issue or PR, `tatara/docs-<short-sha>` for documentation, `tatara/task-<task-name>` otherwise |
 | `TATARA_OPERATOR_URL` / `TATARA_MEMORY_URL` | per-Project service URLs |
 | `AGENT_POD_TTL_SECONDS` | `Project.spec.agentPodTTLSeconds` |
 | `TATARA_CONTRACT_VERSION` | the wire-contract version the pod was built against |
@@ -278,7 +278,7 @@ persist-first intents rather than a single post-turn reconcile sweep.
 immediately; the Issue/MergeRequest reconciler drains the intent to the forge and clears it on a
 verified append. This crash-safety ordering means a wrapper pod that dies mid-write never leaves
 an ambiguous state: the intent either was not yet posted (retry) or was posted and mirrored
-(idempotent skip). `mr_write(action=open)` is idempotent on the Task's `task/<task-name>` head
+(idempotent skip). `mr_write(action=open)` is idempotent on the Task's `TASK_BRANCH` head
 branch - an existing open MR on that branch returns `{"existing":true}` without a forge call - and
 is refused with `409` once the Task already owns a *merged* MR for that repo.
 

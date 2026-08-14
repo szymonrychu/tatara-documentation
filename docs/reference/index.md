@@ -79,8 +79,8 @@ A `Task` carries two kind-shaped fields and they mean different things. Conflati
 
 | Field | Meaning | Values |
 |---|---|---|
-| `Task.spec.kind` | The **origin**. Why this Task exists. Immutable; baked into the Task name. | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation`, `takeover` |
-| `Task.status.agentKind` | The **running agent**. Which pod is executing right now. Changes as the Task advances through its [state machine](task-stages.md). | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation` - six values |
+| `Task.spec.kind` | The **origin**. Why this Task exists. Immutable; baked into the Task name. | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation`, `takeover`, `upgrade` |
+| `Task.status.agentKind` | The **running agent**. Which pod is executing right now. Changes as the Task advances through its [state machine](task-stages.md). | `brainstorm`, `incident`, `implement`, `refine`, `review`, `documentation`, `upgrade` - seven values |
 
 `implement` is both an agent kind and an origin kind, since the #521 lifecycle
 redesign folded `clarify` into it on both fronts: a Task that started life

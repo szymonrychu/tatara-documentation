@@ -102,6 +102,7 @@ in `refined` needs a `brainstorm` pod, not an `implement` one.
 | `documentation` | `documentation` |
 | `takeover` | `implement` |
 | `implement` | `implement` |
+| `upgrade` | `upgrade` |
 
 At `awaiting-review` every kind runs `review`, regardless of origin. `new`,
 `merged`, `deployed`, `done` and `rejected` spawn no pod at all -
@@ -114,7 +115,7 @@ result, not an oversight, for an origin kind the map does not recognize.
 grammar is the same pod that goes on to write the code, gated behind
 [the extended approval gate](../operations/security/approval-gates.md).
 There is no such thing as a `clarify`-kind Task any more; see
-[MCP tools by agent kind](mcp-tools.md) for the six surviving agent kinds.
+[MCP tools by agent kind](mcp-tools.md) for the seven surviving agent kinds.
 
 Every pod-spawning state entry enqueues a `QueuedEvent`. The pod is created
 only when that event is **admitted** against `maxConcurrentAgents`.
@@ -134,8 +135,8 @@ of the Task's own name, composed once at Task creation and stamped into the
 
 - `type` is a fixed 3-char token for the Task's agent kind: `brs`
   (brainstorm), `ref` (refine), `inc` (incident), `rev` (review), `imp`
-  (implement), `doc` (documentation), `tko` (takeover); an unrecognized kind
-  falls back to its own first 3 lowercased chars.
+  (implement), `doc` (documentation), `tko` (takeover), `upg` (upgrade); an
+  unrecognized kind falls back to its own first 3 lowercased chars.
 - `project` and `repo` are trimmed dynamically and proportionally
   (`splitTrimBudget`) to use the 63-char DNS-1123 budget efficiently,
   readability-first; `repo` is omitted for a project-board item with no
@@ -185,7 +186,7 @@ documented exception) - see [the park flag](#the-park-flag) below.
 |---|---|---|
 | (create) | `new` | Task minted for triage: webhook-originated, a sweep-discovered backlog issue (minted `parked(backlog-sweep)` alongside), or a human has the last word on the thread |
 | (create) | `refined` | a maintainer-gated takeover (`spec.kind=takeover`) mints a Task already bound to an existing MR: nothing to triage, but the work still faces the approval gate |
-| (create) | `under-implementation` | the nightly documentation batch is minted straight into implementation work - no driving issue to triage, and no gate: a nightly batch is the operator's own decision, already made |
+| (create) | `under-implementation` | the nightly documentation batch, or a dependency-upgrade cron tick, is minted straight into implementation work - no driving issue to triage, and no gate: both are the operator's own decision, already made. `QueuedEvent.spec.initialState`, copied onto `TaskSpec.InitialState`, is what the create edge reads to route here instead of `new` |
 | (create) | `done` | **the terminal-reset guard.** A Task served stateless by the narrowed CRD (see [below](#no-migrator)) carries proof it already delivered - stamped where it finished rather than re-triaged |
 | (create) | `rejected` | **the terminal-reset guard**, the stopped-work twin of the edge above |
 | `new` | `refined` | triage passed: spec validates and the Task is routed to its origin kind's agent |
@@ -463,6 +464,6 @@ terminal strands real work permanently.
 
 - [Task](task.md) - the CRD itself, its fields, and what was removed
 - [Task notes](task-notes.md) - the journal that carries context from one pod to the next
-- [MCP tools by agent kind](mcp-tools.md) - the six agent kinds and their `submit_outcome` schemas
+- [MCP tools by agent kind](mcp-tools.md) - the seven agent kinds and their `submit_outcome` schemas
 - [Approval Gates](../operations/security/approval-gates.md) - the extended grammar that gates `refined` to `under-implementation`
 - [Tuning](../operations/tuning.md) - the levers that set these budgets and caps

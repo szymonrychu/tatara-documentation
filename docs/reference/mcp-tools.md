@@ -19,8 +19,8 @@ serves only the always-on set and logs WARN - and it does not register
 loud rather than silent.
 
 `TATARA_TOOL_PROFILE` is the **agent** kind (`Task.status.agentKind`), one of
-**six**: `brainstorm`, `incident`, `implement`, `review`, `refine`,
-`documentation`.
+**seven**: `brainstorm`, `incident`, `implement`, `review`, `refine`,
+`documentation`, `upgrade`.
 
 !!! info "`clarify` folded into `implement` (contract 4)"
     The #521 lifecycle redesign deleted `clarify` as a kind, platform-wide.
@@ -42,7 +42,7 @@ loud rather than silent.
 | SCM | 4 | `scm_read`, `issue_write`, `mr_write`, `mr_takeover_request` |
 | Code graph | 4 | `code_search`, `code_context`, `code_graph`, `code_explain` |
 | Memory | 5 | `memory_query`, `memory_describe`, `memory_write`, `memory_entity`, `memory_edges` |
-| Outcome | 1 | `submit_outcome` (one name, six schemas) |
+| Outcome | 1 | `submit_outcome` (one name, seven profiles, six distinct schemas - `upgrade` reuses `documentation`'s) |
 
 ## The profile gating table
 
@@ -50,24 +50,24 @@ Always-on for every profile, including the fail-closed empty one: `task_get`,
 `task_context`, `task_note`, `project_get`, `repo_list`,
 `report_internal_issue`.
 
-| tool | brainstorm | incident | implement | review | refine | documentation |
-|---|:--:|:--:|:--:|:--:|:--:|:--:|
-| `submit_outcome` | yes | yes | yes | yes | yes | yes |
-| `task_get` / `task_context` / `task_note` | yes | yes | yes | yes | yes | yes |
-| `project_get` / `repo_list` / `report_internal_issue` | yes | yes | yes | yes | yes | yes |
-| `task_list` | yes | yes | - | - | yes | - |
-| `scm_read` | yes | yes | yes | yes | yes | yes |
-| `issue_write` | - | - | yes | - | yes | - |
-| `mr_write` | - | - | yes | yes | comment-only* | yes |
-| `mr_takeover_request` | - | - | yes | yes | - | - |
-| `code_search` | yes | yes | yes | yes | - | yes |
-| `code_context` | yes | yes | yes | yes | - | yes |
-| `code_graph` | yes | yes | yes | yes | - | yes |
-| `code_explain` | yes | yes | yes | yes | - | yes |
-| `memory_query` / `memory_describe` | yes | yes | yes | yes | yes | yes |
-| `memory_write` | yes | yes | yes | - | - | yes |
-| `memory_entity` | yes | yes | - | - | - | yes |
-| `memory_edges` | - | yes | - | - | - | yes |
+| tool | brainstorm | incident | implement | review | refine | documentation | upgrade |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| `submit_outcome` | yes | yes | yes | yes | yes | yes | yes |
+| `task_get` / `task_context` / `task_note` | yes | yes | yes | yes | yes | yes | yes |
+| `project_get` / `repo_list` / `report_internal_issue` | yes | yes | yes | yes | yes | yes | yes |
+| `task_list` | yes | yes | - | - | yes | - | - |
+| `scm_read` | yes | yes | yes | yes | yes | yes | yes |
+| `issue_write` | - | - | yes | - | yes | - | - |
+| `mr_write` | - | - | yes | yes | comment-only* | yes | yes |
+| `mr_takeover_request` | - | - | yes | yes | - | - | - |
+| `code_search` | yes | yes | yes | yes | - | yes | yes |
+| `code_context` | yes | yes | yes | yes | - | yes | yes |
+| `code_graph` | yes | yes | yes | yes | - | yes | yes |
+| `code_explain` | yes | yes | yes | yes | - | yes | yes |
+| `memory_query` / `memory_describe` | yes | yes | yes | yes | yes | yes | yes |
+| `memory_write` | yes | yes | yes | - | - | yes | yes |
+| `memory_entity` | yes | yes | - | - | - | yes | - |
+| `memory_edges` | - | yes | - | - | - | yes | - |
 
 \* `refine`'s `mr_write` is restricted to `action=comment` by a cli-side and
 operator-side check, not by the schema. It is the only non-uniform cell in
@@ -78,6 +78,13 @@ agent conducts the conversation on the issue **and** writes the code, so it
 needs `issue_write` and clarify's memory recall tools. It deliberately does
 **not** gain `task_list` (denied to implement, same as before) and does
 **not** gain `memory_entity` or `memory_edges`.
+
+`upgrade` gets `implement`'s code and memory-write grants plus `mr_write` -
+it opens MRs across however many repos one dependency-upgrade unit spans -
+but **not** `issue_write` (a cron mint has no issue and drives no approval
+gate) and, like every MR-opening kind, **not** `task_list` or
+`mr_takeover_request`. Sibling-unit dedup goes through
+`task_context(index=true)`, which is always-on, instead.
 
 Counts are derived from the table above, not quoted from a summary line: each
 profile is 21 minus the cells the table marks `-` for it (the always-on row
@@ -91,11 +98,12 @@ and `submit_outcome` are never denied, so they never subtract).
 | review | `task_list`, `issue_write`, `memory_write`, `memory_entity`, `memory_edges` | 16 |
 | refine | `code_search`, `code_context`, `code_graph`, `code_explain`, `memory_write`, `memory_entity`, `memory_edges`, `mr_takeover_request` | 13 |
 | documentation | `task_list`, `issue_write`, `mr_takeover_request` | 18 |
+| upgrade | `issue_write`, `mr_takeover_request`, `task_list`, `memory_entity`, `memory_edges` | 16 |
 
 Counts: brainstorm 17, incident 18, implement 18, review 16, refine 13,
-documentation 18. `implement` moved from 17 to 18 when it absorbed
-`issue_write` from the deleted `clarify` profile - its only cell that
-changed.
+documentation 18, upgrade 16. `implement` moved from 17 to 18 when it
+absorbed `issue_write` from the deleted `clarify` profile - its only cell
+that changed.
 
 `task_list` goes to the broad-context trio only, because an implement /
 review pod that can list every Task can wander into another Task's work.
@@ -121,7 +129,7 @@ The agent writes conversation; the operator writes reviews, merges, labels
 and status. A hallucinated merge call has nowhere to land.
 
 `action=open` is **idempotent**: an existing open MR on the same
-`task/<task-name>` head branch returns
+`TASK_BRANCH` head branch returns
 `{"status":"ok","existing":true,...}` without calling the forge. It is
 **refused with 409** when the Task already owns a *merged* MR for that repo -
 the structural stop on the duplicate-PR path after a partial merge.
@@ -147,9 +155,13 @@ green run's logs are never fetched.
 
 ## `submit_outcome`
 
-One name, **six schemas** - down from seven when `clarify`'s was deleted
-rather than merged: `implement`'s action enum grew the three approval-gate
-actions instead. REST: `POST /tasks/{task}/outcome`, body
+One name, **seven profiles, six distinct schemas**. `implement`'s action enum
+grew the three approval-gate actions when `clarify`'s schema was deleted
+rather than merged; `upgrade` (added 2026-08-13) reuses `documentation`'s
+schema object verbatim rather than duplicating it - both are gate-less code
+kinds whose action enum is `submitted`/`declined`, and a hand-maintained copy
+would only invite the two to drift on a field nobody meant to change
+independently. REST: `POST /tasks/{task}/outcome`, body
 `{"kind":"<profile>","payload":{...}}`.
 
 `kind` must equal `Task.status.agentKind` (409 on mismatch - the pod's claim
@@ -209,6 +221,35 @@ state.
       "decline_reason":{"type":"string","description":"Required when action=declined."}},
      "required":["action"],"additionalProperties":false}
     ```
+
+=== "upgrade"
+
+    Reuses `documentation`'s schema object byte-for-byte - same fields, same
+    `submitted`/`declined` action enum, same `merge_order` requirement across a
+    multi-repo hop. `merge_order` here is the dependency-**publish** order
+    (e.g. `containers` before `charts` before `helmfile`), not an arbitrary
+    list: getting it backwards ships a chart against an image tag that never
+    published. There is no approval gate to drive - an upgrade Task has no
+    source issue - so it never gets `implement`'s three gate actions.
+
+    ```json
+    {"type":"object","properties":{
+      "task":{"type":"string"},
+      "action":{"type":"string","enum":["submitted","declined"]},
+      "title":{"type":"string","description":"MR title. Required when action=submitted."},
+      "body":{"type":"string","description":"MR body. Required when action=submitted."},
+      "change_significance":{"type":"string","enum":["major","minor","patch"],
+        "description":"Required when action=submitted. major=backward-incompatible; minor=backward-compatible feature; patch=fix. YOU own this level - a reviewer may raise it but can never lower it."},
+      "merge_order":{"type":"array","items":{"type":"string"},
+        "description":"REQUIRED when this task's MRs span more than one repo: the Repository CR names in dependency order, first-merged first. There is NO default. Get it wrong and a downstream repo ships against an API that has not merged yet."},
+      "decline_reason":{"type":"string","description":"Required when action=declined."}},
+     "required":["action"],"additionalProperties":false}
+    ```
+
+    `declined` is a correct and common answer here, not an edge case: most
+    scheduled runs will find every candidate already claimed by a sibling
+    Task, nothing eligible under the project's `minimumReleaseAge`, or a hop
+    that turns out to be unsafe. See [Upgrade](../workflows/upgrade.md#6-output).
 
 === "review"
 

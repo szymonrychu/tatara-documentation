@@ -7,7 +7,7 @@ title: Agent Execution
 Every pod-spawning stage of a `Task` runs a dedicated Kubernetes Pod, named
 independently of the Task itself - see [Pod naming](../reference/task-stages.md#pod-naming)
 - for the current agent kind (`status.agentKind`: `brainstorm`, `incident`,
-`refine`, `implement`, `review`, or `documentation` - `clarify` is gone as of the
+`refine`, `implement`, `review`, `documentation`, or `upgrade` - `clarify` is gone as of the
 #521 lifecycle redesign, folded into `implement`). The pod hosts a single Go
 service (`tatara-claude-code-wrapper`) that wraps one persistent, interactive
 `claude` process and exposes it to the operator as a turn-based HTTP API.
@@ -411,10 +411,10 @@ contract, where these carried the Task's origin kind.
 | `TATARA_TASK` | Task CR name | unchanged |
 | `TATARA_PROJECT` | Project CR name | unchanged |
 | `TATARA_KIND` | agent kind (`status.agentKind`) | changed semantics |
-| `TATARA_TOOL_PROFILE` | agent kind (6 values) | changed key |
-| `TATARA_SKILL_PROFILE` | agent kind (6 values) | changed key |
+| `TATARA_TOOL_PROFILE` | agent kind (7 values) | changed key |
+| `TATARA_SKILL_PROFILE` | agent kind (7 values) | changed key |
 | `TATARA_REPO` | Repository CR name; empty except on `documentation` Tasks | narrowed |
-| `TASK_BRANCH` | `task/<task-name>` | unchanged form |
+| `TASK_BRANCH` | the pod's actual work branch, injected verbatim - never construct it from the Task name. `agent.TaskBranch` (`tatara-operator` `internal/agent/pod.go`) produces `tatara/<branchKind>-<number>-<slug>` when the Task carries a source issue or PR, `tatara/docs-<short-sha>` for a documentation Task, or `tatara/task-<task-name>` otherwise | unchanged form |
 | `TATARA_OPERATOR_URL` / `TATARA_MEMORY_URL` | operator / memory service endpoints | unchanged |
 | `AGENT_POD_TTL_SECONDS` | `Project.spec.agentPodTTLSeconds` | new |
 | `TATARA_CONTRACT_VERSION` | `4` | new |

@@ -28,6 +28,19 @@ This gives agent sessions the full Claude Code harness: skills, slash commands, 
 4. **`bootWait`**: The "Bypass Permissions mode" warning is not seedable and appears on every boot. The wrapper detects it in the ring buffer (ANSI/whitespace-stripped matching) and accepts it (Down + Enter). Then waits for output quiescence (no new PTY bytes for >1.5s, floored at ~4s) before marking the session ready.
 5. **Start HTTP servers.** `/readyz` is not served until `Start` returns.
 
+## Baked-in tooling: Node 24 and a pinned Renovate
+
+The image ships Node 24 (bumped from a floating Node 22, 2026-08-13) and a pinned
+`renovate` binary (`ARG RENOVATE_VERSION`, installed with `npm install -g --engine-strict`),
+for the [`upgrade`](../workflows/upgrade.md) agent kind's read-only candidate-discovery step.
+The pin exists because Renovate declares a hard `engines.node` range: under an unsatisfied range
+Renovate does not fail loudly, it logs a warning and returns an empty `packageFiles: {}` report
+with exit 0 - indistinguishable from "nothing to upgrade" to a caller that does not check the
+log. `--engine-strict` turns that silent-wrong-answer mode into a build-time failure instead,
+so a future Node bump that breaks the Node/Renovate pairing fails the image build, not an
+upgrade agent's every run. Node 24 applies to **every** agent pod on this image, not only
+`upgrade` ones.
+
 ## Turn lifecycle
 
 ```
