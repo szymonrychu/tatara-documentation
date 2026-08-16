@@ -43,18 +43,19 @@ immediately rather than writing a plan and waiting for a second go-ahead.
 ## If tatara declines
 
 The agent can decide not to finish the MR. It comments on the merge request
-saying why, and then **stops for good**: a deliberate decline is terminal.
-Asking again in a comment is refused rather than silently ignored - the operator
-answers the second request with a conflict naming the decline.
+saying why, and then stops. Asking again in a comment is refused rather than
+silently ignored - the operator answers the second request with a conflict
+naming the decline.
 
-The MR is yours again in the ordinary way: push to it, or leave it, and the
-declined Task is collected after its retention window, after which a fresh
-take-over can be requested from scratch.
+**A decline holds only while the branch is still tatara's.** Push to it yourself
+- which is the natural thing to do after reading the agent's explanation - and
+the MR is yours again; ask for a take-over after that and you get one. Leave it
+alone instead and the declined Task is collected after its retention window,
+after which a fresh take-over can be requested from scratch.
 
-This is about the agent choosing to stop. It is **not** what happens when you
-take the branch back yourself, below - the operator tells the two apart by
-whether the branch actually went back to you, so standing down never costs you
-the ability to ask again.
+That is the same rule as [handing it back](#handing-it-back) below: the operator
+reads the branch, not the agent's stated reason. So standing down never costs
+you the ability to ask again either.
 
 ## Handing it back
 
