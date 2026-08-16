@@ -10,6 +10,12 @@ an MR (including another bot's, like Renovate) over to tatara for full agency:
 conflict resolution, CI fixes, requested changes, and merge on an approved
 review.
 
+!!! note "A dependency engine armed for adoption doesn't need this"
+    Once a project sets `upgradePolicy.adoptBranchPrefix` and the engine authors as `scm.botLogin`
+    (or an `upgradeEngineLogins` entry), its merge requests reach `tatara` ownership automatically,
+    no comment required - see [MR Ownership: adopting a dependency engine's merge requests](../architecture/ownership.md#adopting-a-dependency-engines-merge-requests).
+    This page's ask-in-a-comment flow covers a human's PR, or an engine MR outside that policy.
+
 ## Ask in a comment
 
 Comment on the MR in plain language, for example "please take over, resolve the
