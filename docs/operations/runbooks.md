@@ -582,7 +582,9 @@ sum(increase(operator_reconcile_total{namespace="tatara",job="tatara-operator",r
 <a id="tatara-runbook-operator-agent-http-failure-spike"></a><!-- alert: "Operator agent HTTP failure spike" status: covered -->
 ## Agent turns failing to dispatch
 
-**Symptoms:** All three in `alerts/tatara-operator.yaml`, warning. `Operator turn submit failure ratio high` (>0.3, for 15m, gated on >=10 attempts) fires when SubmitTurn calls to wrappers are failing. `Operator turn submit p95 latency high` (>30s, for 15m) fires when SubmitTurn is slow. `Operator agent HTTP failure spike` (>0.2/s, for 10m) fires on unreachable/timeout/transport-error outcomes against wrapper pods specifically.
+**Symptoms:** All three in `alerts/tatara-operator.yaml`, warning. `Operator turn submit failure ratio high` (>0.3, for 15m, gated on >=10 attempts) fires when SubmitTurn calls to wrappers are failing. `Operator turn submit p95 latency high` (>6.4s, for 15m) fires when SubmitTurn is slow. `Operator agent HTTP failure spike` (>0.2/s, for 10m) fires on unreachable/timeout/transport-error outcomes against wrapper pods specifically.
+
+`operator_turn_submit_duration_seconds` uses `ExponentialBuckets(0.05, 2, 10)`, so its p95 **cannot exceed 25.6s** whatever the real latency is - a quantile landing in the `+Inf` bucket returns the top finite bound. A p95 reading exactly 25.6 means "at or above 25.6", not "25.6". Any retune has to stay under that ceiling: the threshold was >30s until #111, which is why this alert had never fired. Observed p95 is 0.78s, flat.
 
 **What it means:** The operator cannot reliably hand a turn to an agent pod's wrapper HTTP API. Slow or failing dispatch stalls whichever Task is in a pod-spawning stage, without necessarily showing up as a crash on either side.
 
@@ -1312,7 +1314,9 @@ min(
 <a id="tatara-runbook-memory-lightrag-call-p95-latency-high"></a><!-- alert: "Memory LightRAG call p95 latency high" status: covered -->
 ## LightRAG backend failing or slow
 
-**Symptoms:** `Memory LightRAG call error ratio high` (warning, `alerts/tatara-memory.yaml`) fires when more than 10% of `tatara-memory`'s calls into LightRAG error over 10m. `Memory LightRAG call p95 latency high` (warning, same file) fires when the p95 call latency exceeds 30s over 10m, evaluated only while calls are actually happening.
+**Symptoms:** `Memory LightRAG call error ratio high` (warning, `alerts/tatara-memory.yaml`) fires when more than 10% of `tatara-memory`'s calls into LightRAG error over 10m. `Memory LightRAG call p95 latency high` (warning, same file) fires when the p95 call latency exceeds 5s over 10m, evaluated only while calls are actually happening. That 5s is armed blind - no `lightrag_*` series has ever been scraped, so the rule has never observed its own subject; retune it once real data exists.
+
+`lightrag_call_duration_seconds` uses `prometheus.DefBuckets`, so its p95 **cannot exceed 10s**; a reading of exactly 10 means "at or above 10". Any retune has to stay under that ceiling. The threshold was >30s until #111, so this alert was structurally unable to fire even had the series existed.
 
 **What it means:** `tatara-memory` proxies every ingest and query operation through LightRAG (`deploy/mem-<project>-lightrag`), which itself depends on Neo4j for the graph and Postgres for KV/vectors. A high error ratio or p95 latency here means the LightRAG backend is failing or slow to respond - agent `query`/`code_*` lookups and ingest jobs pushing chunks both degrade together, since they share this one call path.
 
