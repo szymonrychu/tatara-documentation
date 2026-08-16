@@ -236,6 +236,12 @@ documented exception) - see [the park flag](#the-park-flag) below.
     a table test that is total over every origin kind, so a kind added without
     answering the question fails the build.
 
+    The pin covers **both** routes, and the triage one is the route that matters:
+    since nothing is minted into `refined` any more, a new kind reaches the gate
+    only by being triaged there, so a test that checked mint states alone would
+    have nothing left to check. It asks the question for every kind triage can
+    route, not only for a kind whose mint state is `refined`.
+
 !!! note "Six guards live in `LegalFor`, not in the callers"
     A `kind=review` Task may **never** reach `under-implementation` or
     `merged`, by any path - not on `request_changes`, not on `approve`, not

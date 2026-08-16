@@ -272,10 +272,10 @@ for the full catalogue):
 
 | Metric | Type | Labels | Alerting use |
 |---|---|---|---|
-| `operator_task_stage` | gauge | `stage,kind` | replaces every `phase`/`lifecycleState` series <!-- stale-ok: lifecycleState --> |
-| `operator_task_stage_age_seconds` | gauge | `task,stage,kind` | stage-stuck detection |
-| `operator_illegal_stage_transition_total` | counter | `from,to` | any nonzero value is a code bug |
-| `operator_task_parked_total` | counter | `stage,stageReason` | merge/deploy-blocked cycle caps firing |
+| `operator_task_state` | gauge | `state,kind` | replaces every `phase`/`lifecycleState` series <!-- stale-ok: lifecycleState --> |
+| `operator_task_state_age_seconds` | gauge | `task,state,kind` | state-stuck detection |
+| `operator_illegal_stage_transition_total` | counter | `from,to` | any nonzero value is a code bug (name unchanged since #521; the label VALUES are states) |
+| `operator_task_parked_total` | counter | `state,parkReason` | merge/deploy-blocked cycle caps firing |
 | `operator_agent_contract_mismatch_total` | counter | `expected,got,image` | any nonzero value is critical |
 | `operator_merge_cursor_stalled_seconds` | gauge | `task,repo` | a sequential merge that stopped advancing |
 | `operator_unexpected_merge_total` | counter | `repo` | the accepted-risk detector: a merge the operator did not initiate |
