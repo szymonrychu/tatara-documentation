@@ -75,7 +75,7 @@ The MCP server:
 - automatically refreshes device-flow tokens from disk,
 - automatically remints client-credentials tokens before expiry,
 - writes structured JSON logs to `~/.local/state/tatara/mcp.log`,
-- optionally exposes a Prometheus `/metrics` endpoint.
+- carries the reason it started unauthenticated on every error tool result.
 
 ```mermaid
 sequenceDiagram
@@ -170,13 +170,11 @@ directly by a human.
 ```sh
 tatara mcp
 tatara mcp --tool-profile implement
-tatara mcp --metrics-addr 127.0.0.1:9090
 ```
 
 | Flag | Env | Description |
 |---|---|---|
 | `--tool-profile` | `TATARA_TOOL_PROFILE` | The agent kind naming the tool profile to register (see below). Empty or unrecognized fails **closed** to the always-on set. |
-| `--metrics-addr` | `TATARA_MCP_METRICS_ADDR` | TCP address for the `/metrics` Prometheus endpoint. Empty disables it. |
 | `--base-url` | `TATARA_MEMORY_URL` | tatara-memory base URL |
 | `--operator-base-url` | `TATARA_OPERATOR_URL` | tatara-operator REST base URL |
 
@@ -418,5 +416,18 @@ Key points:
   (`http://tatara-operator.tatara.svc:8080`). Operator ports `:8081`/`:8082`
   are the operator's own health and internal-callback binds, not client-facing
   service ports.
-- The MCP server can optionally expose a `/metrics` endpoint
-  (`TATARA_MCP_METRICS_ADDR`), scraped by the Prometheus stack.
+- **The MCP server exposes no `/metrics` endpoint, and must not grow one.** It
+  is a stdio subprocess in a pod with no scrape target and no push path, so a
+  registry here is gathered by nothing.
+  `--metrics-addr` / `TATARA_MCP_METRICS_ADDR` are removed. <!-- stale-ok: --metrics-addr, TATARA_MCP_METRICS_ADDR -->
+  Setting an address would have produced a listener on `127.0.0.1` that nothing
+  reads and that looks wired up, which is worse than the honest absence.
+- **Where the cli's operator-facing signals actually go.** Its logs go to a file
+  on a disk that dies with the pod, and its stderr is swallowed by the MCP
+  client (Claude Code captures it into `~/.cache/claude-cli-nodejs/<slug>/mcp-logs-<server>/*.jsonl`
+  and never forwards it). The one channel that leaves the process is the **tool
+  result text**, which the wrapper's transcript tailer ships to Loki. So a
+  server that started without credentials prefixes the reason - including which
+  of the nine client-credentials mint stages failed - onto **error** tool
+  results only. Successful results are unchanged, so a healthy turn costs the
+  agent no extra context.
