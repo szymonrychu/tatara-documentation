@@ -43,9 +43,7 @@ immediately rather than writing a plan and waiting for a second go-ahead.
 ## If tatara declines
 
 The agent can decide not to finish the MR. It comments on the merge request
-saying why, and then stops. Asking again in a comment is refused rather than
-silently ignored - the operator answers the second request with a conflict
-naming the decline.
+saying why, and then stops.
 
 **A decline holds only while the branch is still tatara's.** Push to it yourself
 - which is the natural thing to do after reading the agent's explanation - and
@@ -53,18 +51,30 @@ the MR is yours again; ask for a take-over after that and you get one. Leave it
 alone instead and the declined Task is collected after its retention window,
 after which a fresh take-over can be requested from scratch.
 
+Asking again *before* you push is not refused - it reaches nothing. The declined
+Task still holds the merge request and runs no agent, so there is nobody to read
+the comment until ownership is back with you.
+
 That is the same rule as [handing it back](#handing-it-back) below: the operator
 reads the branch, not the agent's stated reason. So standing down never costs
 you the ability to ask again either.
 
-**The same conflict answers a take-over that stopped for any other reason.** A
-decline is the common case, not the only one: a take-over can also come to rest
-on red CI, on a head that kept moving under it, or on one of the operator's own
-exhaustion limits. The conflict names whichever it was, and it means the same
-thing every time - *this Task will not start again, so a second request would be
-answered yes and then do nothing*. It is not a judgement about your merge
-request and not a refusal to work on it. The remedy is the one above: push, or
-wait out the retention window, then ask again.
+## If a take-over stops for some other reason
+
+A decline is the common case, not the only one: a take-over can also come to
+rest on CI it could not get green, on a head that kept moving under it, or on an
+operator limit on how many times one Task may re-enter a state. Ask again and
+the operator answers with a **conflict** naming whichever it was. It means *this
+Task will not start again, so a second request would be answered yes and then do
+nothing* - not a judgement about your merge request, and not a refusal to work
+on it.
+
+**A push does not clear these, and the remedy above does not apply.** Only a
+decline is converted into a stand-down when the branch comes back to you; every
+other stopping reason survives your push, so asking again after it returns the
+same conflict. While the merge request stays open, what clears it is the
+retention window: the Task ages out, is collected, and a fresh take-over can be
+requested from scratch. The merge request is yours in the meantime.
 
 ## Handing it back
 
