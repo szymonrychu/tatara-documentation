@@ -85,9 +85,7 @@ is the retention window.
 Waiting that out is not the whole remedy either. Collection removes the Task but
 does not change who the merge request is marked for, so a fresh take-over needs
 both halves: the window to collect the Task, and your push to mark the merge
-request yours again. Getting the conflict at all means your push has already
-landed, since that is what let the request through. The merge request is yours
-to work on throughout.
+request yours again. The merge request is yours to work on throughout.
 
 ## Handing it back
 
