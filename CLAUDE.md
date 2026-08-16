@@ -201,8 +201,8 @@ records how these rules apply to it.
 ## Rule applicability
 
 No service code and no chart: rules 1, 5, 6, 11, 12, 13, 14 and 16 are N/A.
-Rule 4 applies to prose - a doc that contradicts the contract is tech-debt that
-lands directly in an agent's context.
+Everything else applies, rule 4 included - a doc that contradicts the contract
+is tech-debt that lands directly in an agent's context.
 
 ## Local notes
 
