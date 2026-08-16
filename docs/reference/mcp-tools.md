@@ -153,6 +153,25 @@ last result with `"cached": true`. `logTail` (last 4000 bytes) is served only
 for a check whose conclusion is `failure`, `timed_out` or `cancelled` - a
 green run's logs are never fetched.
 
+`status` is **not** a fold over `checks[]`. On GitLab it is the head
+pipeline's own aggregate, which the forge already computes across child
+pipelines, retries and `allow_failure`; `checks[]` is drill-down detail, and
+`mergeable` means no-conflicts AND not-red. Folding the job list instead is
+what shipped `green` on a failed pipeline until
+[tatara-operator#609](https://github.com/szymonrychu/tatara-operator/issues/609):
+GitLab's `/pipelines/{id}/jobs` omits the `trigger:` bridge jobs that carry a
+child pipeline's result.
+
+Two kinds of row consequently appear in `checks[]` with **no `logTail` even
+when they failed**, because neither has a log of its own - a `trigger:`
+bridge, whose `url` is the DOWNSTREAM pipeline where the failing job lives,
+and an external commit status, whose `url` is the reporter's page. `status`
+stays authoritative for both. On GitLab, `none` likewise means no CI
+observation at all: an MR with no pipeline but an external commit-status
+reporter answers that reporter's verdict, not `none`. On GitHub, `none` can
+still appear with a legacy commit-status reporter present, since
+`GitHub.PRChecks` reads only `/commits/{sha}/check-runs`.
+
 ## `submit_outcome`
 
 One name, **seven profiles, six distinct schemas**. `implement`'s action enum
