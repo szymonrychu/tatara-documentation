@@ -63,3 +63,16 @@ Push any commit to the branch yourself. tatara detects the foreign commit,
 posts a stand-down comment, and stops pushing - it keeps reviewing, and the
 operator will still merge on an approved review. To hand it back to tatara,
 ask again in your own words.
+
+"Detects the foreign commit" is a comparison, not an identity check: the
+operator compares the branch head against the last head it recorded as its own.
+It never asks who pushed, because a forge actor is only reported on a delivered
+webhook and a commit's author is a string the pusher chose. Two consequences
+worth knowing:
+
+- **It is not instant.** Detection lands on the next reconcile of that merge
+  request - the push webhook, or the periodic sweep if the delivery is dropped.
+  Nothing is lost by the delay: the agent never force-pushes, so your commit
+  cannot be overwritten in the meantime.
+- **A take-over you did not ask for is still refused.** Ownership moving back to
+  you does not start any work; only your comment does that.
