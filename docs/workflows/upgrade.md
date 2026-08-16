@@ -135,6 +135,40 @@ cron mint has no issue) and, like every MR-opening kind, **not** `task_list` or
 `mr_takeover_request`. See [MCP tools by agent kind](../reference/mcp-tools.md#the-profile-gating-table)
 for the full per-kind gating table.
 
+## 8. Adopting the engine's own merge requests
+
+A second, independent mode: instead of the agent opening its own MR, tatara can **adopt** a
+merge request the dependency engine (Renovate) opens on its own - the engine keeps discovery and
+changelog-fetching, tatara keeps merge authority. Arm it with two more `upgradePolicy` fields:
+
+- `adoptBranchPrefix` - the head-branch prefix the engine opens against (e.g. `renovate/`).
+  Empty (the default) disables adoption entirely.
+- `upgradeEngineLogins` - author logins, beyond `scm.botLogin`, also treated as the engine's
+  identity (max 8). Leave empty unless the engine authors as an account other than the bot - an
+  entry here also widens merge permission via `ownershipForAuthor`.
+
+Adoption requires **both**: the MR's head branch carries the configured prefix, **and** its
+author is `botLogin` or in `upgradeEngineLogins`. A human-authored branch that happens to match
+the prefix is never adopted - author and prefix are checked together, never either alone. This
+also means landing `adoptBranchPrefix` ahead of a bot-token cutover is deliberately inert: while
+the engine still authors as a human account, a matching merge request still mints the ordinary
+review-only Task it mints today.
+
+An adopted merge request mints its own `upgrade` Task bound to that existing MR
+(`MintAdoptedUpgradeTask`), entering the [state machine](../reference/task-stages.md) at
+`awaiting-review` directly - no implement turn, no plan, no approval gate. The review agent sees
+it first: `approve` merges it like any owned MR; `request_changes` routes to
+`under-implementation`, where **this** agent - not a separate implement pod - pushes
+complementary commits onto the engine's own branch for another round. See
+[PR/MR Review: adopted merge requests](review.md#adopted-merge-requests) and
+[MR Ownership: adopting a dependency engine's merge requests](../architecture/ownership.md#adopting-a-dependency-engines-merge-requests).
+
+Adoption is paced by the same `maxOpenUpgrades` cap as a cron-minted Task, oldest merge request
+first - arming it cannot mint a Task per open engine MR at once. A newly-opened matching MR does
+not wait for the next `issueScan` sweep: the MR-opened webhook stamps a per-repository
+sweep-request marker that pulls the next sweep pass forward, and the leader-elected sweep itself
+still does the minting (safe under the cap with multiple replicas serving webhooks).
+
 ## Reference: Project CR fields
 
 | Field | Type | Default | Description |
@@ -144,5 +178,7 @@ for the full per-kind gating table.
 | `upgradePolicy.engine` | `string` | `none` | `renovate` or `none`. |
 | `upgradePolicy.majorStrategy` | `string` | `nextHopOnly` | `nextHopOnly` or `latest`. |
 | `upgradePolicy.minimumReleaseAge` | object | all zero | Per-level (`major`/`minor`/`patch`) minimum release age in days. |
+| `upgradePolicy.adoptBranchPrefix` | `string` | `""` (disabled) | Head-branch prefix that arms adoption of the engine's own merge requests. |
+| `upgradePolicy.upgradeEngineLogins` | `[]string` | `[]` | Additional author logins (beyond `scm.botLogin`) treated as the engine's identity for adoption. Max 8. |
 
 See [Project reference](../reference/project.md#upgradepolicyspec) for the full field tables.

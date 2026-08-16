@@ -184,13 +184,13 @@ documented exception) - see [the park flag](#the-park-flag) below.
 
 | From | To | Trigger |
 |---|---|---|
-| (create) | `new` | Task minted for triage: webhook-originated, a sweep-discovered backlog issue (minted `parked(backlog-sweep)` alongside), or a human has the last word on the thread |
+| (create) | `new` | Task minted for triage: webhook-originated, a sweep-discovered backlog issue (minted `parked(backlog-sweep)` alongside), a dependency engine's own merge request matching `upgradePolicy.adoptBranchPrefix` + author (an adopted `kind=upgrade` Task, `MintAdoptedUpgradeTask` - see [MR Ownership](../architecture/ownership.md#adopting-a-dependency-engines-merge-requests)), or a human has the last word on the thread |
 | (create) | `refined` | a maintainer-gated takeover (`spec.kind=takeover`) mints a Task already bound to an existing MR: nothing to triage, but the work still faces the approval gate |
 | (create) | `under-implementation` | the nightly documentation batch, or a dependency-upgrade cron tick, is minted straight into implementation work - no driving issue to triage, and no gate: both are the operator's own decision, already made. `QueuedEvent.spec.initialState`, copied onto `TaskSpec.InitialState`, is what the create edge reads to route here instead of `new` |
 | (create) | `done` | **the terminal-reset guard.** A Task served stateless by the narrowed CRD (see [below](#no-migrator)) carries proof it already delivered - stamped where it finished rather than re-triaged |
 | (create) | `rejected` | **the terminal-reset guard**, the stopped-work twin of the edge above |
 | `new` | `refined` | triage passed: spec validates and the Task is routed to its origin kind's agent |
-| `new` | `awaiting-review` | triage passed on a `kind=review` Task. It reviews a **human's** PR, so there is no plan to write and no approval to grant - the gate at `refined` has nothing to do for it |
+| `new` | `awaiting-review` | triage passed on a `kind=review` Task (reviews a **human's** PR), or on an adopted `kind=upgrade` Task bound to a dependency engine's own merge request. Neither has a plan to write or an approval to grant - the gate at `refined` has nothing to do for either |
 | `new` | `rejected` | `false_positive`, `tracked_elsewhere`, or a human closed the driving issue mid-triage |
 | `refined` | `under-implementation` | `submit_outcome(action=approved)` **AND** the extended approval gate grants: the citation verifies for every live owned Issue, the declared `approvingMaintainer` agrees with it, and the plan note is pinned |
 | `refined` | `done` | a non-code kind finished: brainstorm `propose`/`skip`, refine `folds`/`closes`/`links` applied and verified, incident `file_issue` minted its tracker. None of the three ever opens an MR |
@@ -222,7 +222,12 @@ documented exception) - see [the park flag](#the-park-flag) below.
     not open the gate either). `awaiting-review -> done`,
     `under-implementation -> done` (from `refined`, not this edge - see the
     table row above) and `new -> awaiting-review` are each restricted to the
-    one kind whose terminal or triage target they are. These guards were
+    kind(s) whose terminal or triage target they are - the last of these
+    admits both `kind=review` and an adopted `kind=upgrade` Task, the only
+    two kinds ever minted or triaged straight to `awaiting-review`. An
+    adopted Task is *not* `kind=review`, so it is unaffected by the guard
+    above and **can** reach `under-implementation` and `merged` like any
+    other `upgrade` Task. These guards were
     caller-gated until the #521 review found the hole: a guard that lives in
     the caller is not a guard, because a new call site can reintroduce it by
     not knowing about it. `LegalFor` travels with the edge instead.

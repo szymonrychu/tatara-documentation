@@ -545,6 +545,27 @@ exempt from that cap - the round budget bounds ordinary review ping-pong, not a
 maintainer reclaiming a stood-down MR - so a take-over comment still spawns a
 pod even after the cap was already spent on unrelated review rounds.
 
+### Adopting a dependency engine's merge requests
+
+A merge request a dependency engine (Renovate) opens on its own can reach `tatara` ownership
+without ever going through a takeover comment. `ownershipForAuthor` classifies it as `tatara`-owned
+directly, the moment it is seen, when **both** hold on `Project.spec.upgradePolicy` (see
+[Project reference](../reference/project.md#upgradepolicyspec)):
+
+- the MR's head branch carries `adoptBranchPrefix` (empty by default - adoption is off), and
+- its author is `scm.botLogin` or listed in `upgradeEngineLogins`.
+
+There is no `lastBotHeadSHA` comparison and no `ownershipReason: initial` in between - the
+adopted `upgrade` Task (`MintAdoptedUpgradeTask`) writes no ownership of its own, because the
+same author predicate the mint uses is what `ownershipForAuthor` now checks. From the review
+agent's next turn, `approve` merges the engine's own MR exactly like any other owned MR - see
+[PR/MR Review: adopted merge requests](../workflows/review.md#adopted-merge-requests).
+
+This is a separate path from [maintainer takeover](../workflows/mr-takeover.md) above: takeover
+is a one-off, comment-triggered hand-over of a single MR; adoption is a standing policy that
+claims every future MR matching the prefix-and-author pair, paced by the project's
+`maxOpenUpgrades` cap like any other upgrade Task.
+
 ### The merge gate
 
 The merge gate merges when `status.ownership == tatara` **or** `status.ownership

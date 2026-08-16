@@ -108,6 +108,23 @@ the first place) - see [Handing an MR to tatara](mr-takeover.md). The cap exists
 review back-and-forth, not to leave a maintainer's take-over comment on a stood-down, round-capped
 MR unable to spawn a pod at all.
 
+## Adopted merge requests
+
+A merge request a dependency engine (Renovate) opens on its own can be **adopted**: bound to its
+own `upgrade`-kind Task that enters review directly, skipping an implement turn entirely. See
+[Upgrade: adopting the engine's own merge requests](upgrade.md#8-adopting-the-engines-own-merge-requests)
+for what arms it (`upgradePolicy.adoptBranchPrefix` + author match) and
+[MR Ownership](../architecture/ownership.md#adopting-a-dependency-engines-merge-requests) for how
+it lands at `tatara` ownership without a takeover request.
+
+An adopted Task is **`kind=upgrade`, not `kind=review`** - the [carve-out above](#the-review-kind-carve-out)
+does not apply to it. The dangerous misreading is treating "not tatara's own MR" as a reason to
+fall into the human-PR row: an `approve` reasoned that way merges a third party's merge request.
+Instead, both verdicts behave exactly as they do on any other platform-opened MR: `approve` goes
+to `merged`, `request_changes` goes to `under-implementation` where the **upgrade** agent - not a
+separate implement pod - pushes complementary commits onto the engine's own branch for another
+round.
+
 ## Conversation persistence for reviews
 
 Each PR gets its own conversation, distinct from any related issue's conversation. If the PR is
