@@ -185,10 +185,10 @@ The operator exposes Prometheus series on `:9090/metrics`. A representative subs
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `operator_reconcile_total` | counter | controller, result | Reconcile counts by controller and result |
-| `operator_task_stage` | gauge | stage, kind | Current Task count per stage and kind - replaces every prior phase/lifecycle series |
-| `operator_task_stage_age_seconds` | gauge | task, stage, kind | Time in the current stage, observable against the F.4 deadline table |
-| `operator_illegal_stage_transition_total` | counter | from, to | A transition outside the fixed table was attempted - any nonzero value is a code bug |
-| `operator_task_parked_total` | counter | stage, stageReason | Which parks actually happen |
+| `operator_task_state` | gauge | state, kind | Current Task count per state and kind - replaces every prior phase/lifecycle series |
+| `operator_task_state_age_seconds` | gauge | task, state, kind | Time in the current state, observable against the per-state deadline table |
+| `operator_illegal_stage_transition_total` | counter | from, to | A transition outside the fixed table was attempted - any nonzero value is a code bug. Metric NAME unchanged since #521; the label values are states |
+| `operator_task_parked_total` | counter | state, parkReason | Which parks actually happen |
 | `operator_agent_pod_ttl_expired_total` | counter | agent_kind, outcome, handoff | Two independent dimensions: `outcome` = `graceful`\|`force_deleted` (how the pod stopped), `handoff` = `agent`\|`synthetic`\|`none` (how continuation state was captured). `handoff=none` is the work-loss bucket for a TTL stop (a pod lost before its TTL respawns without a note and is not counted here) |
 | `operator_pod_recreations_total` | counter | project, kind, reason | Pod respawns for a live Task. `reason` one of `PodGone`, `OOMKilled`, `ContainerExited`, `PodFailed`, `BootTimeout`, `NoHandoff`. No longer capped by `maxPodRecreations` (deprecated) - see [Stall detection and the residency cap](#stall-detection-and-the-residency-cap) and the [pod-recreation-loop runbook](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop) |
 | `operator_agent_contract_mismatch_total` | counter | expected, got, image | The contract-version handshake failed - any nonzero value is critical |
