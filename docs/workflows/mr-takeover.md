@@ -57,6 +57,15 @@ That is the same rule as [handing it back](#handing-it-back) below: the operator
 reads the branch, not the agent's stated reason. So standing down never costs
 you the ability to ask again either.
 
+**The same conflict answers a take-over that stopped for any other reason.** A
+decline is the common case, not the only one: a take-over can also come to rest
+on red CI, on a head that kept moving under it, or on one of the operator's own
+exhaustion limits. The conflict names whichever it was, and it means the same
+thing every time - *this Task will not start again, so a second request would be
+answered yes and then do nothing*. It is not a judgement about your merge
+request and not a refusal to work on it. The remedy is the one above: push, or
+wait out the retention window, then ask again.
+
 ## Handing it back
 
 Push any commit to the branch yourself. tatara detects the foreign commit,
