@@ -421,8 +421,12 @@ resource_id?)` - required `category` (enum `tool_error`,
 `directive_contradiction`, `workspace_broken`, `memory_inconsistent`,
 `graph_inconsistent`, `auth`, `other`) and `description` (non-empty);
 optional `severity` (`warn|error`, defaults `error`), `offending_tool`, and
-`resource_id`. Emits a structured ERROR log and increments a metric; it does
-NOT create a durable SCM issue.
+`resource_id`. Emits a structured ERROR log that the wrapper ships to the
+platform; it does NOT create a durable SCM issue. It emits no metric of its own
+- the cli has no metrics egress - but the wrapper's transcript tailer keys on
+the tool NAME and raises `tatara_wrapper_internal_issue_total` from the outside,
+which is what the alert fires on. It is therefore callable, and useful, even in
+a pod whose credentials never resolved.
 
 `task_context`'s `notes` argument:
 
