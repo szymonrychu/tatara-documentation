@@ -47,9 +47,14 @@ saying why, and then stops.
 
 **A decline holds only while the branch is still tatara's.** Push to it yourself
 - which is the natural thing to do after reading the agent's explanation - and
-the MR is yours again; ask for a take-over after that and you get one. Leave it
-alone instead and the declined Task is collected after its retention window,
-after which a fresh take-over can be requested from scratch.
+the MR is yours again; ask for a take-over after that and you get one.
+
+Leaving it alone is not a second route back. The declined Task is collected
+after its retention window, but collection does not change who the merge request
+is marked for, and your push is what does. Ask for a take-over while it is still
+marked tatara's and nothing happens: the request either reaches nobody, or is
+answered yes and mints nothing. Push whenever suits you, before or after the
+window - it is the half that returns the merge request to you.
 
 Asking again *before* you push is not refused - it reaches nothing. The declined
 Task still holds the merge request and runs no agent, so there is nobody to read
@@ -63,8 +68,10 @@ you the ability to ask again either.
 
 A decline is the common case, not the only one: a take-over can also come to
 rest on CI it could not get green, on a head that kept moving under it, or on an
-operator limit on how many times one Task may re-enter a state. Ask again and
-the operator answers with a **conflict** naming whichever it was. It means *this
+operator limit on how many times one Task may re-enter a state. Push and ask
+again - before your push a second request reaches nothing here either, for the
+reason given above - and the operator answers with a **conflict** naming
+whichever it was. It means *this
 Task will not start again, so a second request would be answered yes and then do
 nothing* - not a judgement about your merge request, and not a refusal to work
 on it.
@@ -72,9 +79,15 @@ on it.
 **A push does not clear these, and the remedy above does not apply.** Only a
 decline is converted into a stand-down when the branch comes back to you; every
 other stopping reason survives your push, so asking again after it returns the
-same conflict. While the merge request stays open, what clears it is the
-retention window: the Task ages out, is collected, and a fresh take-over can be
-requested from scratch. The merge request is yours in the meantime.
+same conflict. While the merge request stays open, what removes the stopped Task
+is the retention window.
+
+Waiting that out is not the whole remedy either. Collection removes the Task but
+does not change who the merge request is marked for, so a fresh take-over needs
+both halves: the window to collect the Task, and your push to mark the merge
+request yours again. Getting the conflict at all means your push has already
+landed, since that is what let the request through. The merge request is yours
+to work on throughout.
 
 ## Handing it back
 
