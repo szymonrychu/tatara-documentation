@@ -36,6 +36,21 @@ agent's judgment alone can never change ownership.
   changes, and pushes.
 - The review agent reviews as usual; on an approved review the operator merges.
 
+There is **no approval turn**. Your comment is the authorisation, and the
+operator has already verified it is yours, so the agent starts working
+immediately rather than writing a plan and waiting for a second go-ahead.
+
+## If tatara declines
+
+The agent can decide not to finish the MR. It comments on the merge request
+saying why, and then **stops for good**: a declined take-over is terminal.
+Asking again in a comment is refused rather than silently ignored - the operator
+answers the second request with a conflict naming the decline.
+
+The MR is yours again in the ordinary way: push to it, or leave it, and the
+declined Task is collected after its retention window, after which a fresh
+take-over can be requested from scratch.
+
 ## Handing it back
 
 Push any commit to the branch yourself. tatara detects the foreign commit,

@@ -97,7 +97,7 @@ object, many pods.
 | `review` | project | Reviews a human-authored PR/MR; can never itself reach `under-implementation`/`merged` - a human's PR is fixed by the human |
 | `documentation` | repo (docs repo) | Schedule-driven: updates docs when non-trivial changes have landed since the last run |
 | `refine` | project | Groom-only backlog peer: closes duplicates, dedups, recovers stalled Tasks |
-| `takeover` | project | Maintainer-gated hand-over of an existing, foreign-authored MR - minted straight into `refined`, no triage |
+| `takeover` | project | Maintainer-gated hand-over of an existing, foreign-authored MR - minted straight into `under-implementation`, no triage and no gate: it owns zero Issues, and the maintainer's verified comment is the authorisation |
 
 !!! info "Only documentation is repo-scoped"
     `repositoryRef` is set **only** on `documentation` Tasks, which target one docs repo per run. Every other origin kind is project-scoped: the Task CR is a cross-repo umbrella, and its `implement`/`review` pods write back across every affected repo under that one Task.

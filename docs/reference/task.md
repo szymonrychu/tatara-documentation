@@ -43,7 +43,7 @@ itself.
 | `refine` | a project cron | `new` | `refined` |
 | `review` | a PR/MR webhook (always a **human's** PR) | `new` | `awaiting-review` |
 | `documentation` | the nightly documentation batch cron | `under-implementation` | - (no triage) |
-| `takeover` | a maintainer's hand-over comment on a foreign MR | `refined` | - (no triage) |
+| `takeover` | a maintainer's hand-over comment on a foreign MR | `under-implementation` | - (no triage) |
 | `upgrade` | the project's dependency-upgrade cron (`scm.cron.upgrade`) | `under-implementation` | - (no triage) |
 
 Eight `spec.kind` values now, not six. `takeover` is the pre-existing

@@ -159,7 +159,7 @@ exists).
 
 ## The transition table
 
-Written by the operator only. **Twenty-six edges.** Every transition does all
+Written by the operator only. **Twenty-five edges.** Every transition does all
 of:
 
 ```
@@ -185,8 +185,7 @@ documented exception) - see [the park flag](#the-park-flag) below.
 | From | To | Trigger |
 |---|---|---|
 | (create) | `new` | Task minted for triage: webhook-originated, a sweep-discovered backlog issue (minted `parked(backlog-sweep)` alongside), a dependency engine's own merge request matching `upgradePolicy.adoptBranchPrefix` + author (an adopted `kind=upgrade` Task, `MintAdoptedUpgradeTask` - see [MR Ownership](../architecture/ownership.md#adopting-a-dependency-engines-merge-requests)), or a human has the last word on the thread |
-| (create) | `refined` | a maintainer-gated takeover (`spec.kind=takeover`) mints a Task already bound to an existing MR: nothing to triage, but the work still faces the approval gate |
-| (create) | `under-implementation` | the nightly documentation batch, or a dependency-upgrade cron tick, is minted straight into implementation work - no driving issue to triage, and no gate: both are the operator's own decision, already made. `QueuedEvent.spec.initialState`, copied onto `TaskSpec.InitialState`, is what the create edge reads to route here instead of `new` |
+| (create) | `under-implementation` | the nightly documentation batch, a dependency-upgrade cron tick, or a maintainer-gated **takeover** (`spec.kind=takeover`) bound to an MR that already exists, is minted straight into implementation work - no driving issue to triage, and no gate. `QueuedEvent.spec.initialState`, copied onto `TaskSpec.InitialState`, is what the create edge reads to route here instead of `new` |
 | (create) | `done` | **the terminal-reset guard.** A Task served stateless by the narrowed CRD (see [below](#no-migrator)) carries proof it already delivered - stamped where it finished rather than re-triaged |
 | (create) | `rejected` | **the terminal-reset guard**, the stopped-work twin of the edge above |
 | `new` | `refined` | triage passed: spec validates and the Task is routed to its origin kind's agent |
@@ -212,6 +211,30 @@ documented exception) - see [the park flag](#the-park-flag) below.
 | `rejected` | (reap) | `RejectedRetention` (24h) elapses |
 
 `done` and `rejected` are **terminal**: no state exits, only the reaper.
+
+!!! warning "Nothing is minted into `refined`, and that is an invariant"
+    There is deliberately **no `(create) -> refined` edge**. `refined` is where
+    the approval gate runs, and its only forward edge into the work is
+    `submit_outcome(action=approved)`, which `verifyApprovalScope` refuses with
+    `no-live-issue` for a Task owning **zero** `Issue` CRs. The operator mints
+    Issue mirrors only for a Task whose `Source` is a real issue - never for one
+    bound to a PR - so a kind minted straight into `refined` without an issue
+    behind it can never leave: it spends a pod, elapses, and parks
+    `awaiting-human` forever.
+
+    The `takeover` kind did exactly that until it was fixed: its source is always
+    a PR, so it owned zero Issues by construction. It is now minted into
+    `under-implementation`, which is where its own re-take un-park already
+    landed. The authorisation the gate would have looked for has already been
+    performed, and more strictly - the takeover endpoint refuses unless a
+    verified **maintainer's** comment asked for it.
+
+    `refined` is therefore reachable through **triage only**, so the question
+    "does this kind own an issue?" is answered in one place. A new kind with no
+    driving issue belongs on `(create) -> under-implementation` (it writes code)
+    or on `new -> awaiting-review` (it only reviews). The operator pins this with
+    a table test that is total over every origin kind, so a kind added without
+    answering the question fails the build.
 
 !!! note "Six guards live in `LegalFor`, not in the callers"
     A `kind=review` Task may **never** reach `under-implementation` or
