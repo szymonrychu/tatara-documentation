@@ -4,15 +4,23 @@ title: How It Works
 
 # How It Works
 
-These pages are the fast narrative path to a working mental model of tatara: the shape of the system and why it is built that way, for architects and operators sizing up whether to adopt or run it. Start here for the big picture and the load-bearing design choices, then drop into the reference section when you need field-level detail.
+Read these five pages and you will know what tatara does, why it is shaped this way, and whether it fits your organization. They are ordered to be read straight through, and the first one is different from the rest: it is a single run that actually happened, quoted from the thread it happened in, rather than a general explanation. Once you have the model, [Reference](../reference/index.md) has the field-level detail.
 
 <div class="grid cards" markdown>
+
+-   :material-telescope: **Watch One Run**
+
+    ---
+
+    Start here. One real piece of work in tatara's own repository, over six days in August 2026, with every quote copied out of the issue and the pull request. An alert fires, a maintainer types two words, an attempt fails and gets parked instead of retried, a review sends the fix back, and the change deploys. The other four pages tell you how the machine works; this one shows you what it looked like.
+
+    [:octicons-arrow-right-24: Watch One Run](watch-one-run.md)
 
 -   :material-map: **The Big Picture**
 
     ---
 
-    What tatara is, why it exists, and how all the pieces fit together in one narrative.
+    What the pieces are, why they are arranged this way, and which decisions stay with you rather than with the agents.
 
     [:octicons-arrow-right-24: The Big Picture](big-picture.md)
 
@@ -20,24 +28,26 @@ These pages are the fast narrative path to a working mental model of tatara: the
 
     ---
 
-    Walk through exactly what happens when you open a GitHub issue with the tatara label.
+    The same journey as a numbered walkthrough: every state a Task passes through, what runs in each one, and what you can do at each point.
 
     [:octicons-arrow-right-24: From Issue to PR](issue-to-pr.md)
 
--   :material-graph: **The Memory Graph**
+-   :material-graph: **How Agents Remember Your Code**
 
     ---
 
-    How tatara builds and queries a knowledge graph of your codebase.
+    Why an agent that queries a pre-built graph of your repository beats one that reads 50 files to answer the same question, and how that graph gets built and kept fresh.
 
     [:octicons-arrow-right-24: The Memory Graph](memory-graph.md)
 
--   :material-robot-outline: **Agent Sessions Explained**
+-   :material-robot-outline: **Inside an Agent Session**
 
     ---
 
-    What is a tatara agent session? How does Claude Code run inside a Kubernetes pod?
+    What actually runs in an agent pod: a real interactive Claude Code session driven over a pseudo-terminal, and what carries forward when the pod goes away.
 
     [:octicons-arrow-right-24: Agent Sessions](agent-sessions.md)
 
 </div>
+
+If you want the model rather than the narrative, [The Agentic Operating Model](../concepts/agentic-model.md) covers the eight Task states, the two human gates, and the security boundary in one page.

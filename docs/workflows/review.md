@@ -77,16 +77,16 @@ or
   declared - `max(implement, review)` over `patch < minor < major`. A lower value is ignored and
   logged WARN.
 - **There is no `comment` verdict.** A review either approves (merge proceeds, on the platform's
-  own MRs) or requests changes (loop back to `implementing`). A non-decision has no stage to go
+  own MRs) or requests changes (loop back to `under-implementation`). A non-decision has no stage to go
   to.
 
 ## Transitions
 
 | From | Outcome | To |
 |---|---|---|
-| `reviewing` | `verdict=approve`, `spec.kind != review` | `merging` - operator posts a `COMMENT` review from the verdict, then merges (gated on `pendingReview == nil`) |
-| `reviewing` | `verdict=request_changes`, `spec.kind != review` | `implementing` - no longer capped by `reviewRounds < maxReviewRounds`; that cap and `review-loop-exhausted` are retired (see below) |
-| `reviewing` | either verdict, `spec.kind == review` | `parked(awaiting-human)` - see the carve-out below |
+| `awaiting-review` | `verdict=approve`, `spec.kind != review` | `merged` - operator posts a `COMMENT` review from the verdict, then merges (gated on `pendingReview == nil`) |
+| `awaiting-review` | `verdict=request_changes`, `spec.kind != review` | `under-implementation` - no longer capped by `reviewRounds < maxReviewRounds`; that cap and `review-loop-exhausted` are retired (see below) |
+| `awaiting-review` | either verdict, `spec.kind == review` | `parked(awaiting-human)` - see the carve-out below |
 
 ## The `review`-kind carve-out
 
@@ -96,11 +96,11 @@ is a human action. `request_changes` **also** parks it at `awaiting-human`, beca
 is fixed by the human, not by an implement pod spawned against code the platform did not write.
 The review is posted either way - the operator still runs `PostReview(COMMENT)` from the verdict.
 
-**A `review`-kind Task never spawns an implement pod and never reaches `merging` - there is no
+**A `review`-kind Task never spawns an implement pod and never reaches `merged` - there is no
 edge, by any path.** This holds regardless of which verdict comes back: `request_changes` is the
 review agent's *normal* verdict on a bad human PR, so it is the primary path that has to be
 closed, not an edge case. The next human comment on the thread un-parks the Task back to
-`reviewing`, bounded by `status.humanReviewRounds` (cap 5, a separate counter from
+`awaiting-review`, bounded by `status.humanReviewRounds` (cap 5, a separate counter from
 `reviewRounds`, which only advances on `request_changes`) - so a chatty thread cannot spawn an
 unbounded run of review pods. That cap is skipped, and no round is spent, when any owned MR is
 currently externally owned (a maintainer pushed a commit, or never delegated the MR to tatara in
@@ -133,14 +133,14 @@ giving the agent context about what it already reviewed.
 
 ## Budget and cycle caps
 
-`reviewing` carries an idle-clock budget (60m default, `Project.spec.scm.conversationIdleMinutes`);
+`awaiting-review` carries an idle-clock budget (60m default, `Project.spec.scm.conversationIdleMinutes`);
 on elapse the Task parks at `parked(awaiting-human)`. `reviewRounds`, tracked on the
 MergeRequest, still counts accepted `request_changes` verdicts, but the `maxReviewRounds` cap
-that used to bound the `reviewing <-> implementing` loop at it is deprecated with zero effect
+that used to bound the `awaiting-review <-> under-implementation` loop at it is deprecated with zero effect
 ([tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582)) - the loop is
 now bounded only by the [24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch).
 See [Merge and Deploy](merge-and-deploy.md#budgets-and-the-bounded-cycles) for the merge-side
-cycle caps that pick up once a verdict reaches `merging`.
+cycle caps that pick up once a verdict reaches `merged`.
 
 ## CI readiness gate on `approve`
 

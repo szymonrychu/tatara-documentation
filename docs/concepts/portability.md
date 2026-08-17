@@ -4,19 +4,18 @@ title: Portability & Requirements
 
 # Portability & Requirements
 
-This page is an honest map of what tatara actually requires to run, what is
-merely the maintainer's personal stack, and how portable the platform really is
-today. It is written for platform architects, senior devops, and senior
-developers who are evaluating whether they can run tatara on **their** stack:
-any GitOps mechanism, any coding agent, their own identity and data services.
+Read this page and you will know what you actually have to bring to run tatara,
+what is only the maintainer's personal stack, and which of the two the code has
+welded together anyway. It is for platform architects, senior devops, and senior
+developers deciding whether tatara can run on **their** stack: their GitOps
+mechanism, their coding agent, their identity and data services.
 
-The reference deployment documented in
 [Prerequisites](../getting-started/prerequisites.md) lists everything the
-maintainer runs. That page is a shopping list for reproducing the reference
-environment. **This page is the opposite exercise**: it separates the handful of
-things tatara genuinely cannot run without from the many things that are one
-person's deployment choices, and it is candid about where the two have become
-welded together in the code as shipped.
+maintainer runs - a shopping list for reproducing the reference environment.
+**This page is the opposite exercise.** It separates the handful of things tatara
+genuinely cannot run without from the many things that are one person's
+deployment choices, and it is candid about where those two have fused in the code
+as shipped.
 
 !!! quote "The design intent"
     The CD pipeline (`tatara-helmfile` + GitHub Actions) is the maintainer's
@@ -32,9 +31,9 @@ welded together in the code as shipped.
 
 ## The short version
 
-Tatara was architected to be portable across three axes: the **coding agent**,
-the **GitOps / deploy mechanism**, and the **SCM provider**. The seams for all
-three exist in the code. Two of them are genuinely usable today; one is not.
+tatara was built to be portable across three axes: the **coding agent**, the
+**GitOps / deploy mechanism**, and the **SCM provider**. All three seams exist in
+the code. Two of them are usable today. One is not.
 
 | Axis | Seam exists? | Portable today? | Honest status |
 |---|---|---|---|
@@ -68,8 +67,9 @@ graph TD
 
 ## Irreducible requirements
 
-These cannot be removed without a rewrite or significant new engineering. If any
-of them is a hard no for your environment, tatara as shipped is not for you yet.
+You cannot remove any of these without a rewrite or serious new engineering. If
+one of them is a hard no in your environment, tatara as shipped is not for you
+yet.
 
 ### 1. Kubernetes
 
@@ -84,7 +84,7 @@ product.
 
 ### 2. A coding agent
 
-Tatara exists to drive a coding agent, so needing one is irreducible by
+tatara exists to drive a coding agent, so needing one is irreducible by
 definition. What is **not** irreducible by design - but is a de-facto
 requirement today - is that the agent be **Claude Code specifically**. See
 [Seam 1](#seam-1-the-coding-agent) below. The requirement "an agent" is real;
@@ -93,7 +93,7 @@ design necessity.
 
 ### 3. An SCM, from the set {GitHub, GitLab}
 
-Tatara reads issues and writes PRs, so it needs a source-control host. This is
+tatara reads issues and writes PRs, so it needs a source-control host. This is
 the best-abstracted axis: provider selection is a switch over `github` and
 `gitlab`, both fully implemented, with header-based provider auto-detection.
 Needing *an* SCM is irreducible; the specific provider is swappable **within
@@ -112,15 +112,14 @@ every handler in auth with no auth-disabled mode. All agent pods share one OIDC
 client identity.
 
 The good news: verification is standards-based (`go-oidc` discovery), so **any
-compliant issuer works** - this is not Keycloak-locked. The hard part: needing
-*an* IdP at all is a firm requirement today, with **no single-tenant / dev
-"auth off" mode**. If you cannot stand up an OIDC issuer, you cannot boot the
-platform.
+compliant issuer works**. This is not Keycloak-locked. The hard part: needing
+*an* IdP at all is firm, with **no single-tenant or dev "auth off" mode**. If you
+cannot stand up an OIDC issuer, you cannot boot the platform.
 
 ### 5. The memory graph stack
 
-This is the highest-leverage coupling and the one most likely to surprise
-evaluators. The memory stack (the `tatara-memory` facade + LightRAG + Neo4j +
+This is the highest-leverage coupling and the one most likely to surprise you.
+The memory stack (the `tatara-memory` facade plus LightRAG, Neo4j, and
 CloudNativePG Postgres) is **mandatory, not optional**:
 
 - Every `Task` hard-gates on `project.Status.Memory.Phase == "Ready"` before an
@@ -130,12 +129,12 @@ CloudNativePG Postgres) is **mandatory, not optional**:
 - `MemorySpec` exposes only footprint knobs (`pgInstances`, `pgStorage`,
   `neo4jStorage`). **There is no `enabled` field.**
 
-This drags in the **CloudNativePG operator** as a hard transitive dependency and
-means no agent runs anywhere without a fully healthy memory stack. It is
-irreducible as-shipped, but it is the single decoupling that would most widen who
-can run tatara: a `memory.enabled: false` toggle (mirroring the existing
-`grafana.enabled` pattern) would let a team run the issue-to-PR loop against a
-much smaller data footprint.
+That drags in the **CloudNativePG operator** as a hard transitive dependency, and
+it means no agent runs anywhere without a fully healthy memory stack. It is
+irreducible as shipped, and it is also the single decoupling that would most widen
+who can run tatara: a `memory.enabled: false` toggle, mirroring the existing
+`grafana.enabled` pattern, would let you run the issue-to-PR loop against a much
+smaller data footprint.
 
 !!! note "Embeddings are a sub-dependency of the memory stack"
     LightRAG's semantic ingest uses OpenAI embeddings by default. This is a
@@ -147,11 +146,10 @@ much smaller data footprint.
 
 ## The maintainer's stack (NOT required)
 
-Everything in this section is a deployment choice made by the maintainer for the
-reference cluster. None of it is a platform requirement, and most of it is
-already cleanly swappable. Where a "not required" item is nonetheless welded into
-the code today, that caveat is called out and cross-referenced to the
-[coupling hotspots](#coupling-hotspots).
+Everything in this section is a deployment choice the maintainer made for the
+reference cluster. None of it is a platform requirement, and most of it swaps out
+cleanly. Where a "not required" item is welded into the code anyway, the caveat
+is called out and cross-referenced to the [coupling hotspots](#coupling-hotspots).
 
 | Maintainer choice | Required? | How you replace it |
 |---|---|---|
@@ -167,7 +165,8 @@ the code today, that caveat is called out and cross-referenced to the
 
 ## How portable is it, really?
 
-Candid section. The seams are drawn; the values behind two of them are welded.
+The candid section. The seams are drawn; the values behind two of them are
+welded.
 
 ### Seam 1: the coding agent
 
@@ -188,20 +187,20 @@ into the operator**: `ValidatePodSecretRefs` fails the Project if the Anthropic
 secret name is empty (`pod.go:135`), and the credential is injected under the
 hardcoded env name `CLAUDE_CODE_OAUTH_TOKEN` (`pod.go:460`).
 
-"Swap the agent" today means writing a brand-new wrapper binary **and** editing
+Swapping the agent today means writing a brand-new wrapper binary **and** editing
 operator pod-spawn plus CRD validation. It is not a config flip. The honest
-status of "any coding agent" is: **architecturally anticipated, not yet
+status of "any coding agent" is **architecturally anticipated, not yet
 delivered.**
 
 ### Seam 2: GitOps and deploy
 
 **The deploy act is fully external. The deploy confirmation is fully welded.**
 
-The operator makes **zero** `helm`, `kubectl`, or `helmfile` calls - verified.
-It never deploys anything itself; it only *watches* a deploy cascade complete so
-it can close the originating issue once the code is actually live. That means the
-deploy **mechanism** is completely swappable: point your merges at Argo CD, Flux,
-or CI-driven `kubectl` and the core loop (issue -> PR -> merge -> done) does not
+The operator makes **zero** `helm`, `kubectl`, or `helmfile` calls - verified. It
+never deploys anything itself. It only *watches* a deploy cascade complete, so it
+can close the originating issue once the code is live. Your deploy **mechanism**
+is therefore completely swappable: point your merges at Argo CD, Flux, or
+CI-driven `kubectl` and the core loop from issue to PR to merge to `done` does not
 notice.
 
 What is welded is the **deploy-supervision** feature. Six non-configurable Go
@@ -215,11 +214,11 @@ values in `deploy_supervision.go` assume the maintainer's exact CD stack:
 - a **GitHub-only** `DeployWatcher` (a GitLab reader logs "cascade unsupervisable
   here" and parks).
 
-None of these are on the CRD. If no repo named exactly `tatara-helmfile` is
-enrolled, or your file layout differs, every cascade silently times out and
-parks with a deploy-timeout. Confirmation works by GET-ing git-committed helmfile
-files at the apply SHA and regex-matching pins, and by reading the highest
-`vX.Y.Z` git tag - so OCI-digest / commit-SHA deploy flows (Argo image-updater,
+None of these are on the CRD. If you enroll no repo named exactly
+`tatara-helmfile`, or your file layout differs, every cascade times out silently
+and parks with a deploy-timeout. Confirmation works by GET-ing git-committed
+helmfile files at the apply SHA, regex-matching pins, and reading the highest
+`vX.Y.Z` git tag - so OCI-digest and commit-SHA deploy flows (Argo image-updater,
 Flux) publish **no matching signal** even on GitHub.
 
 ### Seam 3: the SCM provider
@@ -243,9 +242,9 @@ providers are first-class.
 
 ## Coupling hotspots
 
-The couplings that stand between "tatara as shipped" and "tatara on your stack",
-ranked by how much they block the design intent. Each is real engineering, not a
-config change.
+The couplings that stand between tatara as shipped and tatara on your stack,
+ranked by how much they block the design intent. Each one is real engineering,
+not a config change.
 
 | # | Coupling | Where it lives | What running on your stack requires |
 |---|---|---|---|
@@ -263,8 +262,8 @@ config change.
 
 ## Can you run tatara on your stack?
 
-A quick self-assessment. "Yes" means it works today with configuration; "Code"
-means it needs engineering first.
+Find your stack in the left column. "Yes" means it works today with
+configuration. "Code" means you write some first.
 
 | If your stack is... | Can you run tatara today? |
 |---|---|
@@ -284,23 +283,23 @@ means it needs engineering first.
 ## Honest verdict
 
 !!! abstract "Where intent and reality stand"
-    Tatara is portable in **two of the three seams it was built for**, and not
+    tatara is portable in **two of the three seams it was built for**, and not
     portable in the one place the design intent cares about most. The
     operator/agent **wire** is genuinely generic and the deploy **act** is fully
-    external - so on paper "any agent, any GitOps" looks within reach. But below
-    the HTTP seam there is exactly **one** agent adapter, a version-specific
-    Claude Code TUI supervisor, and the coupling leaks up into the operator's
+    external, so on paper "any agent, any GitOps" looks within reach. Below the
+    HTTP seam, though, there is exactly **one** agent adapter - a version-specific
+    Claude Code TUI supervisor - and its coupling leaks up into the operator's
     pod-spawn and CRD validation. On the CD side the deploy mechanism is
-    swappable, but deploy-*confirmation* is welded to `tatara-helmfile` + GitHub
-    Actions by six non-configurable Go values, and because declaring change
+    swappable, but deploy-*confirmation* is welded to `tatara-helmfile` plus
+    GitHub Actions by six non-configurable Go values. Because declaring change
     significance is required, that helmfile-coupled path is the **hot path** for
     every implemented issue, not a rare opt-in.
 
-    There **is** a real escape hatch in the code today: a change with no declared
+    There **is** a real escape hatch in the code today. A change with no declared
     significance takes a legacy close-on-merge path that touches no helmfile and
-    works on GitHub or GitLab. So tatara **can** run with zero helmfile coupling
-    right now - but only by surrendering deploy-confirmation and swimming against
-    a platform that logs the no-helmfile path as an anomaly.
+    works on GitHub or GitLab. So you **can** run tatara with zero helmfile
+    coupling right now, at the price of deploy-confirmation, and against a
+    platform that logs the no-helmfile path as an anomaly.
 
     Underneath all of it, three things are unconditionally required and not yet
     optional: **Kubernetes**, **an OIDC IdP**, and the **full memory stack**
@@ -309,13 +308,12 @@ means it needs engineering first.
     **Bottom line:** the architecture *anticipates* portability - a clean SCM
     interface with two implementations, an agent-neutral HTTP wire, a
     DeployWatcher interface, a pluggable budget-mode switch, feature-flagged S3
-    and Prometheus. But **as shipped**, tatara runs on Claude Code and the
-    maintainer's helmfile + GitHub GitOps as **de-facto requirements**, with the
-    memory stack and an OIDC IdP as **genuine hard requirements**. Closing the
-    gap is real engineering - an `AgentRuntime` contract, a per-Project
+    and Prometheus. **As shipped**, though, tatara runs on Claude Code and the
+    maintainer's helmfile plus GitHub GitOps as **de-facto requirements**, with
+    the memory stack and an OIDC IdP as **genuine hard requirements**. Closing the
+    gap takes real engineering - an `AgentRuntime` contract, a per-Project
     deploy-target descriptor with live-state confirmation, significance made
-    optional, and memory made toggleable - not documentation and not a config
-    change.
+    optional, memory made toggleable - not documentation and not a config change.
 
 ---
 

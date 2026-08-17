@@ -8,69 +8,87 @@ hide:
 
 # tatara
 
-**Kubernetes-native agentic development platform.**
+**tatara runs an autonomous development loop on your Kubernetes cluster: it triages your issues, writes code, opens pull requests, and reviews them.**
 
-Tatara gives your engineering organization a permanent, autonomous software-development loop on top of Kubernetes. A single Kubernetes operator watches your GitHub or GitLab repositories, triages incoming issues with an AI agent, proposes improvements, writes code, opens pull requests, handles incidents, and reviews changes - all unattended, all auditable, all GitOps-driven.
+Here is one run, in tatara's own repository, with nothing staged for the demo.
 
-The name comes from the traditional Japanese iron-smelting forge: a collective, iterative process around a permanent substrate. Ephemeral agent sessions work iteratively against a permanent knowledge graph of your codebase.
+A Grafana alert fired at `2026-08-02T01:26:50Z`. No human filed anything: tatara's incident agent investigated it read-only and opened the issue itself, twelve minutes later, with the diagnosis in the body.
+
+Then nothing happened, because nothing is implemented until a person with commit rights says so. Four days later, one did, in full:
+
+```text title="tatara-operator#529, szymonrychu, 2026-08-06T15:21:36Z"
+Fix it!
+```
+
+That comment is the whole approval. The first implementation attempt then failed and produced nothing, and tatara did not try again:
+
+```text title="tatara-operator#529, szymonrychu-bot, 2026-08-06T20:00:37Z"
+tatara has stopped working this issue: task `incident-qe-c0bdeaf8ab61daab-9mqvr` ended in `failed` (`operator-error`).
+
+The issue stays open and is labelled `tatara-parked`, so the platform will not spend another agent on it until a human replies here. Comment to pick it back up.
+```
+
+Once restarted, the fix merged as `e70d0e09`, CI tagged `v2.0.4`, and the cluster ran it. Four comments from one maintainer, two of them under ten words. Six days wall clock, with four hours and fifty minutes of actual delivery inside them.
+
+Every quote above is from [tatara-operator#529](https://github.com/szymonrychu/tatara-operator/issues/529), and you can open the thread yourself. [Read the whole run](explainers/watch-one-run.md), including the review round that sent the fix back.
+
+---
+
+## Why it is called tatara
+
+That run was not one long-lived process. It was a sequence of pods that each started cold: the attempt that failed, the one that wrote the fix, the one that reviewed it and sent it back, the one that rewrote it. The name is the reason that works.
+
+A tatara is the traditional Japanese iron-smelting furnace. The clay stack is built for a single smelt and broken apart to get the bloom out; what carries forward is the iron, not the furnace.
+
+That is the shape of this platform, and it is the part newcomers get wrong. Agent pods are disposable and start knowing nothing. What persists is the code graph they read and the Task journal they write, so the pod that finishes your work is usually not the pod that started it.
+
+---
+
+## What that run did not show
+
+One issue exercises one path through the loop. These are the parts #529 had no occasion to use.
 
 <div class="grid cards" markdown>
 
--   :material-robot-outline: **Autonomous Development Loop**
+-   :material-brain: **A code graph the agents read from**
 
     ---
 
-    Issues move through triage, implementation, and review agents in sequence, each a discrete pod handing off through the operator's state machine. A maintainer approves by posting a comment; the implement agent judges it and cites it, the operator independently verifies the citation, and the operator itself merges once a review pod accepts the change and required checks are green.
-
-    [:octicons-arrow-right-24: The agentic operating model](concepts/agentic-model.md)
-
--   :material-brain: **Durable Knowledge Graph**
-
-    ---
-
-    Every repository is ingested into a persistent LightRAG + Neo4j graph. Agents query it for context instead of re-reading files cold.
+    The ingester walks each repository and pushes a code graph into LightRAG and Neo4j. Agents query it for context instead of re-reading files cold, which is what a pod that starts knowing nothing needs.
 
     [:octicons-arrow-right-24: Memory System](architecture/memory-architecture.md)
 
--   :material-kubernetes: **Native Kubernetes**
+-   :material-lightbulb-outline: **Work nobody filed**
 
     ---
 
-    Six CRDs (`Project`, `Repository`, `Task`, `QueuedEvent`, `Issue`, `MergeRequest`) managed by a controller-runtime operator. Everything is a CR; everything is auditable.
+    A periodic scan of the codebase and the knowledge graph proposes its own improvements, from new features to tech-debt and CI health fixes. #529 started from an alert; a Task can also start from something tatara noticed on its own.
+
+    [:octicons-arrow-right-24: Brainstorm](workflows/brainstorm.md)
+
+-   :material-source-repository: **One Task across several repositories**
+
+    ---
+
+    A single Task can span repositories and open a pull request in each, and related issues can be grouped into one agent run behind one combined change. #529 touched one repository, which is the easy case.
+
+    [:octicons-arrow-right-24: From Issue to PR](explainers/issue-to-pr.md)
+
+-   :material-kubernetes: **All of it is a CR**
+
+    ---
+
+    Six CRDs (`Project`, `Repository`, `Task`, `QueuedEvent`, `Issue`, `MergeRequest`) managed by a controller-runtime operator. The state machine that run walked is `kubectl get task`, not a dashboard you have to be given access to.
 
     [:octicons-arrow-right-24: CRD Reference](reference/index.md)
 
--   :material-shield-lock-outline: **Security First**
+-   :material-git: **Every deploy is a pull request**
 
     ---
 
-    Allowlist-gated intake, OIDC-authenticated everything, maintainer-only approval gates, headless agents with no interactive prompts.
-
-    [:octicons-arrow-right-24: Security Model](operations/security/index.md)
-
--   :material-git: **GitOps Deploy Model**
-
-    ---
-
-    Deploys happen only via helmfile PRs merged on an in-cluster ARC runner. No `kubectl set-image`, no surprise state drift.
+    "The cluster ran it" above is a helmfile pull request merged on an in-cluster ARC runner, which is the only way anything reaches the cluster. No `kubectl set-image`, no surprise state drift.
 
     [:octicons-arrow-right-24: CI/CD & Deploy](architecture/ci-cd.md)
-
--   :material-chart-line: **Built-in Observability**
-
-    ---
-
-    Every service exposes `/metrics`. Alert rules live as code in `tatara-observability`. Grafana incidents fire straight into the agent loop.
-
-    [:octicons-arrow-right-24: Observability](operations/observability.md)
-
--   :material-autorenew: **tatara Builds tatara**
-
-    ---
-
-    Tatara is enrolled as its own first Project: it brainstorms, implements, and reviews its own improvements, turns its own alerts into code and alerting fixes, and keeps these docs refreshed from the features it ships.
-
-    [:octicons-arrow-right-24: Self-Improvement](concepts/self-improvement.md)
 
 </div>
 
@@ -88,9 +106,9 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
 === "Engineering Managers"
 
-    You want your team's backlog to move faster without more headcount. You want proposals to appear automatically, implemented code to be reviewable, and a clear audit trail.
+    Nothing gets written until a person you named comments on the issue. `maintainerLogins` is empty by default and an empty list approves nothing, so an unconfigured Project reconciles cleanly and produces no code at all.
 
-    Tatara generates improvement proposals from a periodic brainstorm, routes them through your normal PR review flow, and requires a human maintainer to post an approving comment before any code is written. Nothing is unilateral.
+    What comes back is a pull request. A separate review pod, with no memory of having written the code, reviews it, and the operator merges only on an accepted verdict, at the exact commit that was reviewed, with CI green. When an attempt fails, tatara parks the issue and waits for a reply rather than retrying. Every attempt, review round, and failure is on the issue thread with a timestamp, as in the run above.
 
     Read [The Big Picture](explainers/big-picture.md) and [Workflows](workflows/index.md).
 
@@ -110,22 +128,9 @@ The name comes from the traditional Japanese iron-smelting forge: a collective, 
 
 ---
 
-## Headline capabilities
-
-| Capability | Detail |
-|---|---|
-| Issue triage | Triages every labeled issue: implement, close, or discuss |
-| Autonomous implementation | Writes code, commits to a branch, opens a PR |
-| PR review | Reviews human-authored PRs with inline suggestions |
-| Incident response | Grafana alert fires an investigation agent with Grafana MCP access |
-| Brainstorm | Periodic scan of the codebase and knowledge graph proposes improvements, from new features to tech-debt and CI health fixes |
-| Task continuity | A Task outlives any single pod: `Task.status.notes` is an append-only journal every pod reads at turn 0, so a bounded pod's handoff carries forward to the next one |
-| Multi-repo tasks | Single task can span and open PRs across multiple repositories |
-| Systemic improvements | Groups related issues into one agent run with a combined PR |
-
----
-
 ## Components at a glance
+
+Now that you know what a run looks like, here are the pieces that carry it.
 
 ```mermaid
 graph LR

@@ -1,9 +1,12 @@
 [tools]
-python = "3.12.4"
+python = "3.12.14"
+vale = "3.17.1"
 
 [env]
 _.python.venv = { path = ".venv", create = true }
 
+# requirements.txt stays the pip manifest. mise owns the python version, the
+# venv, and this task; nothing invokes pip directly, in CI or locally.
 [tasks.install]
 run = "pip install -r requirements.txt"
 
@@ -17,7 +20,18 @@ run = "mkdocs build --strict"
 run = [
   "./scripts/check-stale-terms.sh",
   "python3 scripts/check_runbook_anchors.py",
+  "vale docs/",
 ]
+
+[tasks.vale]
+run = "vale docs/"
 
 [tasks.test]
 run = "python3 -m unittest discover scripts -p 'test_*.py'"
+
+# The deploy job's only step. It lives here rather than inline in the workflow
+# so the command CI runs and the command a human can run are the same string.
+# `--force` is mkdocs' own flag for a non-fast-forward push to gh-pages; it was
+# there before this migration and its behaviour is unchanged.
+[tasks.deploy]
+run = "mkdocs gh-deploy --force"

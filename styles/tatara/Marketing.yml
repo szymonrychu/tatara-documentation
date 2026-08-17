@@ -1,0 +1,17 @@
+extends: existence
+message: "Cut the marketing intensifier '%s' - say what the reader gets instead."
+link: "https://github.com/szymonrychu/tatara-agent-skills/blob/main/skills/shared/tatara-writing-voice/SKILL.md"
+level: error
+ignorecase: true
+tokens:
+  - easily
+  - simply
+  - effortlessly
+  - powerful
+  - seamless(?:ly)?
+  - blazing(?:ly)?
+  - magical(?:ly)?
+  - cutting[- ]edge
+  - state[- ]of[- ]the[- ]art
+  - revolutionary
+  - game[- ]chang(?:er|ing)

@@ -19,7 +19,7 @@ covered := every Task with deliveredAt within the last 24h
 if covered is empty: mint nothing.
 else: mint ONE Task, kind=documentation,
       spec.documentsTasks = [covered...], spec.repositoryRef = the docs repo,
-      stage = documenting
+      state = under-implementation
 ```
 
 A merge to any enrolled repo's default branch does **not** spawn a documentation Task by itself
@@ -53,7 +53,7 @@ These are never documented, by design - not a gap, a filter.
 
 ## 4. Output
 
-The `documenting` pod's `submit_outcome` schema is **identical** to `implement`'s:
+The `documentation` pod's `submit_outcome` schema is **identical** to `implement`'s:
 
 ```json
 {"action":"submitted","title":"...","body":"...",
@@ -65,13 +65,13 @@ or
 ```
 
 Either way, the operator stamps `documentedBy` on **every** Task in `spec.documentsTasks` as the
-batch exits - `submitted` moves the stage `documenting -> reviewing` (the docs MR goes through
+batch exits - `submitted` moves the state `under-implementation -> awaiting-review` (the docs MR goes through
 the same [review](review.md) and [merge](merge-and-deploy.md) path as any other MR); `declined`
-moves it straight to `delivered`.
+moves it straight to `done`.
 
 !!! warning "The batch cannot pin its parents"
-    A `documenting` Task stuck past its 2h stage-work budget (`docStageBudget`) is force-moved to
-    `delivered(doc-timeout)`, and it stamps `documentedBy` on every covered parent **on the way
+    A `documentation` Task stuck past its 2h stage-work budget (`docStageBudget`) is force-moved to
+    `done(doc-timeout)`, and it stamps `documentedBy` on every covered parent **on the way
     out** - a stalled documentation pass never leaves its covered Tasks permanently
     undocumentable.
 
