@@ -474,6 +474,15 @@ the old machine's `failed(merge-blocked)` / `failed(deploy-blocked)`
 terminals are now the same park reasons, just reached without a separate
 `failed` state to land in.
 
+`merge-blocked` is the conflict cycle's exhaustion terminal; the
+`merge-conflict` **park reason** is a different exit from the same conflict
+and is never reached by spending laps. The self-heal is refused outright,
+before any lap, when something in `spec.mergeOrder` has **already merged**:
+re-implementing there would re-propose merged code and recreate deleted
+branches, so the Task parks `merge-conflict`, which has no re-entry and
+waits for a human. `ci-red` stands in exactly that relation to
+`ciRedReentries` and `ci-blocked`.
+
 The **head-moved**, **CI-red** and **merge-conflict** cycles each spawn a pod
 on every lap and are the three that matter for cost. None of them is bounded
 by `reviewRounds`, which moves only on `request_changes`.
