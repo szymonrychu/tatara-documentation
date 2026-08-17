@@ -4,59 +4,36 @@ title: Your First Project
 
 # Your First Project
 
-A `Project` CR is the top-level entity in tatara. One Project per logical SCM namespace (GitHub
-organization or GitLab group): it binds the bot identity, SCM connection, agent execution policy,
-and the per-project memory stack. Creating a Project triggers the operator to provision everything
-downstream - memory, webhooks, cron schedules, and optionally Grafana incident integration.
+By the end of this page you'll have a `Project` custom resource the operator has
+accepted, a memory stack running behind it, and a webhook your SCM provider can
+post to. Nothing else in tatara works until that exists.
 
-!!! info "Prerequisites"
+A `Project` is the top-level entity: one per logical SCM namespace, meaning one
+GitHub organization or one GitLab group. It binds four things together - the bot
+identity, the SCM connection, the agent execution policy, and the per-project
+memory stack. Applying it is what makes the operator provision everything
+downstream: the memory stack, the cron schedules, the webhook receiver, and the
+Grafana incident integration when you turn that on.
+
+Set aside about twenty minutes. Most of that is waiting for the memory stack to
+finish coming up.
+
+!!! info "Before you start"
     - tatara-operator deployed and healthy (see [Installation](installation.md))
-    - A dedicated bot account on your SCM provider with permissions to comment, label, and open
-      pull requests on the target repositories
-    - A Kubernetes Secret in the `tatara` namespace holding the bot's personal access token (PAT)
-      in key `token`
+    - A dedicated bot account on your SCM provider with permissions to comment,
+      label, and open pull requests on the repositories you plan to enroll
+    - The bot's personal access token (PAT) and a webhook secret, both covered in
+      [Prerequisites](prerequisites.md)
 
 ---
 
-## 1. Minimal Project
+## 1. Create the SCM Secret
 
-The minimum viable Project requires only the bot credentials and SCM binding. All other fields
-have enforced defaults.
+The Project references a Kubernetes Secret by name rather than carrying the token
+itself, so create the Secret first. It has to live in the same namespace as the
+Project.
 
-```yaml title="my-project.yaml"
-apiVersion: tatara.dev/v1alpha1
-kind: Project
-metadata:
-  name: my-project
-  namespace: tatara
-spec:
-  scmSecretRef: tatara-scm   # Secret in the same namespace; key "token" = bot PAT
-  triggerLabel: tatara        # label that activates the agent loop on issues (default: tatara)
-  maxConcurrentAgents: 3      # kill switch: max simultaneous agent PODS project-wide (default: 3; 0 fully pauses the project)
-  agentPodTTLSeconds: 3600    # bounds one pod's life; the Task persists across many pods (default: 3600, minimum 300)
-
-  scm:
-    provider: github          # github | gitlab
-    owner: my-org             # GitHub org name or GitLab group path
-    botLogin: my-org-bot      # bot account username on the SCM provider
-
-  agent:
-    model: claude-opus-4-8    # Claude model; no built-in default, set it explicitly
-    image: harbor.example.com/tatara-claude-code-wrapper:v1.2.3
-    effort: xhigh             # reasoning effort: low | medium | high | xhigh | max
-```
-
-!!! warning "Deploy through tatara-helmfile, not kubectl apply"
-    In production, apply the Project through the `tatara-project` chart (managed in
-    `tatara-helmfile`) rather than `kubectl apply` directly. The chart keeps the Project CR under
-    Helm ownership and ensures the co-deployed Repository CRs and Secrets are consistent. Direct
-    `kubectl apply` is fine in a development cluster. See [Enrollment](enrollment.md).
-
-### SCM Secret format
-
-Create the Secret before or alongside the Project:
-
-```yaml
+```yaml title="tatara-scm.yaml"
 apiVersion: v1
 kind: Secret
 metadata:
@@ -68,178 +45,62 @@ stringData:
                      # (GitHub fine-grained) or api + read/write_repository (GitLab). No webhook scope.
 ```
 
-### Required and key top-level fields
+```sh
+kubectl apply -f tatara-scm.yaml
+```
 
-| Field | Required | Default | Notes |
-|---|---|---|---|
-| `spec.scmSecretRef` | Yes | - | Secret name in the same namespace; key `token` = PAT |
-| `spec.scm.provider` | Yes | - | `github` or `gitlab` |
-| `spec.scm.owner` | Yes | - | GitHub org / GitLab group path |
-| `spec.scm.botLogin` | Yes | - | Bot account username |
-| `spec.triggerLabel` | No | `tatara` | Issues labeled with this activate the agent loop |
-| `spec.maxConcurrentAgents` | No | `3` | The project's kill switch: caps simultaneous agent PODS (the admission unit is the pod-spawn, not the Task). `0` fully pauses the project - no pod, of any kind, is ever admitted |
-| `spec.agentPodTTLSeconds` | No | `3600` | Bounds one agent pod's life; the Task itself persists across as many pods as it needs |
-| `spec.maxOpenTasks` | No | `6` | Separate lever from `maxConcurrentAgents`: caps how many Tasks may be *active* (any pod-eligible stage) at once, independent of how many pods are running concurrently |
+The token needs no webhook scope, because the operator never registers a webhook.
+You do that by hand in step 6.
 
 ---
 
-## 2. Memory sizing
+## 2. Write the smallest Project that works
 
-Each Project gets a dedicated memory stack: a CNPG PostgreSQL cluster, a Neo4j graph database, a
-LightRAG graph indexer, and the `tatara-memory` API server that other components query. This stack
-persists the code-knowledge graph agents traverse at runtime.
+Only `scmSecretRef` is required at the top level, and `provider`, `owner`, and
+`botLogin` are required inside `scm`. Everything else below is either a default
+worth seeing written down or a field with no default at all.
 
-```mermaid
-graph TD
-    CR["Project CR"] -->|reconcile| OP["tatara-operator"]
-    OP -->|provisions| PG["CNPG Cluster\n(pgInstances replicas,\npgStorage / replica)"]
-    OP -->|provisions| N4J["Neo4j StatefulSet\n(neo4jStorage)"]
-    OP -->|provisions| LR["LightRAG\n(graph indexer)"]
-    OP -->|provisions| MEM["tatara-memory\n(API server)"]
-    PG & N4J & LR --> MEM
-    MEM -->|all components healthy| RD["status.memory.phase = Ready"]
-    RD --> WH["status.webhookURL available\nRepository enrollments unblocked"]
-```
-
-Configure storage under `spec.memory`:
-
-| Field | Default | Description |
-|---|---|---|
-| `pgInstances` | `1` | CNPG cluster replica count. `1` for development; `3` for HA production |
-| `pgStorage` | `10Gi` | PVC size per PostgreSQL replica (PGDATA). Grows with repository count and embedding volume |
-| `pgWalStorage` | `8Gi` | PVC size per PostgreSQL replica for CNPG's dedicated WAL volume, separate from PGDATA |
-| `neo4jStorage` | `10Gi` | PVC for the Neo4j graph. Sized proportionally to total ingested lines |
-
-**Scaling guidance:**
-
-- **Development / single repository:** defaults (`pgInstances: 1`, `pgStorage: 10Gi`,
-  `neo4jStorage: 10Gi`) are sufficient for evaluation.
-- **Production / multiple repositories:** set `pgInstances: 3` for PostgreSQL HA and increase
-  storage to `20Gi`+ once ingestion consistently hits 80% capacity. The live tatara self-hosting
-  project runs `pgInstances: 3`, `pgStorage: 10Gi`, `neo4jStorage: 10Gi` across eight
-  repositories.
-- **Large monorepos (>500k LOC):** start at `neo4jStorage: 20Gi` and `pgStorage: 20Gi`.
-
-!!! warning "Storage provisioning is one-way"
-    PVC expansion requires a storage class that supports `allowVolumeExpansion`. The CNPG cluster
-    must be restarted after a resize. Plan capacity before the initial repository ingest to avoid
-    downtime.
-
-```yaml
+```yaml title="my-project.yaml"
+apiVersion: tatara.dev/v1alpha1
+kind: Project
+metadata:
+  name: my-project
+  namespace: tatara
 spec:
-  memory:
-    pgInstances: 3
-    pgStorage: 20Gi
-    neo4jStorage: 10Gi
-```
+  scmSecretRef: tatara-scm   # Secret in this namespace; key "token" holds the bot PAT
+  triggerLabel: tatara        # issues carrying this label enter the agent loop (default: tatara)
+  maxConcurrentAgents: 3      # kill switch: most agent pods at once, project-wide (default: 3; 0 pauses the project)
+  agentPodTTLSeconds: 3600    # bounds one pod's life; the Task outlives its pods (default: 3600, minimum 300)
 
----
+  scm:
+    provider: github          # github or gitlab
+    owner: my-org             # GitHub org name or GitLab group path
+    botLogin: my-org-bot      # the bot account's username on the provider
 
-## 3. Agent configuration
-
-`spec.agent` configures every agent pod the operator schedules for this Project.
-
-| Field | Default | Description |
-|---|---|---|
-| `model` | *(none)* | Claude model string, e.g. `claude-opus-4-8` or `claude-sonnet-4-6`. A single model serves all agent kinds in the Project unless overridden per kind in `modelByKind` |
-| `image` | *(none)* | Full `tatara-claude-code-wrapper` image reference (registry + tag). Pin to an explicit tag; never `latest` |
-| `effort` | `xhigh` | Reasoning effort: `low` / `medium` / `high` / `xhigh` / `max`. Passed to the wrapper as the `EFFORT` env var, which drives Claude's reasoning budget |
-| `maxTurnsPerPod` | `40` | **Deprecated, zero effect** - kept only because helmfile still sets it. Used to cap turns for a single pod's run (`implement` exempt) |
-| `maxTurnsPerTask` | `300` | **Deprecated, zero effect** - kept only because helmfile still sets it. What now bounds a runaway Task is a hard [24h residency cap](../reference/task-stages.md#residency-the-dead-man-switch) |
-| `turnTimeoutSeconds` | `1800` | Per-turn inactivity window in seconds. **Does not kill the turn** - after this many seconds with no agent output, the operator probes the agent instead and only interrupts it after several unanswered probes. See [Stall detection](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop) |
-| `maxReviewRounds` | `3` | **Deprecated, zero effect.** The `reviewing` <-> `implementing` cycle is no longer capped by a round count |
-| `maxPodRecreations` | `3` | **Deprecated, zero effect.** A pod that never becomes Ready still respawns, uncapped; watched by an alert (`operator_pod_recreations_total`) instead of failing the Task |
-| `permissionMode` | `bypassPermissions` | Claude Code permission mode. Leave as default; headless agents require this mode |
-
-```yaml
-spec:
   agent:
-    model: claude-opus-4-8
+    model: claude-opus-4-8    # no default in the CRD; set it yourself
     image: harbor.example.com/tatara-claude-code-wrapper:v1.2.3
-    effort: xhigh
-    maxTurnsPerPod: 40
-    maxTurnsPerTask: 300
-    turnTimeoutSeconds: 1800    # 30 minutes of inactivity, not wall-clock age
-    maxReviewRounds: 3
-    maxPodRecreations: 3
+    effort: xhigh             # low, medium, high, xhigh, max (default: xhigh)
 ```
 
-!!! tip "Turn timeout semantics"
-    `turnTimeoutSeconds` measures inactivity, not elapsed time. An agent writing a large Go
-    implementation that keeps emitting tool-call output is never killed by this timer. Only a
-    stalled turn (no output at all for the timeout duration) is terminated. The default 1800 s
-    handles large file writes and long compilation steps.
+Two of those four top-level fields are worth understanding before you go further.
+`maxConcurrentAgents` counts agent **pods**, not Tasks, and setting it to `0` is
+the whole-project pause: no pod, of any kind, is ever admitted.
+`agentPodTTLSeconds` bounds one pod, not the work - a Task that outlives its pod
+gets a handoff note and a fresh pod picks up where the last one stopped.
 
-### Lifecycle hooks
-
-Optional shell commands the wrapper runs at fixed lifecycle points. Each is executed via `sh -c`;
-a non-zero exit is logged but never aborts the agent run.
-
-```yaml
-spec:
-  agent:
-    hooks:
-      preClone: "echo cloning $1"
-      postClone: "mise install"
-      conversationStart: "notify-start.sh"
-      agentTurnFinished: "run-metrics-push.sh"
-```
-
-| Hook | When it fires |
-|---|---|
-| `preClone` | Before each repository clone; receives the repo URL as `$1` |
-| `postClone` | After each successful clone and checkout; receives clone destination as `$1` |
-| `conversationStart` | Once after the agent session boots successfully |
-| `conversationRestart` | Each time the session is relaunched after a crash (the `--continue` path) |
-| `agentTurnFinished` | After each agent turn completes |
-| `conversationFinished` | Once during session teardown |
+!!! warning "Deploy through tatara-helmfile, not kubectl apply"
+    In production, apply the Project through the `tatara-project` chart managed in
+    `tatara-helmfile` rather than `kubectl apply` directly. The chart keeps the
+    Project CR under Helm ownership and keeps the co-deployed Repository CRs and
+    Secrets consistent with it. Direct `kubectl apply` is fine in a development
+    cluster, which is what this page assumes. See [Enrollment](enrollment.md).
 
 ---
 
-## 4. Approval and intake
+## 3. Name your maintainers
 
-Tatara's intake model determines which humans can drive the agent loop; a separate allow-list
-determines who can release an issue into implementation.
-
-**You approve by commenting.** When the `implement` agent has settled the scope, a maintainer posts a
-comment, the agent judges whether it approves, and it cites that comment - its forge `external_id`
-plus a verbatim quote - in `submit_outcome(action=approved)`, along with the plan note it wants
-approved. The operator does not take the
-agent's judgment on faith: it independently checks that the cited comment exists, that its author
-is a verified maintainer and not the bot, and that the quoted text really occurs in the comment
-body the operator itself holds. It then pins the comment's id on the Issue as single-use evidence
-and lets the work start. No label approves anything, and the operator has no wordlist of its own -
-it never decides what a comment *means*.
-
-### What approves, and what does not
-
-| A maintainer comments | Result |
-|---|---|
-| `go ahead, I approve!` | **Approves**, if the `implement` agent cites it - the agent reads this as unambiguous consent |
-| `LGTM` | **Approves**, for the same reason. There is no required phrase; the agent judges ordinary language |
-| `I can't approve this until the tests pass` | **Should not approve** - this is a judgment call, not a structural guarantee. An `implement` agent reading this correctly does not cite it. The operator only confirms the quote exists in the comment it is given; it does not judge meaning, so a misjudging agent that cited this anyway would not be caught here |
-| An `approve` from an account not in `maintainerLogins` | Does not approve. Identity is checked before the quoted text is even compared |
-| The bot posting `go ahead` | Does not approve. The bot is excluded structurally, before the quoted text is compared |
-
-If no citation passes, the Task parks. **Nothing is posted to the issue** - the reason lives only
-in the operator's logs and metrics, not on the thread, so there is no prompt telling anyone a
-comment is needed. Post a comment at any time afterwards and the next comment un-parks the Task to
-a fresh `implement` pod, which picks up the conversation where it left off. See
-[Approval Gates](../operations/security/approval-gates.md#the-approval-grammar) for the full
-rules, including why there is no requirement that the cited comment be the thread's most recent
-one.
-
-### Allow-lists
-
-| Field | Effect when empty | Effect when set |
-|---|---|---|
-| `spec.scm.maintainerLogins` | **Closed by default.** No login is a maintainer, so no comment can ever approve anything and no issue - human-filed or bot-authored - ever advances to implementation | Only a comment authored by a listed login can be cited as approval |
-| `spec.scm.reporterLogins` | Issues and comments from any author are processed | Only the bot, maintainers, and listed reporters trigger the agent loop; all others are silently dropped at intake |
-
-!!! danger "Security recommendation"
-    Set both `maintainerLogins` and `reporterLogins` to the real humans who hold commit access to
-    your repositories. Leaving them empty permits any GitHub or GitLab user who can file an issue
-    to steer an agent that has elevated SCM permissions. See [Prompt-Injection Defenses](../operations/security/prompt-injection.md) for the full threat model.
+Add at least one maintainer login to the Project you wrote in step 2:
 
 ```yaml
 spec:
@@ -252,264 +113,160 @@ spec:
       - bob
 ```
 
-Both lists are overridable per-repository via `RepositorySpec.maintainerLogins` and
-`RepositorySpec.reporterLogins`.
+Skip this and your Project still applies cleanly, still provisions its memory
+stack, and still never does any work. `maintainerLogins` is closed by default: an
+empty list means no account is a maintainer, so no comment can approve anything
+and no issue ever advances out of `refined`. This is the single most common
+reason a first Project looks healthy and sits idle.
 
-### Label set
+Approval in tatara is a comment, not a label. A maintainer comments on the issue,
+the `implement` agent decides whether that comment approves and cites it by id
+plus a verbatim quote, and the operator then checks independently that the comment
+exists, that its author is a maintainer and not the bot, and that the quoted text
+really appears in the body the operator itself holds. There is no required phrase
+and no wordlist. Read [Approval Gates](../operations/security/approval-gates.md#the-approval-grammar)
+for the full grammar.
 
-The operator projects a small set of labels onto an issue as a **one-way, read-only mirror**
-of `Issue.status.status` and `Task.status.stage` - useful for dashboards and humans scanning the
-issue list, but never read back to decide anything. Defaults work out of the box; override only
-to match organizational naming conventions. Field names are on `spec.scm.*` (e.g.
-`brainstormingLabel`, `declinedLabel`, `incidentLabel`) plus the top-level `triggerLabel`; see the
-merged `tatara-operator` source for the exact current set and defaults, since the label
-vocabulary is deliberately not part of this contract's stable surface the way the approval
-grammar below is.
+`reporterLogins` is the other half. Leave it empty and the operator acts on issues
+and comments from any author. Set it and everyone outside the list, the maintainer
+set, and the bot is dropped at intake.
 
-### Merge policy
+!!! danger "Set both lists to real humans"
+    An empty `reporterLogins` lets anyone who can file an issue steer an agent that
+    holds elevated SCM permissions. Put the people who already have commit access
+    in both lists. See [Prompt-Injection Defenses](../operations/security/prompt-injection.md)
+    for the threat model.
 
-An agent-opened PR is never merged by an agent, and no tatara-opened PR is ever opened with the
-forge's own merge-when-green feature switched on. Once a `review` pod calls
-`submit_outcome(verdict=approve)` from a separate pod that structurally cannot decide its own
-diff's fate on the forge, the operator itself reads the live PR head, posts a `COMMENT`-type
-review carrying the verdict, and [merges it](../workflows/merge-and-deploy.md#the-merge-sequence)
-as soon as required checks are green - never a native forge `APPROVE`, since GitHub blocks a
-PR's own author from approving it (one bot identity means that call always 422s). There is no
-SCM branch-protection rule that adds a human merge step on top of this: a rule requiring an
-approving review would deadlock every merge, because the platform can never satisfy it on its
-own PR. See [the accepted-risk note](../operations/security/index.md) for what real
-defense-in-depth looks like under one bot identity instead.
-
-### PR reaction scope
-
-`spec.scm.prReactionScope` gates which human PRs/MRs the cron `mrScan` re-review path reacts to.
-It has **no default**, and unset is the widest setting, not the narrowest:
-
-- unset / `all` (the effective default): the `mrScan` path reviews **every open human PR/MR** in
-  every enrolled repository. This is the historical open behavior.
-- `labeledOrMentioned`: restricts `mrScan` re-review to PRs labeled with `triggerLabel` or that
-  `@mention` the bot account, so unlabeled, un-mentioned PRs are not re-reviewed every scan cycle.
-
-!!! warning "Set this explicitly to narrow cron re-review"
-    The field is deliberately not defaulted to `labeledOrMentioned`: a defaulted value is
-    indistinguishable from an explicit one, so auto-defaulting would silently gate every project.
-    If you want the bot to only re-review labeled/mentioned PRs on a schedule, set
-    `prReactionScope: labeledOrMentioned` yourself. (The inbound-webhook PR path is separately
-    hardcoded to labeled-or-mentioned regardless of this field; this setting governs the cron
-    re-review loop.)
+    Your `botLogin` must not appear in either list. The API rejects the Project if
+    it does, because the bot is excluded from the approval path structurally.
 
 ---
 
-## 5. Optional: cron activities, Grafana, and board projection
+## 4. What you did not set
 
-### Cron activities
+The Project above leaves the rest of the configuration surface at its defaults,
+and those defaults are the right place to start:
 
-Cron drives the autonomous loop. All schedules use standard 5-field cron syntax. An empty schedule
-disables that activity.
+- **Memory sizing.** One Postgres instance, 10Gi of PGDATA, 8Gi of WAL, 10Gi for
+  Neo4j. Enough to evaluate tatara against a single repository.
+- **Agent tuning.** A 1800-second per-turn inactivity window, `bypassPermissions`,
+  and one model for every agent kind.
+- **Cron activities.** No schedule is set, so nothing scans, refines, brainstorms,
+  or upgrades on its own yet. Webhook-driven work still runs.
+- **Grafana, board projection, project guidance, and the label vocabulary.** All
+  optional, all off or defaulted.
 
-!!! note "Refine runs automatically"
-    `spec.scm.cron.refine` fires as a mandatory pre-step before each scan and brainstorm cycle.
-    It does not need its own schedule. `closedLookbackDays` (default 30 when unset) controls how
-    far back closed issues are loaded for already-implemented detection.
+When you need to change one of them, every field, its type, its default, and what
+it actually does is in the
+[Project configuration reference](../reference/project-configuration.md). The
+[Project CRD reference](../reference/project.md) covers the same object at the API
+level, including the status fields.
 
-=== "Issue and MR scans"
+---
 
-    ```yaml
-    spec:
-      scm:
-        cron:
-          issueScan:
-            schedule: "0 * * * *"   # every hour at :00
-            maxPerRepo: 1            # max concurrent issue-scan tasks per repository
-          mrScan:
-            schedule: "0 * * * *"
-            maxPerRepo: 1
-    ```
+## 5. Check it before you apply
 
-    `maxPerRepo` caps concurrent scan tasks per repository lane. The default of `1` is the safe
-    starting point; a single scan agent per repo prevents interleaving conflicts.
-
-=== "Brainstorm"
-
-    ```yaml
-    spec:
-      scm:
-        cron:
-          brainstorm:
-            enabled: true
-            schedule: "0 * * * *"
-            maxOpenProposals: 8      # skip cycle if open proposals >= this value project-wide
-            sources:                 # docs | memory | internet
-              - docs
-              - memory
-              - internet
-    ```
-
-    One brainstorm task fires per project per cycle regardless of the `maxOpenProposals` cap. The
-    cap determines whether the cycle is *skipped entirely*, not how many tasks run.
-
-    `sources` controls what the brainstorm agent reads to generate proposals:
-
-    | Source | What the agent reads |
-    |---|---|
-    | `docs` | Repository documentation and code already ingested into the memory graph |
-    | `memory` | The structured knowledge graph (entity + relationship queries) |
-    | `internet` | External web search for relevant context and prior art |
-
-=== "Documentation"
-
-    ```yaml
-    spec:
-      scm:
-        cron:
-          documentation:
-            enabled: true
-            schedule: "0 2 * * *"   # nightly at 02:00
-    ```
-
-    `documentation` is a schedule-driven, repo-scoped kind that keeps a project's docs repo
-    current: on each tick it diffs what changed across the project's other repos since the docs
-    repo was last meaningfully updated, and opens a PR to the docs repo only if the accumulated
-    change is non-trivial. There is no webhook path - only the cron tick drives it. See the
-    [Documentation workflow](../workflows/documentation.md) for details.
-
-### Grafana incident-response integration
-
-When enabled, the operator provisions a per-project `grafana-mcp` **Deployment** (read-only
-Grafana Viewer service account) and exposes an alert-webhook receiver at `<webhookURL>/grafana`.
-Agent pods reach it over the network via the `TATARA_GRAFANA_MCP_URL` env var the operator injects;
-it is a standalone in-cluster service, not a sidecar container co-located in each agent pod.
-Grafana alert rules that POST to the webhook receiver trigger automatic incident-response tasks.
-
-```yaml
-spec:
-  grafana:
-    enabled: true
-    url: http://prometheus-grafana.monitoring.svc.cluster.local
-    secretRef: tatara-grafana
+```sh
+kubectl apply -f my-project.yaml --dry-run=server
 ```
 
-The referenced Secret must contain two keys:
+A server-side dry run runs the schema and the validation rules without persisting
+anything, so it catches a bad enum value, a missing required field, or a
+`botLogin` you also listed as a maintainer.
 
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: tatara-grafana
-  namespace: tatara
-type: Opaque
-stringData:
-  serviceAccountToken: "glsa_..."   # Grafana Viewer SA token (mounted into grafana-mcp)
-  webhookSecret: "..."              # bearer the Grafana contact point presents to the webhook
-```
-
-!!! note "`cooldownSeconds` is deprecated"
-    The `grafana.cooldownSeconds` field is retained for API compatibility but has no effect.
-    Per-alert-group refire dedup is handled at admission time via in-flight idempotency.
-
-### Project board projection
-
-```yaml
-spec:
-  scm:
-    board:
-      githubProjectNumber: 42   # GitHub Projects v2 (or classic) project number
-      statusField: Status       # board field tatara writes to (default: "Status")
-```
-
-For GitLab, use `gitlabBoardId` instead of `githubProjectNumber`.
-
-### Project guidance
-
-`spec.scm.guidance` is free-form text appended verbatim to brainstorm and health-check prompts.
-Use it to scope the agents' focus area for this project:
-
-```yaml
-spec:
-  scm:
-    guidance: >-
-      Treat the helm charts, CI pipelines, and Kubernetes configuration as in-scope alongside
-      application features. Prioritize reliability and observability improvements.
-```
+!!! warning "A misspelled field is not an error"
+    Kubernetes prunes fields the live CRD does not know about, silently and with no
+    message anywhere. `maxConcurentAgents` does not fail the dry run - it vanishes,
+    and the Project runs on the default. If a setting appears to have no effect,
+    read the object back with `kubectl -n tatara get project my-project -o yaml`
+    and check the field is still there.
 
 ---
 
 ## 6. Apply and watch
 
-Apply the Project (via tatara-helmfile in production, or directly in a development cluster):
-
 ```sh
 kubectl apply -f my-project.yaml
 ```
 
-Watch the memory stack come up:
+Now watch the memory stack come up:
 
 ```sh
 kubectl -n tatara get project my-project -w \
   -o jsonpath='{.status.memory.phase}{"\n"}'
 ```
 
-Wait for `phase` to become `Ready`. The operator sets this once the CNPG cluster, Neo4j,
-LightRAG, and the memory API server are all healthy. Repository enrollments (and task/lifecycle
-agent spawns) stay gated for a further **3 minutes** after `phase` first turns `Ready`, so a
-single blip cannot herd-release the whole backlog at once. During that window a Repository shows
-a `MemoryNotReady` condition with message `waiting for project my-project memory stack to become
-stably Ready` even though `status.memory.phase` already reads `Ready` - this is expected, not a
-stuck reconcile.
+Wait for the phase to become `Ready`. The operator sets it once the CNPG Postgres
+cluster, Neo4j, LightRAG, and the memory API server are all healthy. Provisioning
+four backends from cold takes several minutes.
 
-!!! info "Phase progression"
-    `Provisioning` -> `Ready` (or `Failed` on an apply or password error). If the phase stays
-    `Provisioning` for more than a few minutes, check the condition message:
+!!! info "If the phase does not move"
+    The phase runs `Provisioning`, then `Ready`, or `Degraded` and `Failed` when a
+    backend does not come up. `status.memory.notReady` names which of the four is
+    holding it, which is the fastest way to find out what is wrong:
+
     ```sh
+    kubectl -n tatara get project my-project \
+      -o jsonpath='{.status.memory.notReady}{"\n"}'
     kubectl -n tatara describe project my-project
-    # look for the MemoryReady condition
     kubectl -n tatara get pods -l tatara.dev/project=my-project
     ```
-    If `phase` is already `Ready` but Repository enrollment or task spawning still appears
-    blocked, check `status.memory.readySince` - work stays gated until 3 minutes after that
-    timestamp.
 
-Once `Ready`, grab the webhook URL:
+Repository **ingestion** stays gated for a further three minutes after the phase
+first turns `Ready`, so one blip cannot release the whole backlog at once. During
+that window a Repository shows a `MemoryNotReady` condition reading `waiting for
+project my-project memory stack to become stably Ready` even though
+`status.memory.phase` already says `Ready`. That is the debounce working, not a
+stuck reconcile. Check `status.memory.readySince` for when the window opened.
+Agent pods are not gated by this - they spawn and run whatever the memory stack is
+doing, and work against a degraded stack with the degradation declared to them.
+
+Once the phase reads `Ready`, take the webhook URL:
 
 ```sh
 kubectl -n tatara get project my-project \
   -o jsonpath='{.status.webhookURL}'
 ```
 
-Register this URL in your SCM provider (GitHub: organization Settings -> Webhooks; GitLab: group
-Settings -> Webhooks):
+### Register the webhook
+
+The operator validates inbound payloads but never registers a webhook, so this
+part is manual. In GitHub go to organization Settings, then Webhooks; in GitLab go
+to group Settings, then Webhooks.
 
 | Setting | Value |
 |---|---|
 | Payload URL | value from `status.webhookURL` |
 | Content type | `application/json` |
-| Secret | `webhookSecret` value from the operator Helm values |
+| Secret | the `webhookSecret` from [Prerequisites](prerequisites.md#webhook-secret) |
 | Events (GitHub) | Issues, Issue comments, Pull requests, Pull request reviews |
 | Events (GitLab) | Issues events, Comments, Merge request events |
 
-Tail structured operator logs to confirm reconciliation is healthy:
+Then tail the operator's structured logs and confirm it is reconciling your
+project without errors:
 
 ```sh
-kubectl -n tatara logs deploy/tatara-operator -f | jq .
+kubectl -n tatara logs deploy/tatara-operator -f | jq 'select(.project == "my-project")'
 ```
-
-Look for `"msg":"project reconciled"` or `"msg":"memory stack ready"` with your project name in
-the `resource_id` field.
 
 ### Watch it work
 
-Once you file a test issue, watch the Task the operator mints for it move through the state
-machine directly:
+File a test issue, label it with your `triggerLabel`, and watch the Task the
+operator mints for it move through the state machine:
 
 ```sh
 kubectl -n tatara get tasks -o custom-columns=\
 NAME:.metadata.name,STATE:.status.state,PARK:.status.parkReason,KIND:.spec.kind,AGENT:.status.agentKind -w
 ```
 
-`STATE` is the single source of truth (see [Task reference](../reference/task.md) for the full
-eight-value enum, plus the orthogonal `parkReason` flag); `KIND` is the immutable origin and `AGENT` is whichever pod is running right
-now - they diverge as soon as an issue moves past `refined`. The mirrored `Issue` and
-`MergeRequest` CRs the Task owns are visible the same way:
+`STATE` is the single source of truth, and `PARK` is an orthogonal flag rather
+than another state - see the [Task reference](../reference/task.md) for both
+enums. `KIND` is the origin the Task was minted with and never changes; `AGENT` is
+whichever pod is running right now, so the two diverge as soon as the issue moves
+past `refined`.
+
+The mirrored `Issue` and `MergeRequest` CRs the Task owns are visible the same
+way:
 
 ```sh
 kubectl -n tatara get iss,mr -l tatara.dev/task=<task-name>
@@ -517,158 +274,11 @@ kubectl -n tatara get iss,mr -l tatara.dev/task=<task-name>
 
 ---
 
-## Annotated full Project YAML
+## Where to go next
 
-A production-ready example for a GitHub organization with all commonly used fields.
-
-```yaml title="my-project-full.yaml" linenums="1"
-apiVersion: tatara.dev/v1alpha1
-kind: Project
-metadata:
-  name: my-project              # (1)!
-  namespace: tatara
-spec:
-  scmSecretRef: tatara-scm      # (2)!
-  triggerLabel: tatara          # (3)!
-  maxConcurrentAgents: 5        # (4)!
-  agentPodTTLSeconds: 3600      # (5)!
-  maxOpenTasks: 6                # (6)!
-
-  agent:
-    model: claude-opus-4-8      # (7)!
-    image: harbor.example.com/tatara-claude-code-wrapper:v1.2.3  # (8)!
-    effort: xhigh               # (9)!
-    maxTurnsPerPod: 40           # (10)!
-    maxTurnsPerTask: 300         # (11)!
-    turnTimeoutSeconds: 1800    # (12)!
-    maxReviewRounds: 3           # (13)!
-    maxPodRecreations: 3         # (14)!
-
-  memory:
-    pgInstances: 3              # (15)!
-    pgStorage: 20Gi             # (16)!
-    neo4jStorage: 10Gi          # (17)!
-
-  scm:
-    provider: github            # (18)!
-    owner: my-org               # (19)!
-    botLogin: my-org-bot        # (20)!
-    botEmail: 12345+my-org-bot@users.noreply.github.com  # (21)!
-    maintainerLogins:           # (22)!
-      - alice
-      - bob
-    reporterLogins:             # (23)!
-      - alice
-      - bob
-    prReactionScope: labeledOrMentioned  # (24)!
-    guidance: >-                # (25)!
-      Focus on reliability and observability alongside new features.
-    cron:
-      issueScan:
-        schedule: "0 * * * *"
-        maxPerRepo: 1           # (26)!
-      mrScan:
-        schedule: "0 * * * *"
-        maxPerRepo: 1
-      brainstorm:
-        enabled: true
-        schedule: "0 * * * *"
-        maxOpenProposals: 8     # (27)!
-        sources:
-          - docs
-          - memory
-          - internet
-      documentation:
-        enabled: true
-        schedule: "0 2 * * *"
-      refine:
-        closedLookbackDays: 30  # (28)!
-
-  grafana:
-    enabled: true               # (29)!
-    url: http://prometheus-grafana.monitoring.svc.cluster.local
-    secretRef: tatara-grafana   # (30)!
-
-  queue:
-    capacity: 5                 # (31)!
-    alertCapacity: 1            # (32)!
-```
-
-1.  Project name must be unique per namespace. It becomes the label `tatara.dev/project` on all
-    downstream resources (agent pods, memory stack, cron jobs).
-2.  Name of the Kubernetes Secret in the same namespace; must contain key `token` with the bot PAT.
-    The Secret must exist before the Project is applied.
-3.  Issues labeled with this value activate the agent loop. Defaults to `tatara`. Match this to
-    the label you apply in your SCM provider to request agent attention.
-4.  The project's kill switch: maximum concurrent agent **pods** across all repositories in this
-    Project - the admission unit is the pod-spawn, not the Task. Setting this to `0` fully pauses
-    the project: no `QueuedEvent` is ever admitted, so no pod and no Task is created.
-5.  Bounds one agent pod's life in seconds. The Task itself persists across as many pods as it
-    needs; a pod that runs past this deadline is stopped with a guaranteed handoff note written to
-    `Task.status.notes`, and a fresh pod picks up where it left off. Minimum `300`.
-6.  A separate lever from `maxConcurrentAgents`: caps how many Tasks may be *active* (any
-    pod-eligible stage) at once, independent of how many pods are running concurrently right now.
-7.  Claude model for all agent kinds in this Project. A single model serves every kind unless
-    overridden per kind in `modelByKind`. Changing this affects new pods immediately; an in-flight
-    pod continues with the model it started on.
-8.  Full image reference for the `tatara-claude-code-wrapper` container. Pin to an explicit digest
-    or tag; the operator uses this verbatim in every agent Pod spec.
-9.  Reasoning effort level. `xhigh` is the default and the recommended starting point. Lower
-    values reduce API cost but also agent quality on complex multi-file implementation tasks.
-10. Deprecated, zero effect - kept only because helmfile still sets it. Used to cap turns for a
-    single pod's run (`implement` exempt).
-11. Deprecated, zero effect - kept only because helmfile still sets it. A 24h residency cap,
-    hardcoded rather than a field, is what actually bounds a runaway Task now.
-12. Per-turn inactivity window in seconds. Does **not** kill the turn: past this many seconds
-    with no agent output the operator probes the agent instead, and only interrupts the session
-    after several unanswered probes. A turn actively writing files or running tests is never
-    probed.
-13. Deprecated, zero effect. The `reviewing` <-> `implementing` cycle is no longer capped by a
-    `request_changes` round count.
-14. Deprecated, zero effect. A pod that never becomes Ready within 5 minutes of creation still
-    respawns, automatically and uncapped; repeated respawns are watched by an alert instead of
-    failing the Task.
-15. CNPG PostgreSQL replica count. `1` is fine for development; `3` delivers HA via synchronous
-    replication and is required for production workloads.
-16. PVC storage allocated per PostgreSQL replica. Stores embedding vectors; scale with the number
-    and size of enrolled repositories.
-17. PVC for the Neo4j graph database. The code-knowledge graph grows with total ingested line
-    count across all enrolled repositories.
-18. SCM provider: `github` or `gitlab`.
-19. GitHub organization name or GitLab group path (as it appears in repository URLs).
-20. Username of the dedicated bot account. Its PAT must grant repo contents read/write, issues,
-    pull requests, and org-membership read on all target repositories. No webhook-admin scope:
-    the operator never registers webhooks (you configure them manually, section 6).
-21. GitHub noreply commit-author email for the bot. Links agent commits to the bot account in
-    the GitHub web UI. Find this in the bot account's GitHub email settings.
-22. Human maintainer logins. **Required for anything to ever be approved** - empty means no
-    approvals are ever possible. When set, only a comment from one of these accounts can be cited
-    as approval by the `implement` agent, and the operator independently verifies that citation; they
-    also form the trusted-insider set for intake bypass. Overridable per-repository.
-23. Reporter allow-list. When set, issues and comments from accounts not in this list, not in
-    `maintainerLogins`, and not the bot are silently dropped at intake. Closes the primary
-    prompt-injection vector. Overridable per-repository.
-24. Cron `mrScan` re-review scope. This example opts in to the narrow setting. Left unset (or
-    `all`), the `mrScan` path re-reviews every open human PR/MR each cycle. `labeledOrMentioned`
-    restricts scheduled re-review to PRs labeled with `triggerLabel` or that `@mention` the bot.
-    The field has no default; set it explicitly to narrow the loop.
-25. Free-form project charter text appended verbatim to brainstorm goal prompts. Use this to focus
-    agent attention on your project's priorities and in-scope concerns.
-26. Maximum concurrent issue-scan (or MR-scan) Tasks per repository lane. `1` is the safe default;
-    a single scan agent per repo prevents conflicting concurrent scans.
-27. Project-wide cap on open, unapproved agent proposals across all repositories. When the count
-    reaches this number, the brainstorm cycle is skipped entirely for that tick.
-28. How far back in days closed issues are loaded during the refine pre-step for
-    already-implemented detection. Defaults to 30 days when not set.
-29. Enables the per-project Grafana integration: a read-only `grafana-mcp` Deployment provisioned
-    with a Viewer service account token (agents reach it via the injected `TATARA_GRAFANA_MCP_URL`,
-    not as a pod sidecar), and an alert-webhook receiver at `<webhookURL>/grafana`.
-30. Kubernetes Secret containing two keys: `serviceAccountToken` (Grafana Viewer SA token,
-    mounted into the grafana-mcp container) and `webhookSecret` (bearer token the configured
-    Grafana contact point must present to the webhook).
-31. Queue admission capacity - maximum simultaneously admitted normal-class events. Defaults to
-    `maxConcurrentAgents` when not set. Override only to decouple queue capacity from the
-    concurrency cap.
-32. Reserved concurrent slots for alert-class events (Grafana-sourced incidents). Default 1.
-    Alert slots are separate from `capacity`, ensuring an incoming incident always gets an agent
-    pod even when the normal queue is fully saturated.
+- [Enroll your repositories](enrollment.md) so the operator has something to
+  ingest and monitor.
+- [Project configuration reference](../reference/project-configuration.md) for the
+  fields you left at their defaults in step 4.
+- [Task State Machine](../reference/task-stages.md) for what the `STATE` column is
+  telling you.

@@ -4,21 +4,40 @@ title: From Issue to PR
 
 # From Issue to PR
 
-*Follow one GitHub issue through the whole tatara machine - from the moment you click "Submit" to the moment the change is merged and deployed.*
+Follow one issue through the whole machine and you will know what happens at every point between clicking "Submit" and seeing the change deployed, and where you can step in. This is the general walkthrough; [Watch One Run](watch-one-run.md) is the same journey as one real run in tatara's own repository, with the thread quoted.
 
-The single source of truth for where a piece of work stands is `Task.status.state`, a Kubernetes-native field you can watch with `kubectl get tasks`. The operator also projects a small, per-project-configurable set of labels onto the SCM issue as a read-only mirror of `Issue.status.status` and `Task.status.state` - so you do not need cluster access to follow along - but the labels are a **one-way projection**, never a control input. Nothing in the operator ever reads a label to decide what happens next; a Task's status changes only from the transition table, driven by `submit_outcome` calls and comment-grammar checks. One label you will see referenced by name throughout the platform's docs and runbooks is `tatara-parked`, applied whenever a Task carries any `parkReason` - see [Approval Gates](../operations/security/approval-gates.md#labels-are-write-only) for the full projection rule.
+## The eight states, up front
+
+Where a piece of work stands is `Task.status.state`, a field you can watch with `kubectl get tasks`. It is a closed eight-value enum, and the whole page below is a tour of it:
+
+| State | What is happening |
+|---|---|
+| `new` | Triage. No pod runs |
+| `refined` | The approval gate. A pod is up, writing a plan and looking for a maintainer comment to cite |
+| `under-implementation` | Code is being written. A pod is up |
+| `awaiting-review` | A review pod is reading the diff |
+| `merged` | The merge phase. The operator is walking the Task's merge order. No pod |
+| `deployed` | Merged, waiting for the deploy to land. No pod |
+| `done` | Terminal, success |
+| `rejected` | Terminal, stopped |
+
+Two things worth fixing in your head before you start. `parked` and `failed` are **not** states: parking is a separate flag, `status.parkReason`, that a Task carries alongside whatever state it is in. And `merged` and `deployed` name the phase, not the milestone - a Task at `merged` has an accepted approval and an operator working its merge order, not necessarily a merged pull request.
+
+Twenty-five transitions connect those eight states, and six guards constrain them. [The Task state machine](../reference/task-stages.md) tabulates every edge, guard, and park reason; this page does not repeat them.
+
+The operator also projects a small, per-project-configurable set of labels onto the SCM issue as a read-only mirror of `Issue.status.status` and `Task.status.state`, so you can follow along without cluster access. The labels are a **one-way projection**, never a control input: nothing in the operator ever reads a label to decide what happens next. One you will see named throughout the runbooks is `tatara-parked`, applied whenever a Task carries any `parkReason` - see [Approval Gates](../operations/security/approval-gates.md#labels-are-write-only) for the full projection rule.
 
 !!! info "Since the #521 lifecycle redesign: `clarify` is `implement`"
     This page describes the platform after the #521 lifecycle redesign folded the `clarify` agent
     kind into `implement` (both as the running agent and as the Task origin) and replaced the old
-    15-member `status.stage` with an 8-member `status.state` plus the orthogonal
+    16-member `status.stage` with an 8-member `status.state` plus the orthogonal
     `status.parkReason` flag.
 
 ---
 
 ## Step 1 - You open an issue
 
-You create a GitHub issue in any repository enrolled in your tatara Project. The title and body are your only inputs; tatara reads them verbatim.
+You open a GitHub issue in any repository enrolled in your tatara Project. The title and body are your only inputs, and tatara reads them verbatim.
 
 **Task state:** *(none yet)*
 
@@ -134,10 +153,10 @@ A pod that never becomes Ready within 5 minutes of creation is respawned automat
 
 ## Step 7 - `review` approves, the operator merges
 
-A `review` pod spawns against the opened PR (see [PR / MR Review](../workflows/review.md)). It reads the diff read-only and calls `submit_outcome(verdict=...)`:
+There is no separate review Task. The same Task moves to `awaiting-review`, the implement pod is torn down, and a `review` pod comes up against the opened PR (see [PR / MR Review](../workflows/review.md)). It reads the diff read-only and calls `submit_outcome(verdict=...)`:
 
-- **`verdict=approve`** - the operator reads the **live** PR head SHA (never the mirror), posts a `COMMENT`-type review under the bot identity carrying the verdict (GitHub 422s a self-authored `APPROVE` or `REQUEST_CHANGES` either way - there is only one bot identity), stamps `MergeRequest.status.reviewedSHA`, and moves the Task to `merged`.
-- **`verdict=request_changes`** - the Task returns to `under-implementation` with the review's findings as context. `maxReviewRounds` is deprecated with zero effect - the `reviewing <-> implementing` cycle is no longer capped by a round count (see the [residency cap](../reference/task-stages.md#residency-the-dead-man-switch) for the backstop that replaced it). The same review-`approve` outcome is also subject to the CI readiness gate above - a red or unresolved MR refuses the approval outright.
+- **`verdict=approve`** - the outcome call writes nothing to the forge. It records a pending review on each owned `MergeRequest` CR, carrying the SHAs the agent reports having reviewed. The operator posts the review afterwards, on the next reconcile: a `COMMENT`-type review under the bot identity with the verdict in its body (GitHub 422s a self-authored `APPROVE` or `REQUEST_CHANGES` either way, since there is only one bot identity). Once every owned MR's pending review has landed, the Task moves to `merged`.
+- **`verdict=request_changes`** - the Task returns to `under-implementation` with the review's findings as context. It is the **same Task**, with a fresh implement pod: the review pod is torn down, not run alongside. `maxReviewRounds` is deprecated with zero effect, so the `awaiting-review` to `under-implementation` cycle carries no round count at all (see the [residency cap](../reference/task-stages.md#residency-the-dead-man-switch) for the backstop that replaced it). The same review-`approve` outcome is also subject to the CI readiness gate above - a red or unresolved MR refuses the approval outright.
 
 **Task state:** `awaiting-review` until a verdict lands, then `merged` or back to `under-implementation`.
 
@@ -220,12 +239,22 @@ sequenceDiagram
 
 ## What to do when a Task is Parked
 
-A Task parks (with a specific `parkReason`) when the operator cannot proceed without human input: the citation check found nothing to grant, the review-round cap was hit, CI never went green within the state deadline, or the agent explicitly declined. Not every park reason posts a comment explaining itself: `identity-unverified` specifically posts **nothing** to the issue thread - the refusal is visible only in the operator's own logs, `Task.status.notes`, and the `operator_approval_refused_total` metric, never on the thread a maintainer is watching. Where the operator does post an explanatory comment for other park reasons, the [comment turn-taking gate](../operations/security/bot-identity.md) can still withhold a repeat one - e.g. a Task that keeps parking on the same unanswered thread stops re-commenting after the first note - but for `identity-unverified` there was never a first note to begin with.
+A Task parks (with a specific `parkReason`) when the operator cannot proceed without human input: the citation check found nothing to grant, the merge could not complete, CI never went green within the state deadline, or the agent explicitly declined. A park is not a failure and not a state - the Task stays exactly where it was and un-parks from there.
+
+Not every park reason posts a comment explaining itself. `identity-unverified` posts **nothing** to the issue thread: the refusal is visible only in the operator's own logs, `Task.status.notes`, and the `operator_approval_refused_total` metric, never on the thread a maintainer is watching. Where the operator does post an explanatory comment for other park reasons, the [comment turn-taking gate](../operations/security/bot-identity.md) can still withhold a repeat one - for example, a Task that keeps parking on the same unanswered thread stops re-commenting after the first note - but for `identity-unverified` there was never a first note to begin with.
 
 Your options:
 
 - **Comment on the issue.** For `awaiting-human` or `identity-unverified`, any non-bot comment un-parks the Task, spawning a fresh agent pod to read it, as appropriate to the park reason.
 - **Comment as a maintainer** to give the next `implement` pod something unambiguous to cite as approval - there is no configured phrase to match, only the agent's judgment and the operator's independent verification of that citation.
-- **Fix the underlying problem** (e.g., a failing test) and comment to resume; approval already recorded earlier in the same Task is not re-consumed.
+- **Fix the underlying problem** (a failing test, for example) and comment to resume; approval already recorded earlier in the same Task is not re-consumed.
 
-Every park reason except `backlog-sweep` ages out on its own retention window (7 days by default) and is reaped after a final comment - it does not wait indefinitely.
+You are not the only way out. Every park except `backlog-sweep` ages out on a 7-day retention window and is then reaped, and a Task parked under a reason nothing un-parks can be collected and its issue re-minted automatically at most three times before it becomes a real dead end sitting in the backlog with the `tatara-parked` label on it. Nothing waits indefinitely, and nothing retries forever.
+
+---
+
+## Where to go next
+
+- [Watch One Run](watch-one-run.md) - this journey as one real six-day run, including the parts that went wrong.
+- [The Task state machine](../reference/task-stages.md) - every edge, guard, and park reason, in full.
+- [The Agentic Operating Model](../concepts/agentic-model.md) - the model behind the walkthrough, including the two human gates and the security boundary.

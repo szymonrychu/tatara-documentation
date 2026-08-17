@@ -502,8 +502,12 @@ is `external`.
 Ownership is **not** authoritative until the operator writes it to the
 `MergeRequest` CR's `status.ownership` field, together with a `status.ownershipReason`
 (one of: `initial` - MR was never delegated to tatara; `takeover-requested-by:<user>` -
-a maintainer requested takeover; `external-push:<sha>` - a human pushed after tatara
-had ownership). The field is read-only from the agent's perspective: only the
+a maintainer requested takeover; `external-push:<sha>` - a human pushed to an MR a
+maintainer had handed over; `adopted-external-push:<sha>` - a human pushed to an
+**adopted** dependency-upgrade MR). The last two are deliberately different
+strings: the merge gate tests for the `external-push:` prefix exactly, so the
+adopted shape does not open it (see [The merge gate](#the-merge-gate)).
+The field is read-only from the agent's perspective: only the
 operator sets it, on every reconcile loop, by comparing the head SHA to
 `lastBotHeadSHA`. The `status.lastMirroredCommentID` field tracks the sweep's
 comment-redelivery cursor, ensuring bot comments are not re-posted on every sync.
@@ -511,11 +515,16 @@ comment-redelivery cursor, ensuring bot comments are not re-posted on every sync
 ### Flipping ownership: human push
 
 A push of any commit other than `lastBotHeadSHA` to the MR's head branch flips
-ownership from `tatara` to `external` with reason `external-push:<sha>`. The
-operator detects it on the next webhook or reconcile and posts a stand-down
-announcement: "I detect that you have pushed to this MR. I am standing down and
-will keep reviewing, but I will not push." The bot stops pushing commits, but
-the review continues, and the operator will still merge on an approved review.
+ownership from `tatara` to `external`, with reason `external-push:<sha>` on an
+MR a maintainer handed over and `adopted-external-push:<sha>` on an adopted
+dependency-upgrade MR. The operator detects it on the next webhook or reconcile
+and stamps the flip; `DrainOwnershipAnnouncement`, running on the next
+`MergeRequest` reconcile, posts the stand-down announcement: "A commit outside
+tatara landed on this branch - standing down from pushing. I'll keep reviewing,
+and the operator will still merge on an approved review. Comment 'take over' to
+hand it back." The bot stops pushing commits, but the review continues, and the
+operator will still merge on an approved review - unless the flip carried the
+adopted reason, which the merge gate refuses.
 
 ### Flipping ownership back: maintainer comment
 
@@ -530,13 +539,30 @@ to recommend takeover to the operator.
 The operator receives the recommendation and **re-checks the comment author
 server-side** against the effective maintainer set (Project/Repository
 `maintainerLogins`). The agent's judgment alone can never change ownership. If
-the author is a maintainer, the operator posts an announcement comment, stamps
-`status.ownership = tatara` with reason `takeover-requested-by:<user>`, bumps
-`lastBotHeadSHA` to the current head, and mints a new takeover Task bound to the
-MR's head branch to resume work. From that point on, the agent may push and merge.
+the author is a maintainer, the operator stamps `status.ownership = tatara` with
+reason `takeover-requested-by:<user>`, bumps `lastBotHeadSHA` to the live head,
+and calls `MintOrUnparkTakeoverTask`.
 
-If the author is not a maintainer, the operator logs the denied request and posts
-a comment: "This account is not authorized to hand over this MR." Nothing changes.
+There is exactly **one** deterministically named, full-lifecycle takeover Task
+per MR, reused across every take-over / stand-down / re-take round, so its
+history is never reset by a fresh mint. That one call mints it straight into
+`under-implementation` if none exists (not `refined`: a takeover's source is
+always a PR, so it owns zero `Issue` CRs and the approval gate there could never
+be passed), **un-parks** it back into `under-implementation` if it already exists
+and is `parked(ownership-lost)`, and returns it unchanged in any other live
+state. It is bound to the MR's existing head branch, so the implement pod pushes
+there rather than to a derived `tatara/*` branch. From that point on, the agent
+may push and merge.
+
+The endpoint posts no comment of its own: `DrainOwnershipAnnouncement` posts the
+take-over announcement on the next `MergeRequest` reconcile, once, keyed on the
+flip timestamp.
+
+If the author is not a maintainer, the endpoint answers **HTTP 403** with the
+body `author not in maintainer set: only a project maintainer may hand this merge
+request over`, and nothing changes. **No comment is posted to the forge** on that
+path either - refusing the requester conversationally is the review skill's job,
+not the operator's.
 
 A take-over comment can only be acted on if the `kind=review` Task gets a live
 turn to read it, and both of its `parked(awaiting-human)` re-entry paths are
@@ -548,16 +574,37 @@ pod even after the cap was already spent on unrelated review rounds.
 ### Adopting a dependency engine's merge requests
 
 A merge request a dependency engine (Renovate) opens on its own can reach `tatara` ownership
-without ever going through a takeover comment. `ownershipForAuthor` classifies it as `tatara`-owned
-directly, the moment it is seen, when **both** hold on `Project.spec.upgradePolicy` (see
-[Project reference](../reference/project.md#upgradepolicyspec)):
+without ever going through a takeover comment. Two separate predicates are at work here, and
+they answer different questions.
 
-- the MR's head branch carries `adoptBranchPrefix` (empty by default - adoption is off), and
-- its author is `scm.botLogin` or listed in `upgradeEngineLogins`.
+`ownershipForAuthor` classifies a never-seen MR and checks the **author only** - it never looks
+at the branch. An author this project owns (`scm.botLogin`, or a login listed in
+`Project.spec.upgradePolicy.upgradeEngineLogins` - see
+[Project reference](../reference/project.md#upgradepolicyspec)) is classified `tatara`; anything
+else - a human, an un-allowlisted bot, or an unknown/empty author - is `external`. There is no
+`lastBotHeadSHA` comparison and no `ownershipReason: initial` in between.
 
-There is no `lastBotHeadSHA` comparison and no `ownershipReason: initial` in between - the
-adopted `upgrade` Task (`MintAdoptedUpgradeTask`) writes no ownership of its own, because the
-same author predicate the mint uses is what `ownershipForAuthor` now checks. From the review
+`AdoptUpgradeMR` is the separate predicate deciding which of those MRs the platform **adopts**
+into its own `kind=upgrade` Task (`MintAdoptedUpgradeTask`). The branch prefix is one of its
+clauses, not an ownership signal: it gates which Task gets minted, not how ownership is
+classified. Adoption requires **all** of:
+
+- `upgradePolicy.adoptBranchPrefix` is configured. Empty is the default and disables adoption
+  outright
+- the MR's head branch starts with that prefix
+- the author is adoptable - the same predicate `ownershipForAuthor` delegates to, so the identity
+  that permits adoption and the identity the merge corridor checks are one fact, not two
+- the head repo equals the base repo. No forks, ever; an unknown head repo fails **closed**
+- no Task owns the branch and no live Task owns the mirror CR. This is what stops re-adoption
+- the MR does **not** carry the project's `triggerLabel`. Labelling a prefixed branch is the human
+  override - an explicit ask for a review rather than an adoption
+- its mirror carries no durable adoption-refusal marker (`AnnAdoptionRefused`) for this head SHA.
+  The marker is keyed on the refused SHA, so a declined tree stays declined while a genuinely new
+  bump force-pushed onto the same branch gets a fresh decision
+- its mirror has not stood down to an external push, which is exactly what the merge gate refuses
+
+The adopted `upgrade` Task writes no ownership of its own, because the author predicate the
+adoption uses is the one `ownershipForAuthor` has already answered. From the review
 agent's next turn, `approve` merges the engine's own MR exactly like any other owned MR - see
 [PR/MR Review: adopted merge requests](../workflows/review.md#adopted-merge-requests).
 
@@ -577,6 +624,16 @@ delegated MR; the second is an MR that tatara previously owned and a human
 paused, but may resume pushing and merging it. An MR with ownership `external`
 and reason `initial` (never delegated to tatara) will not be merged by the
 operator.
+
+The prefix test is exact, and `adopted-external-push:` does not match it. A human
+pushing to an **adopted** dependency-upgrade MR therefore makes it
+**human-merged-only**: the operator keeps reviewing but will never merge it, and
+the same holds for the merge-after-stand-down path. The two reasons cannot share
+a string. Merge-after-stand-down exists because a maintainer explicitly asked the
+platform to take an MR over, so continuing across their later push is the
+behaviour they asked for; nobody asks for an adoption, and reusing
+`external-push:` there would hand a human's commit to a pod-less merge corridor
+on a decision no human ever made.
 
 ---
 

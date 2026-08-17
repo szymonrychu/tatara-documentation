@@ -20,19 +20,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      # mise now owns the toolchain in place of a dedicated python install
+      # step. .mise.toml is the single source of toolchain truth for this
+      # repo; `cache: true` caches the tool installs so the python build
+      # does not run on every job.
+      - uses: jdx/mise-action@v2
         with:
-          python-version: "3.12"
-          cache: pip
+          install: true
+          cache: true
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: mise run install
 
       - name: Check for stale pre-redesign terms
         run: ./scripts/check-stale-terms.sh
 
       - name: Runbook anchor guard self-tests
-        run: python3 -m unittest discover scripts -p 'test_*.py' -v
+        run: mise exec -- python3 -m unittest discover scripts -p 'test_*.py' -v
 
       # docs/operations/runbooks.md is a cross-repo API: alert rules in
       # szymonrychu/tatara-observability carry a runbook_url pointing at its
@@ -46,10 +50,20 @@ jobs:
         run: git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
 
       - name: Check runbook anchor contract
-        run: python3 scripts/check_runbook_anchors.py --base origin/main
+        run: mise exec -- python3 scripts/check_runbook_anchors.py --base origin/main
+
+      # .vale.ini deliberately scopes styles to the entry surface only (index,
+      # concepts/, getting-started/, explainers/, operations/index.md).
+      # reference/, workflows/, architecture/, and the rest of operations/ are
+      # clinical by contract and carry no styles on purpose - do not widen this
+      # by pointing it at all of docs/ or adding [docs/**/*.md] to .vale.ini,
+      # or CI floods with findings on pages nobody is rewriting. A prose
+      # failure is cheap to fix and should surface before the slower build.
+      - name: Lint prose style (Vale)
+        run: mise exec -- vale docs/
 
       - name: Build docs (strict)
-        run: mkdocs build --strict
+        run: mise run build
 
   deploy:
     name: Deploy to GitHub Pages
@@ -61,13 +75,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: jdx/mise-action@v2
         with:
-          python-version: "3.12"
-          cache: pip
+          install: true
+          cache: true
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: mise run install
 
       - name: Configure git identity
         run: |
@@ -75,4 +89,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Deploy to GitHub Pages
-        run: mkdocs gh-deploy --force
+        run: mise run deploy

@@ -1,0 +1,6 @@
+extends: existence
+message: "No exclamation marks in documentation prose."
+level: error
+nonword: true
+tokens:
+  - '[\w),.]!'

@@ -139,8 +139,9 @@ nav:
     - tatara-memory-repo-ingester: components/repo-ingester.md
     - tatara-helmfile: components/helmfile.md
     - tatara-observability: components/observability.md
-  - Custom Resources:
+  - Reference:
     - reference/index.md
+    - Project Configuration: reference/project-configuration.md
     - Project: reference/project.md
     - Repository: reference/repository.md
     - Issue: reference/issue.md
@@ -178,6 +179,7 @@ nav:
       - Webhook & Egress Security: operations/security/webhooks.md
   - How It Works:
     - explainers/index.md
+    - Watch One Run: explainers/watch-one-run.md
     - The Big Picture: explainers/big-picture.md
     - From Issue to PR: explainers/issue-to-pr.md
     - How Agents Remember Your Code: explainers/memory-graph.md

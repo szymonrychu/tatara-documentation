@@ -31,7 +31,7 @@ are now drawn from the 8-state enum).
 | Property | Answers | Values |
 |---|---|---|
 | `status.state` | **Where the work is** | 8 closed values, this page's table |
-| `status.parkReason` | **Whether it is stalled** | A flag - empty, or one of 28 reasons ([`park.go`](#the-park-flag)) |
+| `status.parkReason` | **Whether it is stalled** | A flag - empty, or one of 29 reasons ([`park.go`](#the-park-flag)) |
 | `Live(state)` | **Whether a pod is up** | A pure property of `state`, not a stored field |
 
 A Task can be `state=refined` **and** `parkReason=awaiting-human` at the same
@@ -63,13 +63,14 @@ the equivalent reason, or a park that simply never re-enters (see
 stateDiagram-v2
     [*] --> new
     new --> refined : triage passed
-    new --> awaiting_review : kind=review (reviews a HUMAN PR)
+    new --> awaiting_review : kind=review (reviews a HUMAN PR), or an adopted kind=upgrade (reviews the engine's own MR)
     refined --> under_implementation : submit_outcome(action=approved) AND the extended approval gate GRANTS
     under_implementation --> awaiting_review : submit_outcome(action=submitted), >= 1 owned MR open
     under_implementation --> refined : plan-hash-mismatch (the CHEAP path back to the gate)
     awaiting_review --> under_implementation : request_changes, or approve with red live CI
     awaiting_review --> merged : submit_outcome(verdict=approve)
     merged --> deployed : every repo in mergeOrder merged, on green CI
+    merged --> awaiting_review : the head moved off reviewedSHA (headMoveReentries, cap 3)
     deployed --> done : every owned MR merged and deployed
     refined --> done : brainstorm/refine/incident non-code terminal
     new --> rejected : false_positive, tracked_elsewhere, issue closed
@@ -272,7 +273,7 @@ none at all). `status.parkReason` is a **separate field**, checked in
 independently: `reasonAllowedFor` checks `rejected` against the 6-member
 `RejectReasons` set, `done` against the 2-member `DoneReasons` set, and
 everything else (states that are not `done`/`rejected`, and every
-`parkReason` write) against the full 36-member closed set.
+`parkReason` write) against the full 37-member closed set.
 
 **Reject reasons (6):** `declined`, `false-positive`, `tracked-elsewhere`,
 `issue-closed`, `mr-closed-externally`, `mr-taken-over`.
@@ -287,7 +288,7 @@ ordinary merge/deploy path.
 
 `status.parkReason` replaced the old `parked` **stage**. It is a flag on top
 of whichever state the Task is already in, not a fourth state, and it is a
-28-member closed vocabulary:
+29-member closed vocabulary:
 
 `backlog-sweep`, `triage-stalled`, `name-too-long`, `stage-deadline`,
 `awaiting-human`, `identity-unverified`, `implement-declined`,
@@ -297,7 +298,7 @@ of whichever state the Task is already in, not a fourth state, and it is a
 `object-too-large`, `fold-adoption-unverified`, `admission-starved`,
 `agent-contract-mismatch`, `operator-error`, `head-moving`,
 `handoff-stalled`, `ownership-lost`, `merge-auth-refused`, `ci-red`,
-`ci-blocked`.
+`ci-blocked`, `merge-conflict`.
 
 !!! note "`turn-budget-exhausted`, `review-loop-exhausted`, `pod-recreation-exhausted` are retired"
     The ceilings that produced these three (`maxTurnsPerTask`, `maxReviewRounds`,
@@ -337,8 +338,11 @@ current state**, never stored:
   (cap 3 each), never `under-implementation`.
 - `no-outcome`: re-enters `under-implementation`, requiring zero owned MRs
   merged.
+- `handoff-stalled`: a non-bot comment re-arms `awaiting-review`, bounded by
+  `humanReviewRounds` (cap 5) exactly like the `kind=review` `awaiting-human`
+  rule, and declined outright once any owned MR has merged.
 - Every other reason (`implement-declined`, `stage-deadline`,
-  `admission-starved`, `fold-adoption-unverified`, `doc-timeout`,
+  `admission-starved`, `fold-adoption-unverified`, `merge-conflict`,
   `operator-error`, `triage-stalled`, `name-too-long`, `ci-red`, ...) has
   **no re-entry**: it ages out at `ParkRetention` and is reaped. The next
   sweep re-mints the still-open issue as `parked(backlog-sweep)`, which owns
@@ -451,7 +455,7 @@ to four times longer; the compensating control is headroom in
 
 ## Cycle caps
 
-Five cycles remain bounded (`reviewRounds` / `review-loop-exhausted` was
+Six cycles remain bounded (`reviewRounds` / `review-loop-exhausted` was
 retired along with `maxReviewRounds` - see [the park flag](#the-park-flag) -
 so the `reviewing <-> implementing` cycle is no longer capped by a round
 count; [residency](#residency-the-dead-man-switch) is the backstop instead):
@@ -463,15 +467,16 @@ count; [residency](#residency-the-dead-man-switch) is the backstop instead):
 | `awaiting-review` and `merged` (the head moved) | `headMoveReentries` | 3 | `parked(head-moving)` | **yes** |
 | `awaiting-review` and `parked(awaiting-human)` (a `review`-kind Task) | `humanReviewRounds` | 5 | stays parked | **yes** (except a take-over comment on a stood-down MR, which is exempt) |
 | `awaiting-review` / `merged` and the re-implement edge (red live CI) | `ciRedReentries` | 3 | `parked(ci-blocked)` | yes, on the re-implement lap |
+| `merged` and `under-implementation` (the forge reports the MR `DIRTY`) | `mergeConflictReentries` | 3 | `parked(merge-blocked)` | **yes** |
 
 \* `merge-blocked` and `deploy-blocked` are park reasons with no re-entry -
 the old machine's `failed(merge-blocked)` / `failed(deploy-blocked)`
 terminals are now the same park reasons, just reached without a separate
 `failed` state to land in.
 
-The **head-moved** and **CI-red** cycles both spawn a pod on every lap and
-are the two that matter for cost. Neither is bounded by `reviewRounds`,
-which moves only on `request_changes`.
+The **head-moved**, **CI-red** and **merge-conflict** cycles each spawn a pod
+on every lap and are the three that matter for cost. None of them is bounded
+by `reviewRounds`, which moves only on `request_changes`.
 
 ---
 

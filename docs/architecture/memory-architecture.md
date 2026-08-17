@@ -76,23 +76,35 @@ flowchart TD
 
 ## How agents query memory
 
-Inside agent pods, `tatara-cli mcp` exposes memory query tools over MCP:
+Inside agent pods, `tatara-cli mcp` exposes the memory-facing part of the MCP tool
+surface. Nine of the twenty-one tools read or write memory: five `memory_*` tools
+against the LightRAG entry points, and four `code_*` tools against the code graph.
 
 | MCP tool | What it does |
 |---|---|
-| `query` | Semantic search over the LightRAG knowledge graph |
-| `code_search` | Search code-graph entities by name/description (optional type filter) |
-| `code_stats` | Graph statistics: entity/edge counts, types, isolated entities, import cycles |
-| `code_entity` / `get_entity` | Get a single entity and its immediate edges |
-| `code_explain` | Full context for an entity: detail plus in/out neighbors with file locations |
-| `code_neighbors` / `code_callers` / `code_callees` | Traverse the graph from an entity along a relation |
-| `code_path` | Shortest path between two code entities |
-| `code_dependents` / `code_dependencies` / `code_cross_repo` | Dependency and cross-repo edges |
+| `memory_query` | Retrieve memory references for a query (`POST /queries`) |
+| `memory_describe` | Generative answer plus source paths for a query (`POST /queries:describe`) |
+| `memory_write` | Insert a text memory; returns its `track_id` |
+| `memory_entity` | Read, search, or patch one knowledge-graph entity (`op=get`, `op=search`, `op=patch`) |
+| `memory_edges` | List, create, or delete edges between entities (`op=list`, `op=create`, `op=delete`) |
+| `code_search` | Search one repository's code graph for entities (optional type filter) |
+| `code_context` | One entity's neighborhood, selected by `rel=`: entity, neighbors, callers, callees, dependents, dependencies, file_imports, related, cross_repo |
+| `code_graph` | Whole-graph analyses, selected by `op=`: path, important, stats, ambiguous, communities, hyperedges, bridges, resource_graph |
+| `code_explain` | Explain one entity: what it is, what it touches, why it matters |
 
-These are the real tool names (there is no `memory_query`, `code_graph_list`,
-`code_graph_get`, or `code_graph_explain`). The full code-graph surface is ~20 `code_*`
-tools. The LightRAG query mode (naive, local, global, hybrid) is chosen by the tool
-implementation based on query type; hybrid mode (vector + graph traversal) is the default.
+The relation traversals and whole-graph analyses that were once separate `code_*`
+tools are now `rel=` and `op=` arguments; `code_context` and `code_graph` are the
+only entry points to them. `repo` is required on every `code_*` call.
+
+The LightRAG query mode is an argument, not an inference. `mode` is required on
+`memory_query` and `memory_describe`, has no default, and must be one of `naive`,
+`local`, `global`, `hybrid`; `tatara-memory` rejects an unrecognized mode before it
+reaches LightRAG.
+
+Not every pod sees all nine. `tools/list` is served per profile from
+`TATARA_TOOL_PROFILE`, so a `refine` pod gets no `code_*` tools at all and a
+`review` pod gets only `memory_query` and `memory_describe`. The per-profile grid
+is in [MCP Tools by Agent Kind](../reference/mcp-tools.md).
 
 ## Task continuity spill
 

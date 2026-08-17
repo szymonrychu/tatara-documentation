@@ -36,7 +36,7 @@ project:
 
 The admission unit is now the **pod spawn**, not the Task. At `0`, `admit()`
 short-circuits at the top and no `QueuedEvent` is ever admitted - so no pod
-spawns and no Task is created. **Every** pod-spawning stage goes through the
+spawns and no Task is created. **Every** pod-spawning state goes through the
 same chokepoint, so a `0` freezes the whole project mid-flight, including
 Tasks that are already running.
 
@@ -46,10 +46,10 @@ when the field is unset, so the pause is a **direct
 not routed through `QueueCapacity()` - which would silently un-pause you.
 
 !!! warning "A paused project does not shred its backlog"
-    The `approved` stage has a 24h `admission-starved` deadline. That check
-    **skips Tasks whose project is paused** - it is the only stage-deadline
-    exception in the platform, and it exists so that the kill switch is a
-    pause and not a backlog shredder.
+    Every live state not yet admitted (no pod started) carries a 24h
+    `admission-starved` deadline. That check **skips Tasks whose project is
+    paused** - it is the only deadline exception in the platform, and it
+    exists so that the kill switch is a pause and not a backlog shredder.
 
 To reduce load without a full stop, lower `maxConcurrentAgents` to a smaller
 positive number, or tune `queue.capacity` / `queue.alertCapacity` directly if
@@ -217,12 +217,12 @@ bounds a runaway `implement` Task now is the [24h residency cap](../reference/ta
 | `maxConcurrentAgents` | `3` | Concurrent agent pods. `0` is the pause |
 | `agentPodTTLSeconds` | `3600` (min `300`) | **One pod's life. The Task persists.** See the stop sequence below |
 | `maxNewTasksPerSweep` | `5` (min `1`) | Tasks one sweep pass may mint |
-| `maxOpenTasks` | `6` (min `1`) | ACTIVE Tasks (stage not in `parked` / `delivered` / `rejected` / `failed`). `parked(backlog-sweep)` Tasks do not count - they hold ownership, not work |
+| `maxOpenTasks` | `6` (min `1`) | ACTIVE Tasks (`state` not in `{done, rejected}` and `parkReason == ""`). `parked(backlog-sweep)` Tasks do not count - they hold ownership, not work |
 | `maxBundleBytes` | `400000` (min `50000`) | Hard byte budget on a rendered context bundle |
 | `agent.maxTurnsPerPod` | `40` | **Deprecated, zero effect.** Kept only because helmfile still sets it |
 | `agent.maxTurnsPerTask` | `300` | **Deprecated, zero effect.** See the [residency cap](../reference/task-stages.md#residency-the-dead-man-switch) for what replaced it |
-| `agent.maxReviewRounds` | `3` | **Deprecated, zero effect.** The `reviewing <-> implementing` cycle is no longer capped by a round count |
-| `agent.maxHumanReviewRounds` | `5` | Un-parks of a `review`-kind Task back to `reviewing` on a human comment. At the cap it stays parked. This is what stops a chatty PR thread spawning one review pod per comment. Still active - not retired with the three above |
+| `agent.maxReviewRounds` | `3` | **Deprecated, zero effect.** The `awaiting-review <-> under-implementation` cycle is no longer capped by a round count |
+| `agent.maxHumanReviewRounds` | `5` | Un-parks of a `review`-kind Task back to `awaiting-review` on a human comment. At the cap it stays parked. This is what stops a chatty PR thread spawning one review pod per comment. Still active - not retired with the three above |
 | `agent.maxPodRecreations` | `3` | **Deprecated, zero effect.** A pod that never becomes Ready within `podReadyTimeout` (5m of `podStartedAt`) still respawns, but no longer terminates the Task - repeated respawns are now an alert (`operator_pod_recreations_total`, see [Runbooks](runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)) bounded only by the 24h residency cap |
 | `agent.turnTimeoutSeconds` | `1800` | **Meaning changed.** No longer kills the turn - after this many seconds of inactivity the operator probes the agent instead (`POST /v1/probe`), waits `stallProbeGraceSeconds` for a reply, retries up to `stallProbeMaxAttempts` times, then interrupts and runs the stop-and-handoff sequence. See [Stall probe unanswered](runbooks.md#tatara-runbook-operator-agent-stall-probe-unanswered) |
 | `agent.stallProbeGraceSeconds` | `300` (min `60`) | How long the operator waits for a stall probe to be answered before counting it unanswered |

@@ -4,7 +4,7 @@ title: Concepts
 
 # Concepts
 
-Tatara is built on a small set of ideas that, once understood, make the rest of the system fall into place. Start here before reading the architecture or component docs.
+Read these four pages and you will know what tatara does, why it is shaped the way it is, what it does to its own codebase, and whether it can run on your stack. Start here, before the architecture or component docs.
 
 <div class="grid cards" markdown>
 
@@ -12,7 +12,7 @@ Tatara is built on a small set of ideas that, once understood, make the rest of 
 
     ---
 
-    How tatara turns a Kubernetes operator into an autonomous, issue-driven development loop - and what that means for your team.
+    The loop itself: the eight states a Task moves through, who writes them, where you approve, and what happens on a merge request tatara did not open.
 
     [:octicons-arrow-right-24: Agentic Model](agentic-model.md)
 
@@ -20,7 +20,7 @@ Tatara is built on a small set of ideas that, once understood, make the rest of 
 
     ---
 
-    What problems tatara solves, who it is designed for, and the trade-offs to consider before adopting it.
+    What tatara does for your backlog, who it fits, and the trade-offs you take on when you adopt it.
 
     [:octicons-arrow-right-24: Why tatara](why-tatara.md)
 
@@ -28,7 +28,7 @@ Tatara is built on a small set of ideas that, once understood, make the rest of 
 
     ---
 
-    Tatara is enrolled as its own first Project and manages its own codebase - proposing, implementing, and reviewing its own improvements. Concrete examples of brainstorm-driven refactors, alert-driven code and alerting fixes, refinement that closes already-delivered work, and documentation that refreshes itself.
+    tatara is enrolled as its own first Project and works its own repos. Worked examples: a graph-discovered refactor, an alert that retunes its own rule, a Task that closes itself as already delivered, docs that refresh themselves, and dependencies that bump themselves.
 
     [:octicons-arrow-right-24: Self-Improvement](self-improvement.md)
 
@@ -36,18 +36,24 @@ Tatara is built on a small set of ideas that, once understood, make the rest of 
 
     ---
 
-    The honest self-assessment for evaluators: what tatara genuinely requires (Kubernetes, an OIDC IdP, the memory stack), what is just the maintainer's stack, and where the SCM / agent / GitOps seams are welded shut. Read this before deciding whether tatara can run on your stack.
+    What tatara genuinely requires (Kubernetes, an OIDC issuer, the memory stack), what is only the maintainer's stack, and where the SCM, agent, and GitOps seams are welded shut. Read this before you decide tatara can run on your cluster.
 
     [:octicons-arrow-right-24: Portability & Requirements](portability.md)
 
 </div>
 
+If you would rather see it than read about it first, [Watch One Run](../explainers/watch-one-run.md) walks a single real piece of work through tatara's own repository, thread quotes included.
+
 ## Core ideas
 
-**The permanent substrate.** The name tatara comes from the traditional Japanese iron-smelting forge: a collective, iterative process around a permanent structure. Tatara applies this to software: ephemeral agent sessions work iteratively against a permanent knowledge graph of your codebase. The graph persists across agent restarts, pod failures, and code changes. It is the memory that makes every session smarter than a cold read.
+**A permanent substrate under ephemeral sessions.** The name comes from the traditional Japanese iron-smelting forge: a collective, iterative process around a permanent structure. Agent pods here are disposable. The knowledge graph of your codebase is not - it survives pod failures, restarts, and code changes, which is why each session starts smarter than a cold read of the repo.
 
-**Everything is a Kubernetes resource.** `Project`, `Repository`, `Task`, `QueuedEvent`, `Issue`, and `MergeRequest` are all CRDs managed by a controller-runtime operator. You inspect agent state with `kubectl get tasks`. You audit what happened with `kubectl describe task`. You gate access with RBAC. Tatara does not invent a new control plane - it extends the one you already run.
+**Everything is a Kubernetes resource.** `Project`, `Repository`, `Task`, `QueuedEvent`, `Issue`, and `MergeRequest` are CRDs owned by a controller-runtime operator. You inspect agent state with `kubectl get tasks`, audit what happened with `kubectl describe task`, and gate access with RBAC. tatara does not invent a control plane; it extends the one you already run.
 
-**One hard human gate by default, more when you configure them.** The agent proposes; a maintainer decides whether an issue gets worked - and decides it in exactly one way: a maintainer's comment on the issue, which the `implement` agent judges and cites (a forge comment id plus a verbatim quote), and which the operator then independently verifies structurally - the citation exists, its author is a verified non-bot maintainer, and the quote truly occurs in the body the operator holds - with the bot structurally excluded from ever satisfying its own gate. `implement`'s conversation shapes the plan and its judgment decides *which* comment to cite, but that judgment does not itself release the gate - the operator's structural verification is what is authoritative. Be precise about the rest: `review` approves the bot's own PR from a separate pod by calling `submit_outcome(approve)`, never by posting a native forge approval (GitHub 422s a self-authored PR's own approval either way), and the operator itself merges once required checks are green and that verdict is recorded, with no human merge step. There is no branch-protection rule that adds a human merge step on top of this by default - the platform's single bot identity means a rule requiring an approving review would deadlock every merge, so that option does not exist; see [the accepted-risk note](../operations/security/index.md) for what defense-in-depth looks like instead. `reporterLogins` (intake) is open by default; `maintainerLogins` (approval) is **closed** by default - populate it or nothing ever advances to implement. Configured that way, tatara is a strongly gated assistant; out of the box, once you have named at least one maintainer, the merge is autonomous. See [The Agentic Operating Model](agentic-model.md#gate-2-review-approval-then-an-operator-driven-merge) for exactly which gates are on by default and which you opt into.
+**One hard human gate by default, and you can add more.** The agent proposes and a maintainer decides, in exactly one way: a comment on the issue. The `implement` agent judges whether a comment approves the work and cites it, giving a forge comment id plus a verbatim quote. The operator then verifies that citation itself - the comment exists, its author is a verified non-bot maintainer, and the quoted text really occurs in the body the operator holds. The bot is structurally excluded from satisfying its own gate. The agent's judgment picks *which* comment to cite; the operator's check is what releases the gate.
 
-**GitOps for everything, including itself.** Tatara deploys via `tatara-helmfile`, a GitOps helmfile repository driven by an in-cluster ARC runner. Operator deployments happen through pull requests that render a diff. Helm chart versions and image tags are pinned in git. `kubectl set-image` is explicitly forbidden.
+Be precise about the rest of the path. `review` approves the bot's own PR from a separate pod by calling `submit_outcome(approve)`, never by posting a native forge approval (GitHub 422s a self-authored PR's own approval either way). The operator merges once required checks are green and that verdict is recorded, with no human merge step. You cannot add a branch-protection rule that requires an approving review as a second gate: the platform has one bot identity, so such a rule would deadlock every merge. See [the accepted-risk note](../operations/security/index.md) for what defense in depth looks like instead.
+
+The two allowlists fail in opposite directions. `reporterLogins` (intake) is open by default. `maintainerLogins` (approval) is **closed** by default - populate it or nothing ever advances to implementation. Configure both and tatara is a strongly gated assistant; leave the defaults and name one maintainer, and the merge is autonomous. [Gate 2](agentic-model.md#gate-2-review-approval-then-an-operator-driven-merge) spells out which gates ship on and which you opt into.
+
+**GitOps for everything, tatara included.** tatara deploys through `tatara-helmfile`, a GitOps helmfile repository driven by an in-cluster ARC runner. Operator deploys happen as pull requests that render a diff. Chart versions and image tags are pinned in git. `kubectl set-image` is forbidden.
