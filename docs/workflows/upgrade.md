@@ -163,18 +163,24 @@ complementary commits onto the engine's own branch for another round. See
 [PR/MR Review: adopted merge requests](review.md#adopted-merge-requests) and
 [MR Ownership: adopting a dependency engine's merge requests](../architecture/ownership.md#adopting-a-dependency-engines-merge-requests).
 
-Adoption is paced by the same `maxOpenUpgrades` cap as a cron-minted Task, oldest merge request
-first - arming it cannot mint a Task per open engine MR at once. A newly-opened matching MR does
-not wait for the next `issueScan` sweep: the MR-opened webhook stamps a per-repository
-sweep-request marker that pulls the next sweep pass forward, and the leader-elected sweep itself
-still does the minting (safe under the cap with multiple replicas serving webhooks).
+Adoption is **not** paced by `maxOpenUpgrades` - that cap governs the cron-minted lane only
+(`openUpgradeLaneCount` excludes adopted work by label, so the two cannot cross-starve). A
+matching MR is enqueued as a `QueuedEvent` at priority 2 (same tier as cron/sweep work, so it
+never overtakes an incident or a webhook-originated event, but does overtake later-seq
+proactive work) the moment the webhook sees it, and the leader-elected dispatcher admits it as
+soon as the project's [general concurrency pool](../reference/queued-event.md#queue-classes-and-capacity)
+(`Project.spec.agent.maxConcurrentAgents`) has room. That admit pass already runs on every
+Task-terminal reconcile, so a lane freed by an unrelated Task's
+completion is refilled immediately rather than on the next `issueScan` sweep. The sweep still
+enqueues under the same dedup key, but only as an offline backstop for a dropped or delayed
+webhook delivery.
 
 ## Reference: Project CR fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `scm.cron.upgrade.schedule` | `string` | - (disabled) | 5-field cron expression. Empty disables upgrade for the project. |
-| `scm.cron.upgrade.maxOpenUpgrades` | `int` | `1` | Caps concurrent open upgrade lanes. Set explicitly in enrollment values - see [the field table](../reference/project.md#scmcronupgrade). |
+| `scm.cron.upgrade.maxOpenUpgrades` | `int` | `1` | Caps concurrent **cron-minted** upgrade lanes only - adopted merge requests are bounded by the project's general concurrency pool instead, not this cap. Set explicitly in enrollment values - see [the field table](../reference/project.md#scmcronupgrade). |
 | `upgradePolicy.engine` | `string` | `none` | `renovate` or `none`. |
 | `upgradePolicy.majorStrategy` | `string` | `nextHopOnly` | `nextHopOnly` or `latest`. |
 | `upgradePolicy.minimumReleaseAge` | object | all zero | Per-level (`major`/`minor`/`patch`) minimum release age in days. |
