@@ -563,8 +563,11 @@ agent's next turn, `approve` merges the engine's own MR exactly like any other o
 
 This is a separate path from [maintainer takeover](../workflows/mr-takeover.md) above: takeover
 is a one-off, comment-triggered hand-over of a single MR; adoption is a standing policy that
-claims every future MR matching the prefix-and-author pair, paced by the project's
-`maxOpenUpgrades` cap like any other upgrade Task.
+claims every future MR matching the prefix-and-author pair. Admission is **not** paced by
+`maxOpenUpgrades` - each matching MR is queued and admitted the moment the project's general
+concurrency pool has room, the same immediate-admit path any other queued event uses. See
+[Upgrade workflow: adopting the engine's own merge requests](../workflows/upgrade.md#8-adopting-the-engines-own-merge-requests)
+for the queueing mechanics.
 
 ### The merge gate
 
