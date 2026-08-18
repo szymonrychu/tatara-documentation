@@ -82,9 +82,11 @@ per project**, covering everything delivered in the last 24h - not a
 per-delivery spawn and not a "did anything meaningful change?" judgment call.
 
 The live projects run `issueScan` every 10 minutes (`*/10 * * * *`). Each enrolled
-repo gets its own scan-offset slot spread across that window rather than a shared
-project-wide one, so `maxNewTasksPerSweep` binds per repo per pass, not per project -
-see the levers table above.
+repo gets its own scan-offset slot spread across that window, which spreads WHEN
+each repo becomes due - but `maxNewTasksPerSweep` still binds per project per pass,
+not per repo: `SweepProject` builds one `sweepBudget` per call and shares it across
+every repo the pass finds due, so two repos whose offsets land in the same
+reconcile tick still compete for one shared cap - see the levers table above.
 
 ---
 

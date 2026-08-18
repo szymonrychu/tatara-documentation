@@ -353,8 +353,10 @@ current state**, never stored:
   a resurrected zombie.
 - A no-re-entry park written **at or after the merge stage** - `merge-timeout`,
   `merge-blocked`, `merge-auth-refused`, `merge-order-missing`, `head-moving`,
-  `ci-red` (only its `anyMerged` arm), `deploy-timeout`, `deploy-blocked` - is
-  excluded from that automatic re-mint. At this point the work is implemented
+  `ci-red` (only its `anyMerged` arm), `merge-conflict` (only its `anyMerged`
+  arm - the same "something in `mergeOrder` already landed" condition as
+  `ci-red`, for a dirty merge request instead of a red check), `deploy-timeout`,
+  `deploy-blocked` - is excluded from that automatic re-mint. At this point the work is implemented
   and reviewed, and the Task's open `MergeRequest` holds the only copy of it;
   reaping the Task and starting a fresh implementation from the issue body
   would discard that work and, until [tatara-operator#618](https://github.com/szymonrychu/tatara-operator/pull/618),
