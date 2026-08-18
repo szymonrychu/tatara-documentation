@@ -341,16 +341,39 @@ current state**, never stored:
 - `handoff-stalled`: a non-bot comment re-arms `awaiting-review`, bounded by
   `humanReviewRounds` (cap 5) exactly like the `kind=review` `awaiting-human`
   rule, and declined outright once any owned MR has merged.
-- Every other reason (`implement-declined`, `stage-deadline`,
+- Every other reason (`stage-deadline`,
   `admission-starved`, `fold-adoption-unverified`, `merge-conflict`,
   `operator-error`, `triage-stalled`, `name-too-long`, `ci-red`, ...) has
-  **no re-entry**: it ages out at `ParkRetention` and is reaped. The next
-  sweep re-mints the still-open issue as `parked(backlog-sweep)`, which owns
-  it at zero cost; a human comment then promotes that fresh Task through
-  `new`, as new work, not a resurrected zombie. `review-loop-exhausted`,
-  `turn-budget-exhausted`, and `pod-recreation-exhausted` used to be in this
-  same no-re-entry group; they were released by the one-time migration noted
-  above instead and no longer occur going forward.
+  **no re-entry**: it ages out at `ParkRetention` (7d) and is reaped. Most of
+  these do not actually wait that long: the operator's own stranded-park
+  driver notices a no-re-entry park still sitting 30 minutes in and reaps the
+  Task early to re-mint a fresh one from the issue body - the same
+  zero-budget re-mint a human reply triggers, just on a clock instead of a
+  comment. Either way, the fresh Task starts through `new`, as new work, not
+  a resurrected zombie.
+- A no-re-entry park written **at or after the merge stage** - `merge-timeout`,
+  `merge-blocked`, `merge-auth-refused`, `merge-order-missing`, `head-moving`,
+  `ci-red` (only its `anyMerged` arm), `deploy-timeout`, `deploy-blocked` - is
+  excluded from that automatic re-mint. At this point the work is implemented
+  and reviewed, and the Task's open `MergeRequest` holds the only copy of it;
+  reaping the Task and starting a fresh implementation from the issue body
+  would discard that work and, until [tatara-operator#618](https://github.com/szymonrychu/tatara-operator/pull/618),
+  also closed the merge request holding it - measured twice on 2026-08-10
+  (`ansible!16`, `terraform!215`), both approved and conflict-free, both
+  closed unmerged with no successor. Instead the Task gets a one-time notice
+  and waits for a human; the merge request is left open even when a human
+  reply does eventually re-mint the Task, so the review is never thrown away.
+- `implement-declined` stays `UnparkNever` in `stage.Unpark` - the reaper's
+  `unparkFires` probe still ages it out at `ParkRetention` by default - but a
+  separate driver (`controller.driveCIRecoveryUnparks`,
+  `stage.UnparkCIRecovered`) re-arms it back into `under-implementation` when
+  the decline was a verdict on the infrastructure, not the change: the
+  Task's own tatara-owned merge request has since gone CI-green at the exact
+  head SHA the agent declined at. Bounded at-most-once per head fingerprint
+  and 3 total, tracked on annotations rather than a CRD field, and excluded
+  entirely for `kind=takeover` (there `implement-declined` names a human
+  push, not a platform gate). See
+  [tatara-operator#619](https://github.com/szymonrychu/tatara-operator/pull/619).
 - A `kind=review` Task parked `awaiting-human` also un-parks automatically,
   with no human reply needed, the moment every owned MergeRequest goes
   terminal externally (merged or closed) - see [tatara-operator#595](https://github.com/szymonrychu/tatara-operator/pull/595).

@@ -54,9 +54,9 @@ Component repos build via per-repo CI triggered by GitHub webhook on push to `ma
 
 **Image build:** rootless `buildkitd` on a Ceph PVC (durable). TCP probes (not exec probes) on the buildkitd Service. Single-arch builds for the homelab cluster.
 
-**Chart packaging:** release charts are packaged with the bare semver version (`helm package --version X.Y.Z`) and `helm push`ed to Harbor OCI. Any SHA-suffixed pre-release chart version must use a `g` prefix (e.g. `0.0.0-g0707870`) because Helm's semver validation rejects a pre-release segment that starts with a digit; a bare `0.0.0-0707870` is invalid.
+**Chart packaging:** release charts are packaged with the bare semver version (`helm package --version X.Y.Z --app-version vX.Y.Z`) and `helm push`ed to Harbor OCI, for both the `tatara-operator` and `tatara-project` charts in the same step. The SHA-suffixed pre-release scheme (`0.0.0-g<short-sha>`, `g`-prefixed because Helm's semver validation rejects a pre-release segment starting with a digit) is retired for release charts - `release.yml` calls it out as "the legacy `0.0.0-g` scheme" it deliberately no longer uses.
 
-Harbor chart tags are immutable too, same as image tags. If the tag `cut tag` computes has already been published (e.g. the git tag sequence was realigned below an already-released chart version), `helm push` fails with `412 precondition: '<chart>:<version>' configured as immutable`. `release.yml` treats that specific error as a benign no-op - immutability guarantees the existing artifact is identical - and continues to the `tatara-helmfile` version-bump step rather than hard-failing the release and wedging the chain. Any other push failure (auth, network) still fails the release.
+Harbor chart tags are immutable too, same as image tags, and `cut tag`'s own re-run guard (reuse the tag already pointing at `HEAD` rather than cutting a second one) means a retried release targets the same still-unpublished version, not a used one - so an immutable-tag rejection on the chart push is not an expected, handled case. `release.yml`'s "package and push BOTH charts" step runs a bare `helm push` per chart under `set -euo pipefail` with no `412`/immutable special-casing, so a chart push that does collide with an already-published tag fails the step and the release, same as any other push failure (auth, network). After both charts push, the step pulls each one back by version to confirm neither publish was silently partial before the `tatara-helmfile` bump step runs.
 
 ## ARC runner
 
@@ -107,7 +107,7 @@ kubectl label crd projects.tatara.dev \
 
 ## Rollback
 
-`helmDefaults.rollbackOnFailure: true` in `helmfile.yaml.gotmpl` instructs Helm to roll back all releases on any apply failure. This is automatic; no manual intervention is needed on a bad deploy.
+`helmDefaults.syncArgs: [--rollback-on-failure, ...]` in `helmfile.yaml.gotmpl` instructs Helm to roll back all releases on any apply failure - `--rollback-on-failure` is Helm v4's renamed replacement for the old `--atomic` flag, passed through `syncArgs` rather than a top-level boolean. This is automatic; no manual intervention is needed on a bad deploy.
 
 Manual rollback is a revert of the version-bump commit in `tatara-helmfile` (which the pipeline re-applies), or, for a live emergency:
 

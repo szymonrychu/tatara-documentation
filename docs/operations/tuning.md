@@ -81,7 +81,10 @@ gone with the fields it swept). Documentation is now **one nightly batch Task
 per project**, covering everything delivered in the last 24h - not a
 per-delivery spawn and not a "did anything meaningful change?" judgment call.
 
-The live projects run `issueScan` every 4 hours.
+The live projects run `issueScan` every 10 minutes (`*/10 * * * *`). Each enrolled
+repo gets its own scan-offset slot spread across that window rather than a shared
+project-wide one, so `maxNewTasksPerSweep` binds per repo per pass, not per project -
+see the levers table above.
 
 ---
 

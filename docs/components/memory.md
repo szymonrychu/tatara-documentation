@@ -180,6 +180,7 @@ The per-item ingest timeout defaults to `60s` (configurable via `ingestItemTimeo
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/queries` | Semantic query over memories. Returns ranked results with scores. |
+| `POST` | `/queries:data` | Same request shape as `/queries`, routed to the structured, score-ranked retrieval path (`Service.QueryData`). Returns a `QueryResult` with descending match scores reflecting LightRAG's chunk retrieval order. |
 | `POST` | `/queries:describe` | Returns a narrative summary over the retrieved chunks rather than raw results. |
 
 ### Entity and edge endpoints
@@ -275,7 +276,7 @@ The service pod runs fully hardened:
 
 ## Chart dependencies and NetworkPolicy
 
-The `tatara-memory` chart (v0.4.0) declares three subchart dependencies:
+The `tatara-memory` chart (v0.5.0, `appVersion: "0.4.0"`) declares three subchart dependencies:
 
 | Subchart | Version | Source | Condition key |
 |----------|---------|--------|---------------|
