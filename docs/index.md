@@ -12,31 +12,27 @@ hide:
 
 Here is one run, in tatara's own repository, with nothing staged for the demo.
 
-A Grafana alert fired at `2026-08-02T01:26:50Z`. No human filed anything: tatara's incident agent investigated it read-only and opened the issue itself, twelve minutes later, with the diagnosis in the body.
+A Grafana alert fired at `2026-08-17T14:01:50Z`. No human filed anything: tatara's incident agent investigated it read-only and opened the issue itself, eleven minutes later, with the diagnosis in the body.
 
-Then nothing happened, because nothing is implemented until a person with commit rights says so. Four days later, one did, in full:
+Then the platform held it and waited, because an alert is not an instruction and nothing is implemented until a person with commit rights says so. Nearly six hours later, one did, in full:
 
-```text title="tatara-operator#529, szymonrychu, 2026-08-06T15:21:36Z"
-Fix it!
+```text title="tatara-operator#621, szymonrychu, 2026-08-17T20:08:03Z"
+Fix it
 ```
 
-That comment is the whole approval. The first implementation attempt then failed and produced nothing, and tatara did not try again:
+That comment is the whole approval, and the only one a human wrote on the entire run. What came back was a pull request, and a second pod reviewed it and sent it back: the fix, as written, could have marked a merged pull request closed and rejected somebody else's finished work with a public comment. The agent took that finding, declined half of a different one with its reasons, and round 2 approved. The fix merged as `6f4f5e24`, CI tagged `v3.4.1`, and the cluster ran it.
 
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-06T20:00:37Z"
-tatara has stopped working this issue: task `incident-qe-c0bdeaf8ab61daab-9mqvr` ended in `failed` (`operator-error`).
+One comment from one maintainer, two words long. Nine hours of wall clock, with two hours and fifty-six minutes of actual delivery inside them.
 
-The issue stays open and is labelled `tatara-parked`, so the platform will not spend another agent on it until a human replies here. Comment to pick it back up.
-```
+One run is an anecdote, so here is the denominator: in the 30 days to `2026-08-18` tatara's agents opened 147 pull and merge requests that reached a terminal state across 15 repositories, 134 of them merged, and [the denominator section](explainers/watch-one-run.md#one-run-is-an-anecdote) sets out what that figure does not cover.
 
-Once restarted, the fix merged as `e70d0e09`, CI tagged `v2.0.4`, and the cluster ran it. Four comments from one maintainer, two of them under ten words. Six days wall clock, with four hours and fifty minutes of actual delivery inside them.
-
-Every quote above is from [tatara-operator#529](https://github.com/szymonrychu/tatara-operator/issues/529), and you can open the thread yourself. [Read the whole run](explainers/watch-one-run.md), including the review round that sent the fix back.
+Every quote above is from [tatara-operator#621](https://github.com/szymonrychu/tatara-operator/issues/621), and you can open the thread yourself. [Read the whole run](explainers/watch-one-run.md), including the review round that caught the bug.
 
 ---
 
 ## Why it is called tatara
 
-That run was not one long-lived process. It was a sequence of pods that each started cold: the attempt that failed, the one that wrote the fix, the one that reviewed it and sent it back, the one that rewrote it. The name is the reason that works.
+That run was not one long-lived process. It was a sequence of pods that each started cold: the one that investigated the alert, the one that wrote the fix, the one that reviewed it and sent it back, the one that rewrote it. The name is the reason that works.
 
 A tatara is the traditional Japanese iron-smelting furnace. The clay stack is built for a single smelt and broken apart to get the bloom out; what carries forward is the iron, not the furnace.
 
@@ -46,7 +42,7 @@ That is the shape of this platform, and it is the part newcomers get wrong. Agen
 
 ## What that run did not show
 
-One issue exercises one path through the loop. These are the parts #529 had no occasion to use.
+One issue exercises one path through the loop. These are the parts #621 had no occasion to use.
 
 <div class="grid cards" markdown>
 
@@ -62,7 +58,7 @@ One issue exercises one path through the loop. These are the parts #529 had no o
 
     ---
 
-    A periodic scan of the codebase and the knowledge graph proposes its own improvements, from new features to tech-debt and CI health fixes. #529 started from an alert; a Task can also start from something tatara noticed on its own.
+    A periodic scan of the codebase and the knowledge graph proposes its own improvements, from new features to tech-debt and CI health fixes. #621 started from an alert; a Task can also start from something tatara noticed on its own.
 
     [:octicons-arrow-right-24: Brainstorm](workflows/brainstorm.md)
 
@@ -70,7 +66,7 @@ One issue exercises one path through the loop. These are the parts #529 had no o
 
     ---
 
-    A single Task can span repositories and open a pull request in each, and related issues can be grouped into one agent run behind one combined change. #529 touched one repository, which is the easy case.
+    A single Task can span repositories and open a pull request in each, and related issues can be grouped into one agent run behind one combined change. #621 touched one repository, which is the easy case.
 
     [:octicons-arrow-right-24: From Issue to PR](explainers/issue-to-pr.md)
 
@@ -108,7 +104,7 @@ One issue exercises one path through the loop. These are the parts #529 had no o
 
     Nothing gets written until a person you named comments on the issue. `maintainerLogins` is empty by default and an empty list approves nothing, so an unconfigured Project reconciles cleanly and produces no code at all.
 
-    What comes back is a pull request. A separate review pod, with no memory of having written the code, reviews it, and the operator merges only on an accepted verdict, at the exact commit that was reviewed, with CI green. When an attempt fails, tatara parks the issue and waits for a reply rather than retrying. Every attempt, review round, and failure is on the issue thread with a timestamp, as in the run above.
+    What comes back is a pull request. A separate review pod, with no memory of having written the code, reviews it, and the operator merges only on an accepted verdict, at the exact commit that was reviewed, with CI green. That round earns its keep. On the run above, the reviewer followed a status field the new code wrote out of the diff and into the state machine that reads it, and found the case where a merged pull request would be marked closed and somebody else's finished work rejected in public. The agent took that finding, declined half of another one with its reasons, and both exchanges are on the thread with a timestamp. No agent merged any of it and none could have: the tool set an agent is given contains no merge action, so the merge is the operator's own.
 
     Read [The Big Picture](explainers/big-picture.md) and [Workflows](workflows/index.md).
 

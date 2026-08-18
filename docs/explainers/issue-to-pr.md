@@ -255,6 +255,6 @@ You are not the only way out. Every park except `backlog-sweep` ages out on a 7-
 
 ## Where to go next
 
-- [Watch One Run](watch-one-run.md) - this journey as one real six-day run, including the parts that went wrong.
+- [Watch One Run](watch-one-run.md) - this journey as one real nine-hour run, including the review round that sent the fix back and the rework it forced.
 - [The Task state machine](../reference/task-stages.md) - every edge, guard, and park reason, in full.
 - [The Agentic Operating Model](../concepts/agentic-model.md) - the model behind the walkthrough, including the two human gates and the security boundary.

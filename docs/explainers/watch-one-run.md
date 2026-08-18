@@ -1,234 +1,269 @@
 ---
 title: Watch One Run
-description: One real tatara run in tatara's own repository, from 2026-08-02 to 2026-08-08 - an alert firing, a maintainer typing two words to approve, an attempt that failed and got parked instead of retried, a review round that sent the fix back, and the deploy.
+description: One real tatara run in tatara's own repository on 2026-08-17 - an alert firing, a maintainer typing two words to approve, a review round that caught a real bug in the agent's own diff, an agent that declined half a finding with reasons, and the deploy.
 ---
 
 # Watch One Run
 
-Read this page and you will have watched tatara do a complete piece of work, with nothing staged for the demo. It happened in tatara's own repository between **2026-08-02 and 2026-08-08**, and you can open the whole thread yourself: [tatara-operator#529](https://github.com/szymonrychu/tatara-operator/issues/529) and the pull request it produced, [#550](https://github.com/szymonrychu/tatara-operator/pull/550). Every quoted block below is copied out of that thread.
+Read this page and you will have watched tatara do a complete piece of work, with nothing staged for the demo. It happened in tatara's own repository on **2026-08-17**, and you can open the whole thread yourself: [tatara-operator#621](https://github.com/szymonrychu/tatara-operator/issues/621) and the pull request it produced, [#624](https://github.com/szymonrychu/tatara-operator/pull/624). Every quoted block below is copied out of that thread.
 
-No person filed the issue. A Grafana alert fired, tatara's own incident agent investigated it read-only, and the agent opened the tracker. Tatara has been enrolled as its own first project since early on, so its backlog is worked by the same loop that would work yours - see [tatara Builds tatara](../concepts/self-improvement.md). Across the six days, one maintainer wrote four comments. Two of them are shorter than this sentence.
+No person filed the issue. A Grafana alert fired, tatara's own incident agent investigated it read-only, and the agent opened the tracker. Tatara has been enrolled as its own first project since early on, so its backlog is worked by the same loop that would work yours - see [tatara Builds tatara](../concepts/self-improvement.md). One maintainer wrote one comment on the whole thread, and it is two words long.
 
-The run is not a tidy one, and that is why it is worth your time. An implementation attempt failed outright and produced nothing. The platform stopped and waited for a person rather than trying again. A reasonable instruction from that person turned out not to apply yet, and the agent said so instead of doing something merge-shaped to comply.
+The middle of the run is the part worth your time. A second pod reviewed the fix and found that it could mark somebody else's finished work rejected and say so publicly. The agent took that finding, and then declined half of a different one and put its reasons on the record.
 
 ---
 
 ## An alert fires and the agent files a tracker
 
-The alert is an ordinary Grafana rule over the operator's own error logs: at least two `ERROR` lines carrying the same `msg` within an hour. It fired at `2026-08-02T01:26:50Z`. Twelve minutes later, the incident agent had finished its investigation and opened issue #529 with the diagnosis in the body.
+The alert is an ordinary Grafana rule over the operator's own error logs: at least two `ERROR` lines carrying the same `msg` within an hour. This firing started at `2026-08-17T14:01:50Z` and was recurrence nineteen. Eleven and a half minutes later the incident agent had finished its investigation and opened issue #621 with the diagnosis in the body.
 
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-02T01:39:35Z"
-`handleIncidentOutcome` validates `issue.title` for **non-empty only** and then ships it verbatim to the forge. GitLab enforces a hard **255-character** title cap; GitHub does not. So on a **GitLab-backed project** any agent outcome with a long title is rejected `400`, and the handler returns **502 before `o.commit()`** - no Task state written, no retry, no requeue, nothing persisted. The agent's entire investigation is dropped.
+```text title="tatara-operator#621, szymonrychu-bot, 2026-08-17T14:13:19Z"
+**TRUE POSITIVE, and a DIFFERENT root cause from #597 under the same rule.** #597's failure mode contributes **0** lines to this firing. All **53** `Reconciler error` lines in the window are `controller=mergerequest`, from **one** call site:
 ```
 
-The defect is small and precise: agent-supplied issue titles were never clamped, so a title longer than 255 characters was rejected by GitLab and the accepted outcome behind it was thrown away.
+The defect is small and precise, and it lives one layer above an existing fix rather than in new code. A previous change had already taught the operator to stop retrying a permanently gone upstream pull request. It guarded the writes:
 
-The agent went further than a diagnosis and wrote down a way to prove itself wrong:
-
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-02T01:39:35Z"
-**Blast radius:** every `file_issue`/proposal write on a GitLab-backed project. Falsifiable prediction: this reproduces on the *next* incident or brainstorm outcome for project `infrastructure` whose title exceeds 255 chars, and never on project `tatara`.
+```text title="same comment, two spans"
+**ROOT CAUSE - why does a permanent 404 loop forever when #436 already fixed exactly that?** Because the guard is at the wrong layer.
+[...]
+The mirror thread read at `:106-114` runs **before** that loop in the same `Reconcile` and returns raw, so it short-circuits the entire guarded region.
 ```
 
-The issue carries two labels: `tatara-parked`, and `tatara-alert-rule=759e75110b9af5cc`. The second one is the provenance, in machine-readable form. Anything reading this issue later can tell which alert rule produced it without parsing prose.
+Three deleted pull requests in an unrelated repository were retrying forever, at a backoff that had settled just above the alert threshold and would never fall below it. The agent went further than the diagnosis and wrote down the thing that would make a naive fix dangerous:
 
-## It keeps firing, and the agent does not repeat itself
-
-Over the next six days the alert re-fired eleven times, and each re-fire posted a short notification onto the same issue rather than opening a new one.
-
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-08T08:00:53Z"
-Alert re-fired 2026-08-08T08:00:51Z; labels {component=operator, grafana_folder=Tatara, homelab=true, severity=warning, system=tatara}; 11 recurrence.
+```text title="same comment"
+A 404 on `ListPRComments` proves the PR is gone; it does not prove the **repo** is gone. `-69` succeeding mid-incident [Q7] is the discriminator, and a repo-wide 404 (bad token, deleted repo) must not silently close every mirror in that repo.
 ```
 
-Three of those re-fires escalated into a full re-investigation. The agent's job on an escalation is not to restate the original finding; it is to check whether the original finding is still the one firing.
+At this point the issue carries two labels, both written by the operator: `tatara-alert-rule=759e75110b9af5cc` at `14:13:21Z`, and `tatara-parked` at `14:13:30Z`. The first is the provenance, in machine-readable form, so anything reading this issue later can tell which alert rule produced it without parsing prose. Open the issue and you will count three, because a third goes on six hours further down this page: `tatara-approved`, at `20:17:31Z`, in the same second the approval gate opened. Read it as a receipt rather than a switch. The operator writes it after it has accepted an approval, and it is one of four phase labels the operator projects onto an issue; putting it on an issue yourself approves nothing, and the webhook explicitly refuses to let it trigger any work. <!-- stale-ok: tatara-approved -->
 
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-05T13:34:41Z"
-Re-investigated live and read-only. Still this issue's unclamped `issue.title`. No new mechanism. Fresh evidence only below; the postmortem above still stands.
+## The platform holds it, and waits for a person
+
+Seven seconds after the agent submitted its outcome, the operator posted this:
+
+```text title="tatara-operator#621, szymonrychu-bot, 2026-08-17T14:13:29Z"
+tatara has stopped working this issue: task `incident-qe-c0bdeaf8ab61daab-h9dsx` ended in `done` (``).
+
+The issue stays open and is labelled `tatara-parked`, so the platform will not spend another agent on it until a human replies here. Comment to pick it back up.
 ```
 
-Each escalation also re-checked the prediction from the opening body against fresh log data, and each time it held: every failure was on the GitLab-backed project, none on the GitHub-backed one.
+Read the state, not the sentence. That task ended in `done`, and the reason inside the backticks is empty. Nothing failed. An incident Task is read-only and has exactly one job, which is to investigate and file what it found, and the operator retired it the moment it did: `refined -> done` at `14:13:22Z`, the notice above at `14:13:29Z`, the `tatara-parked` label at `14:13:30Z`.
+
+What the label holds is a different question. Writing code is a different Task, and the issue that would drive one was filed by a bot on an alert, so nobody has yet said it should be worked. The operator's backlog sweep did mint that second Task, an hour and twenty minutes later, and minted it already parked:
+
+``` { .text title="operator log, 2026-08-17T15:35:36.775Z, field values verbatim" }
+msg="sweep: minted task for orphan issue"
+resource_id=mt-i-tatara-operator-621-12819ff6cd33b54f
+repo=tatara-operator  number=621  state=new  park_reason=backlog-sweep
+```
+
+So two Tasks stopped at the same place for the same reason: an alert is not an instruction. That is what `tatara-parked` on an open issue means. The platform is deliberately not working it, and it has not forgotten it.
+
+!!! note "The label does not come back off"
+
+    Nobody removed `tatara-parked` on this run. The Task was unparked in the cluster within three seconds of the maintainer's comment and the work ran to completion, but the label stayed on the issue through the merge and is still there now that it is closed. Read `tatara-parked` on an OPEN issue as "not being worked". Do not read anything into its presence on a closed one.
 
 ## A maintainer types two words
 
-Nothing had been implemented yet, because nothing is implemented until a person with commit rights says so. On 2026-08-06 the maintainer said so, in full:
+Nothing is implemented until a person with commit rights says so. At `20:08:03Z`, five hours and fifty-five minutes after the hold went on, one did, in full:
 
-```text title="tatara-operator#529, szymonrychu, 2026-08-06T15:21:36Z"
-Fix it!
+```text title="tatara-operator#621, szymonrychu, 2026-08-17T20:08:03Z"
+Fix it
 ```
 
-That is the entire approval. There is no form, no button, and no state that a maintainer has to go and set somewhere else. A comment in the thread, from an account the project lists as a maintainer, is what opens the gate.
+That is the entire approval, and it is the only comment a human wrote anywhere on this run. There is no form, no button, and no state a maintainer has to go and set somewhere else. A comment in the thread, from an account the project lists as a maintainer, is what opens the gate. Three seconds later the operator unparked the waiting Task and moved it out of `new`.
 
 ## The operator checks the approval itself
 
 The agent does not get to assert that it was approved. The operator goes and finds the comment, reads the author against the project's maintainer set, and writes a receipt naming exactly which comment it acted on:
 
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-08T08:30:34Z"
-Approval accepted for `mt-i-tatara-operator-529-fe250353653192d0`.
+```text title="tatara-operator#621, szymonrychu-bot, 2026-08-17T20:17:32Z"
+Approval accepted for `mt-i-tatara-operator-621-12819ff6cd33b54f`.
 
 - approver: `szymonrychu`
-- cited comment: `5206856065`
-- quote: "Fix it!"
-- plan note: `n-05fa7cd2b344cec2`
+- cited comment: `5319672667`
+- quote: "Fix it"
+- plan note: `n-0240f8c8ed7c3e22`
 
 If this is not what you meant, say so on this thread: the operator re-reads it every turn.
 ```
 
-Comment `5206856065` is the `Fix it!` above. The receipt is dated two days after the approval, and it still cites the original comment rather than anything nearer to hand - the citation is to a specific artifact, not to a general sense that permission exists somewhere.
-
-Alongside the citation, the agent re-checked that the bug was still real before spending anything on it:
-
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-06T15:25:00Z, two spans of one sentence"
-Go-ahead read from @szymonrychu (`Fix it!`). Re-verified at HEAD `ebb5352`
-[...]
-Still unfixed.
-```
-
-An approval from four days ago is not evidence that the defect survived those four days. Re-verifying at the current HEAD is how the platform avoids implementing a fix that already landed.
-
-## The first attempt fails
-
-The first implementation attempt produced nothing. The Task running it, `incident-qe-c0bdeaf8ab61daab-9mqvr`, ended in `failed` with the reason `operator-error`. No commit, no pull request, no partial work to pick up.
-
-## The platform parks the issue instead of retrying
-
-This is the beat worth reading twice.
-
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-06T20:00:37Z"
-tatara has stopped working this issue: task `incident-qe-c0bdeaf8ab61daab-9mqvr` ended in `failed` (`operator-error`).
-
-The issue stays open and is labelled `tatara-parked`, so the platform will not spend another agent on it until a human replies here. Comment to pick it back up.
-```
-
-A system that responds to a failure it does not understand by trying the same thing again will burn your budget and fill your issue tracker while it does it, and the second attempt is no better informed than the first. Tatara stops. It says what stopped, it names the Task that failed and the reason it failed with, it leaves the issue open so nothing is lost, and it hands the next decision to a person. Until somebody replies on the thread, no further agent is spent on this issue.
-
-That behavior is the thing to want before you let any of this near your repositories. It is also what makes the label meaningful: `tatara-parked` on an open issue means the platform is deliberately not working it, not that it forgot.
-
-## A human nudges it, and the agent disagrees
-
-Twenty-two minutes later the maintainer replied. The double space before the comma is in the original.
-
-```text title="tatara-operator#529, szymonrychu, 2026-08-06T20:22:59Z"
-If it's implemented , merge and deploy!
-```
-
-Reasonable, and wrong about the state of the world. There was no implementation, because the attempt that was meant to produce one had failed. The agent checked before acting, and then said so:
-
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-06T20:25:30Z, three spans"
-Status check before proceeding: the prior implement attempt (`incident-qe-c0bdeaf8ab61daab-9mqvr`) did not land
-[...]
-No commit touching `outcome.go` / `handlers_v2.go` / `limits.go` exists yet.
-[...]
-So "if it's implemented, merge and deploy" doesn't apply yet
-[...]
-there's nothing to merge.
-```
-
-It then read the instruction for what the maintainer meant rather than what it literally said, restated that reading, and asked to be corrected if it had got it wrong. An agent that took the instruction at face value here would have gone looking for something to merge and found something adjacent.
+Comment `5319672667` is the `Fix it` above, and the quoted string is the whole of it. The citation is to a specific artifact, not to a general sense that permission exists somewhere. If the reading is wrong, you reply on the thread and the operator picks the correction up on its next turn.
 
 ## The plan, then the code
 
-On 2026-08-08 the maintainer restarted it with a third comment, `Fix it (continue existing development and MR).`, and the operator minted a Task two seconds later. The agent's first act was to post a plan and stop:
+The receipt landed eight seconds after the plan, because the first thing the agent does once through the gate is say what it intends to do, and stop.
 
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-08T08:30:20Z"
-## Plan: continue #532's clamp work, land the needs-changes round
+```text title="tatara-operator#621, szymonrychu-bot, 2026-08-17T20:17:24Z, three spans"
+## Plan
 
-Repo: `tatara-operator` only. Single change, one MR.
+Single repo: `tatara-operator`. No other repo in scope.
+[...]
+### Tests (red first)
+[...]
+### Explicitly NOT in scope
 ```
 
-The plan named the four review findings it was carrying forward from an earlier superseded attempt, named the two things it was deliberately not doing, and ended by asking rather than assuming:
+The plan named the guard it would add, the one confirming repository read it would make before believing any 404, and five tests to write red first. It also named what it was deliberately leaving alone, including the three broken objects the incident report had told a human to go and delete:
 
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-08T08:30:20Z"
-### Open question
-Only the branch/MR mechanics above. If you want #532 itself pushed to instead, say so and I will go back through the gate.
+```text title="same comment"
+- Deleting the three live `mr-mtg-decks-62/64/71` CRs. This fix converges them on the next cadence tick.
 ```
 
-The run parked a second time here, for a reason that had nothing to do with the defect: an operator bug misread the already-accepted approval and suppressed the implementation pod. The maintainer diagnosed it, filed it separately, and un-parked this issue by hand at `2026-08-08T10:56:25Z`. That was the fourth and last human comment on the thread.
-
-The pull request opened at `2026-08-08T11:54:57Z`: [#550](https://github.com/szymonrychu/tatara-operator/pull/550), titled `fix: clamp agent-supplied issue titles at the restapi boundary`.
+The first commit landed at `20:37:56Z`, and the pull request opened at `21:03:55Z`: [#624](https://github.com/szymonrychu/tatara-operator/pull/624), titled `fix(mirror): stop a permanently-gone upstream thread looping forever on the mirror READ`.
 
 ## The Task walks its states
 
 None of the state machine shows up on GitHub. The operator logs every transition, and this is the run reconstructed from those logs:
 
 ``` { .text .annotate title="reconstructed from the operator's state-transition logs" }
-2026-08-08T08:24:40.449Z  (create) -> new                            # (1)!
-2026-08-08T08:24:41.099Z  new -> refined                             # (2)!
-2026-08-08T08:30:34.132Z  refined -> under-implementation            # (3)!
-          [ no transition logged for the first submission ]          # (4)!
-2026-08-08T12:06:51.427Z  awaiting-review -> under-implementation    # (5)!
-2026-08-08T12:39:52.535Z  under-implementation -> awaiting-review
-2026-08-08T12:56:16.827Z  awaiting-review -> merged                  # (6)!
-2026-08-08T12:56:21.178Z  merged -> deployed
-2026-08-08T13:14:22.987Z  deployed -> done
+2026-08-17T15:35:36.755Z  (create) -> new                            # (1)!
+2026-08-17T20:08:06.176Z  new -> refined                             # (2)!
+2026-08-17T20:17:31.159Z  refined -> under-implementation            # (3)!
+2026-08-17T21:05:10.755Z  under-implementation -> awaiting-review    # (4)!
+2026-08-17T21:24:55.355Z  awaiting-review -> under-implementation    # (5)!
+2026-08-17T22:31:23.410Z  under-implementation -> awaiting-review
+2026-08-17T22:45:46.411Z  awaiting-review -> merged                  # (6)!
+2026-08-17T22:45:51.255Z  merged -> deployed
+2026-08-17T23:04:19.370Z  deployed -> done
 ```
 
-1.  Minted two seconds after the maintainer's comment landed. No pod runs at `new`; the operator triages the Task itself.
-2.  `refined` is the approval gate. A pod is up here, and this is where the plan and the approval receipt were written.
-3.  The gate granted, on the receipt shown further up. Code is written from here on.
-4.  A real gap. The submission that opened the pull request is not in the retained logs, so the timestamp is not shown rather than guessed.
+1.  Minted by the backlog sweep and parked in the same write. It sat here for four and a half hours.
+2.  Three seconds after the maintainer's comment landed. No pod runs at `new`; the operator triages the Task itself.
+3.  `refined` is the approval gate. A pod is up here, and this is where the plan and the approval receipt were written.
+4.  Not "the agent pushed". The operator held the submission until CI was green at the pushed head, then released it to review.
 5.  The review verdict was changes requested, so the same Task went back to implementation with a fresh pod.
 6.  `merged` names the merge phase, not a merged pull request. The operator owns the merge from here.
 
 Two facts a newcomer usually gets wrong are both visible in that list. There is no separate review Task: the same Task moves between `under-implementation` and `awaiting-review`, and the implement pod is torn down and replaced by a review pod on the same work. And only the operator writes these states - an agent submits an outcome and the operator decides what the outcome means. The full table is in [Task State Machine](../reference/task-stages.md).
 
-## The review sends it back once
+## The review sends it back, and catches a real bug
 
-Round 1 arrived at `2026-08-08T12:06:49Z` against commit `cbe26e0`, with five inline findings. This is the entire body of it:
+Round 1 arrived at `2026-08-17T21:24:53Z` against commit `56bec78`, with four inline findings. This is the entire body of it:
 
-```text title="tatara-operator#550, review by szymonrychu-bot, 2026-08-08T12:06:49Z"
-<!-- tatara-review round=1 sha=cbe26e0a3d5d10c2cf323949e680daa911a81fd5 -->
+```text title="tatara-operator#624, review by szymonrychu-bot, 2026-08-17T21:24:53Z"
+<!-- tatara-review round=1 sha=56bec786028d276705f8e5a7a816925194e5b2c2 -->
 ## Review: changes requested
 ```
 
-That is worth being precise about, because it is where the trust model lives. Neither round is a native GitHub approval or change request. Both are posted with GitHub's `COMMENTED` state, because GitHub refuses an `APPROVE` or `REQUEST_CHANGES` review from the account that authored the pull request, and tatara authored this one. The verdict rides in the body, behind the `tatara-review` marker the operator writes, and the operator is what reads it back and acts on it at merge time. GitHub's own approval machinery is never in the loop, and no agent posts the review either: the review pod returns a verdict and findings, and the operator writes them to the forge.
+The finding that mattered was about a function the diff had just added. The intent was defensive: when a read of an upstream pull request comes back 404, mark the local mirror gone instead of retrying it into the ground. The reviewer worked out what that does to a mirror whose upstream was not deleted, but merged.
 
-The most useful of the five findings caught the pull request description claiming something the diff did not contain:
-
-```text title="tatara-operator#550, inline finding on api/v1alpha1/limits.go:172"
-**Claimed in the MR body, not in the diff: interior newlines are not flattened.**
+```text title="tatara-operator#624, round 1 inline finding on internal/controller/mergerequest_controller.go, four spans"
+`markMergeRequestThreadGone` writes `state="closed"` over `"merged"`, and nothing stops it.
+[...]
+A 404 on that read flips `merged -> closed`. `stage.AllMRsMerged` then goes false and `terminalMREdge` / `ownMRsShippedEdge` (`reviewpost.go:425`, `:466`) finalize the owner Task `rejected(mr-closed-externally)`
+[...]
+with `WithTerminalIssueRelease`'s public comment
+[...]
+Minimum: refuse when `mr.Status.State == "merged"`. Better: skip the mirror sync entirely for terminal mirrors, which also retires the forever re-probe below.
 ```
 
-```text title="same finding, continued"
-`ClampIssueTitle` does `TrimSpace` and nothing else. No flattening anywhere in the diff (`grep ReplaceAll|Fields|flatten` over the three changed source files: no hits).
+Follow that chain to the end, because it is the reason the loop exists. A patch written to quiet a noisy log line would, in one narrow case, have taken a piece of finished work, recorded it as rejected, and posted a terminal comment saying so on the issue that drove it. None of that is visible in the diff. Seeing it takes a reader who will follow a status field into the state machine that reads it.
+
+The reviewer also explained why the diff's own safety check would not have caught this. The new code probes the repository before believing a 404, on the theory that a deleted repository 404s everything and must never close every mirror in it at once. Against this case the probe answers cheerfully and wrongly:
+
+```text title="same finding"
+The probe cannot see it by construction: repo deleted and recreated under the same name, or `Repository.spec.URL` retargeted, makes the repo READABLE while every number 404s
 ```
 
-The reviewer then reproduced the consequence against the actual commit rather than reasoning about it, showing a two-line title being decoded as a title plus a body and overwriting a real issue's contents on the forge.
+## The agent answers its reviewer, and declines part of a finding
 
-The implementing pod fixed the findings and resubmitted at `2026-08-08T12:39:52Z`. Round 2 came back fifty minutes after round 1, against commit `d2fbbe4`:
+An agent that treats findings as a checklist narrows the guard, because narrowing is what it was asked for. Watch for that in what follows, because it is the property being tested here and it is a safety property, not a matter of manners. An agent that concedes to any confidently stated claim can be walked into a worse system by a reviewer that is wrong, and the loop is only worth running if the implementing side can tell a correct finding from an incorrect one.
 
-```text title="tatara-operator#550, review by szymonrychu-bot, 2026-08-08T12:56:14Z"
-<!-- tatara-review round=2 sha=d2fbbe4100d903554d9429ebc1778634d9bee4c7 -->
+The reviewer is a different pod with no memory of writing the code, so what arrives back at the implementing pod is a set of claims, not orders. Fifty minutes later the agent answered all four, one comment each. On the finding above it took both of the offered fixes rather than the cheaper one, and named the part of the review that moved it:
+
+```text title="tatara-operator#624, szymonrychu-bot, 2026-08-17T22:13:06Z, two spans"
+Fixed, both halves, in `52ac1a5`. Took the "better" option and the "minimum" one, because they cover different call paths.
+[...]
+Your point that the probe's precondition IS the failure mode is the part that changed my model: a probe is a filter, never a proof, so the disposition it gates has to independently refuse whatever it cannot afford to get wrong.
+```
+
+In the same comment it corrected one of the reviewer's line citations, kept the fix regardless, and set out the windows in which the defect was real anyway. Agreeing with a finding and agreeing with every sentence supporting it are not the same act.
+
+On the second finding it went the other way. The reviewer wanted a newly added guard narrowed. The agent declined that half, in public, with two reasons:
+
+```text title="tatara-operator#624, szymonrychu-bot, 2026-08-17T22:13:13Z, four spans"
+Not narrowing the guard, for two reasons:
+[...]
+**It cannot be narrowed from here.**
+[...]
+Narrowing would mean pushing the predicate into the driver and classifying per intent, which is a different change than the one this PR is scoped to.
+[...]
+**410 stays.** The MR side excludes it because its disposition terminates somebody's Task publicly.
+```
+
+It took the other half of that same finding, which was to add the metric the reviewer had noticed was missing, and then wrote the whole disagreement into a comment at the call site so the next reader does not have to find this thread to understand the asymmetry.
+
+Nothing in the review forced any of that. The agent compared what the two guards do when they are wrong, found the answers genuinely different, and said so somewhere you can argue with it.
+
+## Round 2 approves
+
+The rewritten diff went up at `22:14:36Z`, the operator held the submission until CI was green at that head, and round 2 came back eighty minutes after round 1:
+
+```text title="tatara-operator#624, review by szymonrychu-bot, 2026-08-17T22:45:44Z"
+<!-- tatara-review round=2 sha=67b98ca16b9d29382683325b4b7023486a0be650 -->
 ## Review: approved
 ```
 
-Round 2 still carried two findings; neither blocked. It also reported one finding it could not anchor to a line inside the diff, in the body, rather than dropping it.
+The approval still carried a finding, about a log line that now claims more than the code behind it does. It did not block. The reviewer could not attach it to any line inside the diff, so rather than drop it, it said why and put it in the body:
 
-Two things make that loop worth having. The reviewer is a different pod with no memory of writing the code, which is why it read the description as a claim to be checked instead of a summary to be trusted. And the round counter only advances on a changes-requested verdict, so an approval consumes no round - which is why this pull request has a round 1 that asked for changes and a round 2 that approved. There is no cap on how many rounds the loop may take; `maxReviewRounds` is deprecated and has no effect, and the pair is bounded instead by a single hard 24-hour residency limit on the Task. See [PR / MR Review](../workflows/review.md) for the verdict contract.
+```text title="same review, body"
+GitHub can only attach an inline comment to a line inside the pull request diff. These findings point outside it (or carry no line), so they are reported here:
+```
+
+Two mechanics in that pair are worth knowing before you read any tatara review. Neither round is a native GitHub approval or change request. Both are posted with GitHub's `COMMENTED` state, because GitHub refuses an `APPROVE` or `REQUEST_CHANGES` review from the account that authored the pull request, and tatara authored this one. The verdict rides in the body, behind the `tatara-review` marker the operator writes, and the operator is what reads it back and acts on it at merge time. GitHub's own approval machinery is never in the loop, and no agent posts the review either: the review pod returns a verdict and findings, and the operator writes them to the forge.
+
+The other is the round counter. It advances only on a changes-requested verdict, so an approval consumes no round, which is why this pull request has a round 1 that asked for changes and a round 2 that approved. There is no cap on how many rounds the loop may take. `maxReviewRounds` is gone from the code, along with the park reason its cap used to produce, and the pair is bounded instead by a single hard 24-hour residency limit on the Task. See [PR / MR Review](../workflows/review.md) for the verdict contract.
 
 ## Merge, tag, deploy
 
-The rest ran without a person in it.
+The rest ran with no person in it.
 
 | when (UTC) | what |
 |---|---|
-| `11:56:14` | operator applies the `semver:patch` label to #550 |
-| `12:56:19` | operator merges #550 as `e70d0e09` |
-| `12:56:20` | issue #529 closes |
-| `13:11:31` | `tatara-helmfile#330` merges, moving the operator pin from `2.0.3` to `2.0.4` |
-| `13:14:20` | operator posts the closing comment on #529 |
+| `21:05:11` | operator applies the `semver:patch` label to #624 |
+| `22:45:49` | operator merges #624 as `6f4f5e24` |
+| `22:45:51` | issue #621 closes |
+| `23:01:31` | `tatara-helmfile#425` merges, moving the operator pin from `3.4.0` to `3.4.1` |
+| `23:04:18` | operator posts the closing comment on #621 |
 
-The label goes on before the merge, not after, and the ordering is load-bearing: CI cuts the release tag from the label at the merge commit, so a merge that landed first would be a release that never got tagged. Tag `v2.0.4` points at `e70d0e09df48f1750b8d327b041c62397c55668b`, which is the merge commit of #550.
+The label goes on before the merge, not after, and the ordering is load-bearing: CI cuts the release tag from the label at the merge commit, so a merge that landed first would be a release that never got tagged. Here the gap is an hour and forty minutes, because the operator writes the label when it releases a submission to review rather than when it decides to merge. Tag `v3.4.1` points at `6f4f5e24551205a96091d7ece339a32a747cf238`, which is the merge commit of #624.
 
-No agent merged this and none could have. Agent pods hold no forge token, and the tool surface handed to an agent contains no merge action at all - it is a structural absence, not an instruction the agent is trusted to follow. The operator performs the merge itself, against the exact head commit the review approved.
+No agent merged this and none could have. Agent pods hold no forge token, and the tool surface handed to an agent contains no merge action at all - it is a structural absence, not an instruction the agent is trusted to follow. The operator performs the merge itself, against the exact head commit the review approved, with CI green at that commit.
 
-```text title="tatara-operator#529, szymonrychu-bot, 2026-08-08T13:14:20Z"
-Delivered in tatara-operator!550 (v2.0.4). Closed by tatara.
+```text title="tatara-operator#621, szymonrychu-bot, 2026-08-17T23:04:18Z"
+Delivered in tatara-operator!624 (v3.4.1). Closed by tatara.
 ```
 
 ## What the run cost
 
-Six days wall clock, from the alert at `2026-08-02T01:26:50Z` to the issue closing at `2026-08-08T13:14:20Z`. Be clear about where those days went: almost all of them were the issue sitting open, re-firing, waiting for a person to answer. The delivery itself - Task minted, plan posted, code written, reviewed twice, merged, tagged, deployed, issue closed - took four hours and fifty minutes.
+Nine hours of wall clock, from the alert at `2026-08-17T14:01:50Z` to the closing comment at `23:04:18Z`, all of it inside one day. Be clear about where those hours went: five hours and fifty-five minutes were the issue sitting open and held, waiting for a person to say yes. The delivery itself - Task unparked, plan posted, code written, reviewed twice, merged, tagged, deployed, issue closed - took two hours and fifty-six minutes.
 
-The cost in human attention was four comments from one maintainer, two of them under ten words. The cost in wasted work was one failed implementation attempt and one review round, both of which the thread records rather than hides.
+The cost in human attention was one comment of two words. The cost in rework was one review round and the commits that answered it, which the thread records rather than hides. What that round bought was a defect that never reached anybody: a read of a deleted pull request that could have marked a merged one closed and rejected the Task that shipped it.
+
+## One run is an anecdote
+
+Everything above is one run, and it is the run this page chose to show you. Here is the denominator it sits in, so you can price the pick.
+
+In the 30 days to `2026-08-18`, tatara's agents opened **147** pull and merge requests that reached a terminal state, across 15 repositories in three projects on two forges. **134 merged, 13 closed unmerged**, which is 91%. 75 of the 134 landed in repositories that are not tatara's own: tatara 59 merged and 8 closed, infrastructure on GitLab 42 and 3, mtg 33 and 2. Counted at the forges by branch prefix, where `tatara/` is agent work and the other machine producers, `cd/` and `renovate/`, are excluded.
+
+Four things ride with that number, and it misleads without them.
+
+**The volume is ramping steeply.** Agent merges by week were 14, 9, 29 and 76, roughly 2.6x week over week, and the last week alone is 57% of the 30-day total. The figure describes a system that just scaled, not a steady state you can extrapolate from.
+
+**A Task is not a delivered feature.** The operator's own ledger records **227** Tasks reaching a terminal state in seven days: 197 delivered, 30 rejected. Of those 197, **84 are `review`**, which is reviewing a pull request, and **43 are `upgrade`**, which is dependency bumps and CD pin propagation. **19 are `implement`**, the kind this page followed. Publishing 197 as features shipped would be laundering, and this site does not do that.
+
+**Rejected is not failed.** 23 of the 30 rejections are incident Tasks correctly deduplicated onto a tracker that already existed (`tracked-elsewhere`). The same window is inflated at the end by an alert burst: incident Tasks ran 2, 5, 2, 5, 4 and 2 a day, then 15 and 11 on the last two.
+
+**Parked is mostly backlog, not damage.** 87 Tasks are parked as this is written, but 69 of them are `backlog-sweep`, which is minted-and-not-yet-run rather than failed, and 8 are `awaiting-human`, which is the designed wait this run spent five hours and fifty-five minutes in. Genuinely degraded is 10.
+
+The telemetry window is seven days and not thirty because Prometheus retention here is 7d, so a 30-day figure from telemetry does not exist to be quoted. The query is:
+
+``` { .text title="tatara's Prometheus, 2026-08-18" }
+sum by (state) (max_over_time(operator_task_terminal_total[7d]))
+```
+
+`max_over_time` rather than `increase` because about 50 operator pods carried that counter over the week (3 replicas, some 17 rollouts) and a counter resets on every rollout; `increase` undercounts by 1.8x. It checks out against something countable by hand: the two-day figure for `done` is 87, exactly the 87 live Task CRs still in `done` that the reaper holds at `DeliveredRetention = 48h`. That last number is also the reason live CRs are not a census. What `kubectl get task` shows you is a 48-hour window, not a population.
 
 ## Where to go next
 

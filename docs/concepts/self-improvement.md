@@ -147,22 +147,26 @@ call names the component repo directly; an implementation agent then edits that 
 opens a PR.
 
 **Example - an error alert becomes a code fix.** A Grafana rule over the operator's own
-error logs fired at 2026-08-02T01:26:50Z. Twelve minutes later the incident agent had
-filed [tatara-operator#529](https://github.com/szymonrychu/tatara-operator/issues/529)
-with the mechanism in the body: agent-supplied issue titles were never length-clamped, so
-a title over GitLab's 255-character cap was rejected and the whole accepted outcome behind
-it was dropped without a retry. The issue carries the label
-`tatara-alert-rule=759e75110b9af5cc`, which is the firing rule's identity in
+error logs fired at 2026-08-17T14:01:50Z. Eleven and a half minutes later the incident
+agent had filed
+[tatara-operator#621](https://github.com/szymonrychu/tatara-operator/issues/621) with the
+mechanism in the body: an earlier fix had already taught the operator to stop retrying a
+permanently gone upstream pull request, but its guard sat below the mirror thread read,
+and that read returned its error raw and short-circuited the whole guarded region, so
+three deleted pull requests in an unrelated repository requeued forever. The issue carries
+the label `tatara-alert-rule=759e75110b9af5cc`, which is the firing rule's identity in
 machine-readable form, so anything reading the thread later can tell where it came from
-without parsing prose. The fix landed six days later as
-[tatara-operator#550](https://github.com/szymonrychu/tatara-operator/pull/550), *"clamp
-agent-supplied issue titles at the restapi boundary"*, across eleven files including its
-tests.
+without parsing prose. The fix landed the same evening as
+[tatara-operator#624](https://github.com/szymonrychu/tatara-operator/pull/624),
+titled `fix(mirror): stop a permanently-gone upstream thread looping forever on the mirror READ`,
+across eight files including its tests, and shipped as `v3.4.1`.
 
-That run is worth reading end to end rather than in summary: an implementation attempt
-failed outright and the platform parked the issue instead of retrying, a maintainer's
-two-word approval opened the gate, and the operator posted a receipt naming the comment ID
-it acted on. Every comment is quoted in [Watch One Run](../explainers/watch-one-run.md).
+That run is worth reading end to end rather than in summary: a maintainer's two-word
+comment opened the gate and the operator posted a receipt naming the comment ID it acted
+on, a review round then caught a bug in the agent's own diff that would have recorded
+somebody else's merged work as rejected, and the agent answered every finding and declined
+half of one in public with its reasons. Every comment is quoted in
+[Watch One Run](../explainers/watch-one-run.md).
 
 ### 2. Fixing the alerting itself
 
