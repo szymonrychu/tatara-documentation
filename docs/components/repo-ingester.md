@@ -292,10 +292,10 @@ Key metrics emitted:
 | `ingest_runs_total` | Counter | Total ingest runs started |
 | `ingest_run_result_total{result}` | Counter | Terminal results: `success` or `failure` |
 | `ingest_stage_duration_seconds{stage}` | Histogram | Per-stage latency: `push_graph`, `push_chunks`, `scip`, `total` |
-| `analyzer_entities_total{analyzer}` | Counter | Entities emitted per analyzer |
-| `analyzer_edges_total{analyzer}` | Counter | Edges emitted per analyzer |
-| `analyzer_duration_seconds{analyzer}` | Histogram | Per-analyzer wall time |
-| `analyzer_parse_errors_total{analyzer}` | Counter | Per-file soft parse errors |
-| `push_requests_total{endpoint,result}` | Counter | HTTP push requests by endpoint and outcome |
+| `analyzer_entities_total{language}` | Counter | Entities emitted per analyzer |
+| `analyzer_edges_total{language}` | Counter | Edges emitted per analyzer |
+| `analyzer_duration_seconds{language}` | Histogram | Per-analyzer wall time |
+| `analyzer_parse_errors_total{language}` | Counter | Per-file soft parse errors |
+| `push_requests_total{path,result}` | Counter | HTTP push requests by path and outcome |
 | `semantic_misses_total` | Counter | Files sent to LLM extraction (cache misses) |
 | `llm_calls_total{result}` | Counter | LLM completion calls: `ok` or `fail` |

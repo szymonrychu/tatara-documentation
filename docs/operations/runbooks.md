@@ -1121,26 +1121,20 @@ max by (task) (operator_task_state_age_seconds{namespace="tatara",job="tatara-op
 <a id="tatara-runbook-tatara-merge-or-deploy-cycle-exhausted"></a><!-- alert: "Tatara merge or deploy cycle exhausted" status: covered -->
 ## Delivery parked or permanently exhausted
 
-!!! info "Since #521: both alerts are dead, and `merge-blocked`/`deploy-blocked` are parks, not failures"
-    Verified against the live `alerts/tatara-cd.yaml` and `tatara-operator`'s
-    `internal/obs/task_metrics.go`. `Tatara delivery parked on a merge or
-    deploy timeout` filters `operator_task_parked_total{stageReason=~...}` -
-    the label is `parkReason` now, not `stageReason`, and a positive regex
-    match against an absent label never matches, so this alert **never
-    fires**. `Tatara merge or deploy cycle exhausted` filters
-    `operator_task_terminal_total{stage="failed",stageReason=~...}` - same
-    dead-label problem, and `merge-blocked`/`deploy-blocked` are two of the 28
-    current `parkReason` values, not terminal `rejected` reasons, so even a
-    corrected label name would need `operator_task_parked_total` here too.
-    This also changes the operational picture below: exhaustion no longer
-    fails the Task - it parks with no re-entry, ages out at `parkRetention`
+!!! info "Both alerts are live: the earlier `stageReason`/`parkReason` label bug is fixed"
+    Verified against the live `alerts/tatara-cd.yaml` (2026-08-18): both rules
+    key on `operator_task_parked_total{parkReason=~...}`, the correct label
+    and the correct metric, so a past version of this page describing them as
+    dead (matching against an absent `stageReason` label, or the terminal
+    `operator_task_terminal_total`) no longer reflects what is deployed.
+    `merge-blocked`/`deploy-blocked` are parks, not failures: exhaustion does
+    not fail the Task, it parks with no re-entry, ages out at `parkRetention`
     (7d, not the 24h `rejected` retention), and the next backlog sweep
-    re-mints the still-open issue. Live gaps in `tatara-observability`, not
-    stale prose.
+    re-mints the still-open issue.
 
-**Symptoms (as still configured today):** `Tatara delivery parked on a merge or deploy timeout` (`alerts/tatara-cd.yaml`, critical) fires on any Task parking in 30m with `stageReason` matching `merge-timeout` or `deploy-timeout`. `Tatara merge or deploy cycle exhausted` (same file, critical) fires on any Task failing in 1h with `stageReason` matching `merge-blocked` or `deploy-blocked`.
+**Symptoms:** `Tatara delivery parked on a merge or deploy timeout` (`alerts/tatara-cd.yaml`, critical) fires on any Task parking in 30m with `parkReason` matching `merge-timeout` or `deploy-timeout`. `Tatara merge or deploy cycle exhausted` (same file, critical) fires on any Task parking in 1h with `parkReason` matching `merge-blocked`, `deploy-blocked`, `merge-auth-refused`, or `merge-order-missing` - the last two widened onto this rule by [tatara-observability#113](https://github.com/szymonrychu/tatara-observability/pull/113), since they are fail-fast parks with no cycle of their own (a forge credential the writer cannot use, or merging entered with an empty `mergeOrder`) and the generic park-spike rules need more than 3 occurrences in their window to fire, so a single one previously alerted nobody.
 
-**What it means:** The `merged` or `deployed` state blew its budget (4h for `merged`, 2h for `deployed`) and the Task parked. Merged component code is NOT reaching the cluster. Re-entry from `merge-timeout`/`deploy-timeout` resumes the same state, cursor-first - it never re-enters `under-implementation` - so the fix lives in the owned `MergeRequest` CRs and the `tatara-helmfile` apply run, not with the agent. The exhaustion alert is the bounded end of that same cycle: `mergeReentries`/`deployReentries` is capped at 3, and past that the Task parks permanently at `merge-blocked`/`deploy-blocked` (no re-entry rule, so it ages out at `parkRetention` and the next backlog sweep re-mints the still-open issue) - the delivery path to a cluster-admin-scoped runner has stopped outright, not just slowed.
+**What it means:** The `merged` or `deployed` state blew its budget (4h for `merged`, 2h for `deployed`) and the Task parked. Merged component code is NOT reaching the cluster. Re-entry from `merge-timeout`/`deploy-timeout` resumes the same state, cursor-first - it never re-enters `under-implementation` - so the fix lives in the owned `MergeRequest` CRs and the `tatara-helmfile` apply run, not with the agent. The exhaustion alert is the bounded end of that same cycle for `merge-blocked`/`deploy-blocked`: `mergeReentries`/`deployReentries` is capped at 3, and past that the Task parks permanently (no re-entry rule, so it ages out at `parkRetention` and the next backlog sweep re-mints the still-open issue). `merge-auth-refused` and `merge-order-missing` reach the same alert with no cycle at all - they park fail-fast on the first attempt. All four are `UnparkNever` - the delivery path to a cluster-admin-scoped runner has stopped outright, not just slowed.
 
 **Diagnosis:**
 ```bash
@@ -1149,10 +1143,10 @@ kubectl -n tatara get mergerequests -l tatara.io/task=<task-name>
 ```
 ```promql
 sum by (parkReason) (increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",parkReason=~"merge-timeout|deploy-timeout"}[30m]))
-sum by (parkReason) (increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",parkReason=~"merge-blocked|deploy-blocked"}[1h]))
+sum by (parkReason) (increase(operator_task_parked_total{namespace="tatara",job="tatara-operator",parkReason=~"merge-blocked|deploy-blocked|merge-auth-refused|merge-order-missing"}[1h]))
 ```
 
-**Fix:** For a parked Task, work the underlying blockage directly - see the Merge stage not advancing runbook and the Deploy stage not reaching the cluster runbook above - the un-park is automatic (the reentry counter increments and the state resumes) as long as the reentry budget is not yet spent. For an already-`parked(merge-blocked|deploy-blocked)` Task, the cycle is exhausted and there is no further automatic re-entry: fix the root blockage (forge, CI, or the ARC runner/`tatara-helmfile` chain), then re-approve the Task's work as a fresh delivery attempt once the parked Task ages out and its issue is re-minted.
+**Fix:** For a parked Task, work the underlying blockage directly - see the Merge stage not advancing runbook and the Deploy stage not reaching the cluster runbook above - the un-park is automatic (the reentry counter increments and the state resumes) as long as the reentry budget is not yet spent. For an already-`parked(merge-blocked|deploy-blocked|merge-auth-refused|merge-order-missing)` Task, there is no further automatic re-entry: fix the root blockage (forge credential, `mergeOrder`, CI, or the ARC runner/`tatara-helmfile` chain), then re-approve the Task's work as a fresh delivery attempt once the parked Task ages out and its issue is re-minted.
 
 ---
 
@@ -1249,9 +1243,9 @@ time() - operator_sweep_next_expected_timestamp_seconds{namespace="tatara",job="
 <a id="tatara-runbook-operator-task-mint-burst"></a><!-- alert: "Operator task mint burst" status: covered -->
 ## Sweep budget capped or task mint burst
 
-**Symptoms:** `Operator sweep creation budget chronically capped` (warning, `alerts/tatara-operator.yaml`) fires when a project's sweep hits its `maxOpenTasks`/`maxNewTasksPerSweep` cap more than 6 times in 3h. `Operator task mint burst` (warning, same file) fires when the operator mints more than 20 Tasks in 1h.
+**Symptoms:** `Operator sweep creation budget chronically capped` (warning, `alerts/tatara-operator.yaml`) fires when a project's sweep hits its `maxOpenTasks`/`maxNewTasksPerSweep` cap more than 36 times in 3h. `Operator task mint burst` (warning, same file) fires when the operator mints more than 500 Tasks in 1h.
 
-**What it means:** The budget-capped alert means orphan Issues are being discovered faster than the creation budget lets them be minted into active Tasks - expected for a few hours right after cutover (a 150-issue backlog takes about 30 sweep passes at the default `maxNewTasksPerSweep` of 5), but sustained past a day it means the cap is genuinely starving the sweep. The mint-burst alert is a higher-level symptom: since one pass is capped at `maxNewTasksPerSweep`, more than 20 mints in an hour is either a mint/reap loop (an Issue's ownership is not sticking, so it gets re-minted every pass) or a real backlog drain.
+**What it means:** Each enrolled repo now gets its own sweep pass on the `issueScan` cadence (every 10 minutes on the live projects - see [Tuning](tuning.md)), rather than the whole project sharing one pass, so both thresholds size to repo count and cadence rather than a flat per-project rate. The budget-capped alert means orphan Issues are being discovered faster than the creation budget lets them be minted into active Tasks - expected for a few hours right after cutover (a 150-issue backlog takes about 30 passes at the default `maxNewTasksPerSweep` of 5), but sustained past a day it means the cap is genuinely starving the sweep. The mint-burst alert is a higher-level symptom: since one pass is capped at `maxNewTasksPerSweep`, a burst above the threshold is either a mint/reap loop (an Issue's ownership is not sticking, so it gets re-minted every pass) or a real backlog drain.
 
 **Diagnosis:**
 ```bash

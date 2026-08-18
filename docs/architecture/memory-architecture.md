@@ -136,6 +136,14 @@ Both spills are one-way: nothing pulls old notes or comments back out of
 retrieve the full history on demand without the CR itself growing past its
 etcd object ceiling.
 
+On a `spec.memory.enabled: false` Project there is no `tatara-memory` to spill
+into, so overflow is discarded instead of spilled (counted in
+`operator_objbudget_evicted_dropped_total`, not treated as an error) - the
+same "no 409/503 on cap" invariant as a memory-enabled Project, just with
+nothing retrievable past the cap rather than a spill ref. Genuinely
+unconfigured memory (enabled but not yet provisioned) still blocks and
+retries, since there is something to wait for there.
+
 ## Durability considerations
 
 | Concern | Mitigation |
