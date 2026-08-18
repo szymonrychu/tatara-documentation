@@ -283,7 +283,7 @@ on an approved review whose approval is pinned to your current head. To get the 
 maintainer comments again and the same one Task un-parks.
 
 There is no third direction: tatara never asks a human to take a merge request over. An agent that
-gives up parks its Task and writes a comment, and nothing about that returns the branch. The
+declines parks its Task and writes a comment, and nothing about that returns the branch. The
 procedure from your side is on [Handing an MR to tatara](../workflows/mr-takeover.md).
 
 ---

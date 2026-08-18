@@ -12,7 +12,7 @@ Read these five pages and you will know what tatara does, why it is shaped this 
 
     ---
 
-    Start here. One real piece of work in tatara's own repository, over six days in August 2026, with every quote copied out of the issue and the pull request. An alert fires, a maintainer types two words, an attempt fails and gets parked instead of retried, a review sends the fix back, and the change deploys. The other four pages tell you how the machine works; this one shows you what it looked like.
+    Start here. One real piece of work in tatara's own repository, nine hours on 2026-08-17, with every quote copied out of the issue and the pull request. An alert files the issue, a maintainer types two words to release it, a review round catches a bug in the agent's own diff that would have recorded somebody else's merged work as rejected, the agent declines half of another finding in public with its reasons, and the change deploys. The other four pages tell you how the machine works; this one shows you what it looked like.
 
     [:octicons-arrow-right-24: Watch One Run](watch-one-run.md)
 

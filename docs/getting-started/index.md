@@ -44,8 +44,10 @@ If you'd rather watch tatara do a complete piece of work before you spend an
 afternoon on prerequisites, read
 [Watch One Run](../explainers/watch-one-run.md). It follows one real run in
 tatara's own repository end to end: an alert firing, a maintainer approving in two
-words, an attempt that failed and parked instead of retrying, a review round that
-sent the fix back, and the deploy. Nothing in it was staged.
+words, a review round that caught a real bug in the agent's own diff, an agent
+that declined half a finding and put its reasons on the record, and the deploy.
+Nothing in it was staged, and the same page carries the 30-day denominator that
+one run sits in.
 
 For the shape of the system rather than one run, [How It Works](../explainers/index.md)
 is the narrative path, and [Concepts](../concepts/index.md) covers why it's built
