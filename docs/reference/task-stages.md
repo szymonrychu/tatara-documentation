@@ -405,9 +405,11 @@ these four name a blocker a *machine* (CI, the forge) is already working on,
 not one only a maintainer can resolve.
 
 **Backoff:** `UnparkRetryBackoffBase` (1m), doubling each attempt, capped at
-`UnparkRetryBackoffCap` (30m): 1m, 2m, 4m, 8m, 16m, then 30m. `retryAttempts`
-tracks the count on the Task; `MaxUnparkRetries` is 5, so the lane spends
-about 31 minutes total before giving up.
+`UnparkRetryBackoffCap` (30m). `retryAttempts` tracks the count on the Task;
+`MaxUnparkRetries` is 5, so `ArmRetry` only ever serves the first five values -
+1m, 2m, 4m, 8m, 16m (about 31 minutes total) - before exhaustion fires. The
+30m cap exists for a higher `MaxUnparkRetries` and is never reached at the
+current setting.
 
 **On exhaustion** the Task re-parks to `retry-exhausted` (`UnparkHuman`) and
 the operator posts a comment on the owning issue naming the blocker, the
