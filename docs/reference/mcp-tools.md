@@ -225,43 +225,60 @@ state.
 
     Its own schema, split out of `implement`'s during the clarify fold: a
     documentation agent has no approval gate to drive, so it never gets the
-    three gate actions.
+    two gate-only actions (`approved`, `rejected`).
+
+    !!! info "`discuss` added ([tatara-cli#104](https://github.com/szymonrychu/tatara-cli/pull/104), [tatara-operator#628](https://github.com/szymonrychu/tatara-operator/pull/628))"
+        Before this, the only non-delivery exit was `declined`, which parks
+        `implement-declined` - `UnparkNever`, no re-entry. Every technical
+        blocker a documentation batch hit (not a real "nothing to document")
+        had nowhere to go but that permanent park. `discuss` parks
+        `awaiting-human` instead, which the next non-bot comment releases -
+        provided the Task owns an open MR, so open it before calling
+        `discuss`, or there is nothing for a human to comment on.
 
     ```json
     {"type":"object","properties":{
       "task":{"type":"string"},
-      "action":{"type":"string","enum":["submitted","declined"]},
+      "action":{"type":"string","enum":["submitted","declined","discuss"]},
       "title":{"type":"string","description":"MR title. Required when action=submitted."},
       "body":{"type":"string","description":"MR body. Required when action=submitted."},
       "change_significance":{"type":"string","enum":["major","minor","patch"],
         "description":"Required when action=submitted. major=backward-incompatible; minor=backward-compatible feature; patch=fix. YOU own this level - a reviewer may raise it but can never lower it."},
       "merge_order":{"type":"array","items":{"type":"string"},
         "description":"REQUIRED when this task's MRs span more than one repo: the Repository CR names in dependency order, first-merged first. There is NO default. Get it wrong and a downstream repo ships against an API that has not merged yet."},
-      "decline_reason":{"type":"string","description":"Required when action=declined."}},
+      "decline_reason":{"type":"string","description":"Required when action=declined."},
+      "reason":{"type":"string","description":"Required when action=discuss: why you are pausing instead of finishing this turn with submitted or declined."}},
      "required":["action"],"additionalProperties":false}
     ```
+
+    `discuss` refuses every MR-shaped field (`title`, `body`,
+    `change_significance`, `merge_order`, `decline_reason`) via the same
+    `refuseCodeArgs` check `implement`'s code actions share - sending one
+    alongside `discuss` is a 400, not a silent ignore.
 
 === "upgrade"
 
     Reuses `documentation`'s schema object byte-for-byte - same fields, same
-    `submitted`/`declined` action enum, same `merge_order` requirement across a
-    multi-repo hop. `merge_order` here is the dependency-**publish** order
-    (e.g. `containers` before `charts` before `helmfile`), not an arbitrary
-    list: getting it backwards ships a chart against an image tag that never
-    published. There is no approval gate to drive - an upgrade Task has no
-    source issue - so it never gets `implement`'s three gate actions.
+    `submitted`/`declined`/`discuss` action enum, same `merge_order`
+    requirement across a multi-repo hop. `merge_order` here is the
+    dependency-**publish** order (e.g. `containers` before `charts` before
+    `helmfile`), not an arbitrary list: getting it backwards ships a chart
+    against an image tag that never published. There is no approval gate to
+    drive - an upgrade Task has no source issue - so it never gets
+    `implement`'s two gate-only actions.
 
     ```json
     {"type":"object","properties":{
       "task":{"type":"string"},
-      "action":{"type":"string","enum":["submitted","declined"]},
+      "action":{"type":"string","enum":["submitted","declined","discuss"]},
       "title":{"type":"string","description":"MR title. Required when action=submitted."},
       "body":{"type":"string","description":"MR body. Required when action=submitted."},
       "change_significance":{"type":"string","enum":["major","minor","patch"],
         "description":"Required when action=submitted. major=backward-incompatible; minor=backward-compatible feature; patch=fix. YOU own this level - a reviewer may raise it but can never lower it."},
       "merge_order":{"type":"array","items":{"type":"string"},
         "description":"REQUIRED when this task's MRs span more than one repo: the Repository CR names in dependency order, first-merged first. There is NO default. Get it wrong and a downstream repo ships against an API that has not merged yet."},
-      "decline_reason":{"type":"string","description":"Required when action=declined."}},
+      "decline_reason":{"type":"string","description":"Required when action=declined."},
+      "reason":{"type":"string","description":"Required when action=discuss: why you are pausing instead of finishing this turn with submitted or declined."}},
      "required":["action"],"additionalProperties":false}
     ```
 

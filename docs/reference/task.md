@@ -144,9 +144,11 @@ stall detection and a hardcoded 24h residency cap).
 | `state` | enum | The 8-member state (`new`, `refined`, `under-implementation`, `awaiting-review`, `merged`, `deployed`, `done`, `rejected`). **The only progress field.** Written by the operator only. See [the state machine](task-stages.md) |
 | `stateEnteredAt` | time | Stamped on **every** transition. The clock for the operator-driven states |
 | `stateReason` | string | The reason on `done` / `rejected` only - mandatory on `rejected`. Closed, disjoint from `parkReason`. See [stage reasons](task-stages.md#stage-reasons) |
-| `parkReason` | enum | **Whether the Task is stalled**, orthogonal to `state`: a Task parks *where it is*, not into a fourth state. Empty, or one of 28 closed reasons. See [the park flag](task-stages.md#the-park-flag) |
+| `parkReason` | enum | **Whether the Task is stalled**, orthogonal to `state`: a Task parks *where it is*, not into a fourth state. Empty, or one of 34 closed reasons. See [the park flag](task-stages.md#the-park-flag) |
 | `parkedAt` | time | When `parkReason` was set. The base of the park-retention clock (7d, except `backlog-sweep`, which never ages out) |
 | `parkedFromState` | string | **Observability only** for most reasons - the un-park target is re-derived from `Issue.status.status` and the owned-MR state, never read back from here - except the `no-outcome` un-park gate, which does require it to be `under-implementation` or `awaiting-review` |
+| `retryAttempts` | int | The [retry lane](task-stages.md#the-retry-lane-unparkretry)'s own counter, folded across the park round trip like `stageElapsedCarrySeconds` - real progress or a human `UnparkHuman` release resets it, a bare re-park does not. Cap `MaxUnparkRetries` (5), then `parked(retry-exhausted)` |
+| `retryNextAt` | time | When the retry lane's next backoff attempt is due. `DeclineRetryNotDue` in `stage.Unpark` refuses an early un-park call, so the schedule holds even from a webhook-triggered re-check |
 | `agentKind` | enum | The agent running now: `brainstorm`, `incident`, `refine`, `review`, `documentation`, `implement`, `upgrade`. Seven values - `clarify` is gone |
 | `podName` | string | The current agent pod's name. See [Pod naming](task-stages.md#pod-naming) |
 | `podStartedAt` | time | Stamped when the pod is **created**, and re-stamped on every respawn. It arms the readiness clock, and it is the base of the pod TTL (`podStartedAt + agentPodTTLSeconds`). **Cleared on every transition** |
@@ -235,6 +237,7 @@ type TaskStats struct {
 	PodRecreations      int      `json:"podRecreations,omitempty"`
 	NotesSpilled        int      `json:"notesSpilled,omitempty"`
 	NotesSpilledRefs    []string `json:"notesSpilledRefs,omitempty"`
+	AgentStops          int      `json:"agentStops,omitempty"`
 }
 ```
 
@@ -249,6 +252,7 @@ type TaskStats struct {
 | `podRecreations` | Pod respawns **within the current state**. No longer capped - `maxPodRecreations` is deprecated and `pod-recreation-exhausted` no longer occurs; a Task now respawns indefinitely up to the [residency cap](task-stages.md#the-deadline-invariant) (24h). Still counted (feeds `operator_pod_recreations_total`, labeled by `reason` since [tatara-operator#587](https://github.com/szymonrychu/tatara-operator/pull/587)) so the compensating alert has data. **Reset to 0 on every transition** |
 | `notesSpilled` | Notes evicted to `tatara-memory` by the byte guard |
 | `notesSpilledRefs` | One `track_id` per spill batch. It **accumulates** - a single scalar ref would orphan every earlier batch. Read back with `task_context(notes=all)` |
+| `agentStops` | Consecutive agent-requested stops **in the current state**. Past [`AgentStopReArmCap`](task-stages.md#the-agent-stop-re-arm-cap) (3) the dispatcher parks `no-outcome` instead of spawning a replacement pod. Reset on real progress or an un-park |
 
 ---
 

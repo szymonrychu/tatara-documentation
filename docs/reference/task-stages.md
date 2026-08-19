@@ -31,7 +31,7 @@ are now drawn from the 8-state enum).
 | Property | Answers | Values |
 |---|---|---|
 | `status.state` | **Where the work is** | 8 closed values, this page's table |
-| `status.parkReason` | **Whether it is stalled** | A flag - empty, or one of 29 reasons ([`park.go`](#the-park-flag)) |
+| `status.parkReason` | **Whether it is stalled** | A flag - empty, or one of 34 reasons ([`park.go`](#the-park-flag)) |
 | `Live(state)` | **Whether a pod is up** | A pure property of `state`, not a stored field |
 
 A Task can be `state=refined` **and** `parkReason=awaiting-human` at the same
@@ -66,6 +66,7 @@ stateDiagram-v2
     new --> awaiting_review : kind=review (reviews a HUMAN PR), or an adopted kind=upgrade (reviews the engine's own MR)
     refined --> under_implementation : submit_outcome(action=approved) AND the extended approval gate GRANTS
     under_implementation --> awaiting_review : submit_outcome(action=submitted), >= 1 owned MR open
+    under_implementation --> merged : submit_outcome(action=submitted), every owned MR already merged out of band
     under_implementation --> refined : plan-hash-mismatch (the CHEAP path back to the gate)
     awaiting_review --> under_implementation : request_changes, or approve with red live CI
     awaiting_review --> merged : submit_outcome(verdict=approve)
@@ -160,7 +161,7 @@ exists).
 
 ## The transition table
 
-Written by the operator only. **Twenty-five edges.** Every transition does all
+Written by the operator only. **Twenty-six edges.** Every transition does all
 of:
 
 ```
@@ -196,6 +197,7 @@ documented exception) - see [the park flag](#the-park-flag) below.
 | `refined` | `done` | a non-code kind finished: brainstorm `propose`/`skip`, refine `folds`/`closes`/`links` applied and verified, incident `file_issue` minted its tracker. None of the three ever opens an MR |
 | `refined` | `rejected` | `submit_outcome(action=rejected)` closes the issue, `false_positive`, or a human closed the driving issue |
 | `under-implementation` | `awaiting-review` | `submit_outcome(action=submitted)` and >= 1 owned MR is open |
+| `under-implementation` | `merged` | `submit_outcome(action=submitted)` and **every** owned MR has *already* merged on the forge ([tatara-operator#631](https://github.com/szymonrychu/tatara-operator/pull/631)): the work shipped out of band, so there is nothing left to open, review, or merge. Guarded on `AllMRsMerged` - stricter than `AllMRsTerminal` (which also accepts `closed`) - so this can never become a door around review; it recognizes the same fact `awaiting-review -> merged` finalizes, one state earlier |
 | `under-implementation` | `refined` | the plan pinned at grant no longer matches the plan note (`plan-hash-mismatch`) - the cheap path back to the gate, never a park |
 | `under-implementation` | `done` | the nightly documentation batch declined or its budget elapsed: `done(doc-timeout)`, no MR opened |
 | `under-implementation` | `rejected` | a human closed the driving issue mid-flight |
@@ -273,7 +275,7 @@ none at all). `status.parkReason` is a **separate field**, checked in
 independently: `reasonAllowedFor` checks `rejected` against the 6-member
 `RejectReasons` set, `done` against the 2-member `DoneReasons` set, and
 everything else (states that are not `done`/`rejected`, and every
-`parkReason` write) against the full 37-member closed set.
+`parkReason` write) against the full 42-member closed set.
 
 **Reject reasons (6):** `declined`, `false-positive`, `tracked-elsewhere`,
 `issue-closed`, `mr-closed-externally`, `mr-taken-over`.
@@ -288,7 +290,7 @@ ordinary merge/deploy path.
 
 `status.parkReason` replaced the old `parked` **stage**. It is a flag on top
 of whichever state the Task is already in, not a fourth state, and it is a
-29-member closed vocabulary:
+34-member closed vocabulary:
 
 `backlog-sweep`, `triage-stalled`, `name-too-long`, `stage-deadline`,
 `awaiting-human`, `identity-unverified`, `implement-declined`,
@@ -298,7 +300,11 @@ of whichever state the Task is already in, not a fourth state, and it is a
 `object-too-large`, `fold-adoption-unverified`, `admission-starved`,
 `agent-contract-mismatch`, `operator-error`, `head-moving`,
 `handoff-stalled`, `ownership-lost`, `merge-auth-refused`, `ci-red`,
-`ci-blocked`, `merge-conflict`.
+`ci-blocked`, `merge-conflict`, `ci-pending`, `ci-failed`,
+`merge-conflict-retry`, `mr-surface-spent`, `retry-exhausted`.
+
+The last five are [the retry lane](#the-retry-lane-unparkretry)
+([tatara-operator#629](https://github.com/szymonrychu/tatara-operator/pull/629)).
 
 !!! note "`turn-budget-exhausted`, `review-loop-exhausted`, `pod-recreation-exhausted` are retired"
     The ceilings that produced these three (`maxTurnsPerTask`, `maxReviewRounds`,
@@ -382,6 +388,47 @@ current state**, never stored:
   It resolves `done`/`rejected` per the [transition table](#the-transition-table)
   above rather than re-entering `awaiting-review`; a park exists to wait for a
   human, and the human's answer (the PR's own fate) already arrived.
+- `retry-exhausted` is `UnparkHuman`, exactly like `awaiting-human` - see
+  [the retry lane](#the-retry-lane-unparkretry) below for how a Task gets
+  there.
+
+---
+
+## The retry lane (`UnparkRetry`) {: #the-retry-lane-unparkretry }
+
+[tatara-operator#629](https://github.com/szymonrychu/tatara-operator/pull/629)
+added a **fifth** un-park class alongside `UnparkNever`, `UnparkHuman`,
+`UnparkTimer` and the one-shot migration class `UnparkRetired`: a Task parked
+on one of `ci-pending`, `ci-failed`, `merge-conflict-retry` or
+`mr-surface-spent` self-heals on a schedule instead of waiting for a human -
+these four name a blocker a *machine* (CI, the forge) is already working on,
+not one only a maintainer can resolve.
+
+**Backoff:** `UnparkRetryBackoffBase` (1m), doubling each attempt, capped at
+`UnparkRetryBackoffCap` (30m). `retryAttempts` tracks the count on the Task;
+`MaxUnparkRetries` is 5, so `ArmRetry` only ever serves the first five values -
+1m, 2m, 4m, 8m, 16m (about 31 minutes total) - before exhaustion fires. The
+30m cap exists for a higher `MaxUnparkRetries` and is never reached at the
+current setting.
+
+**On exhaustion** the Task re-parks to `retry-exhausted` (`UnparkHuman`) and
+the operator posts a comment on the owning issue naming the blocker, the
+attempt count, and the schedule - the park was always honest, silence on
+exhaustion was the bug it closes.
+
+`ci-pending` and `mr-surface-spent` are in the closed set with no writer yet,
+deliberately: the CI wait is fail-open by construction already, and
+`mr-surface-spent` is a 409 an agent reads mid-turn with its pod still alive,
+so parking to retry it would kill a running turn for no gain. `retryAttempts`
+is folded across the park round trip the same way `stageElapsedCarrySeconds`
+is - real progress or a human `UnparkHuman` release both buy a fresh budget,
+a raw re-park does not refund it.
+
+This composes with [`AgentStopReArmCap`](#residency-the-dead-man-switch): one
+technical blocker can now hand a Task up to `(1 + MaxUnparkRetries) x
+AgentStopReArmCap = 18` stop-and-respawn pods before a human is looped in,
+rather than the unbounded churn that motivated the cap in the first place -
+see [tatara-operator#631](https://github.com/szymonrychu/tatara-operator/pull/631).
 
 ---
 
@@ -476,6 +523,22 @@ to four times longer; the compensating control is headroom in
 `maxConcurrentAgents` plus the `operator_pod_recreations_total` alert (see
 [Runbooks](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)).
 
+### The agent-stop re-arm cap
+
+An agent-requested stop (the pod asks to end its turn cleanly, e.g. a
+close-out handoff) deletes the pod and requeues a replacement - and used to
+do so unconditionally, byte-identical to a Task that never had a pod, which
+let one Task that kept asking to stop and getting re-armed spawn **127 pods
+in one incident** ([tatara-operator#631](https://github.com/szymonrychu/tatara-operator/pull/631)).
+`status.stats.agentStops` now counts consecutive agent-requested stops in the
+current state, reset by real progress (`stampEnter`) or an un-park. Past
+`AgentStopReArmCap` (3) the dispatcher parks `no-outcome` (`UnparkTimer`)
+instead of spawning another pod; a pending human event bypasses the cap
+entirely, so one comment still buys exactly one pod. `ResidencyExceeded`
+itself now also arms on `AgentStops > 0`, not only on `StateWorkStartedAt !=
+nil` - the previous condition was disarmed for about a third of every
+reconcile lap by the same unconditional re-arm this cap closes.
+
 ---
 
 ## Cycle caps
@@ -511,6 +574,16 @@ waits for a human. `ci-red` stands in exactly that relation to
 The **head-moved**, **CI-red** and **merge-conflict** cycles each spawn a pod
 on every lap and are the three that matter for cost. None of them is bounded
 by `reviewRounds`, which moves only on `request_changes`.
+
+!!! info "`ci-red` is now suppressed on a non-required check ([tatara-operator#628](https://github.com/szymonrychu/tatara-operator/pull/628))"
+    `CIRedSuppressed` holds - and the Task is treated as **not** blocked -
+    when the forge's merge state is `unstable` but the failing check is not
+    one of the PR's required contexts. Before this, any failing check-run at
+    all reddened the Task, which meant a Task could pass readiness, burn a
+    full review cycle, and only then discover a check that was never going
+    to gate the merge had parked it `ci-blocked` (`UnparkNever`) a second
+    time. The same guard is shared by the merge corridor, so readiness and
+    merging agree on what "red" means.
 
 ---
 

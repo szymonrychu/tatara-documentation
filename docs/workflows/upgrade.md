@@ -111,15 +111,26 @@ or
 ```json
 {"action":"declined","decline_reason":"..."}
 ```
+or
+```json
+{"action":"discuss","reason":"the cilium 1.17 hop drops a CRD; a maintainer has to call it"}
+```
 
-The outcome schema is **identical** to `documentation`'s - `submitted`/`declined` only, no
-approval-gate actions - reused verbatim rather than duplicated so the two cannot drift on a
-field nobody meant to change independently. `declined` is a correct and common answer: every
-candidate already claimed by a sibling, nothing eligible under the policy's
+The outcome schema is **identical** to `documentation`'s - reused verbatim rather than
+duplicated so the two cannot drift on a field nobody meant to change independently -
+`submitted`/`declined`/`discuss`, no approval-gate actions. `declined` is a correct and common
+answer: every candidate already claimed by a sibling, nothing eligible under the policy's
 `minimumReleaseAge`, or a hop that turns out to be unsafe (a pulled release, a raised minimum
 the project's repos do not meet, a migration that needs a maintainer decision). "It is bigger
 than one turn" is explicitly **not** a decline reason - the Task is multi-turn, and a partial
 hop is handed off via `task_note(kind="handoff")` for the next pod on the same Task to resume.
+
+`discuss` ([tatara-cli#104](https://github.com/szymonrychu/tatara-cli/pull/104),
+[tatara-operator#628](https://github.com/szymonrychu/tatara-operator/pull/628)) is for a
+technical blocker a maintainer has to rule on, not a routine "nothing eligible" - that is still
+`declined`. It parks the Task `awaiting-human` at its current state rather than moving it, and
+only a non-bot comment releases it - which requires the Task to already own an open MR, or
+there is nothing for a human to comment on.
 
 `submitted` routes the Task through the same [review](review.md) and
 [merge & deploy](merge-and-deploy.md) path as any other MR-opening kind - a `request_changes`

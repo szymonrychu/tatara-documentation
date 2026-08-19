@@ -53,7 +53,9 @@ These are never documented, by design - not a gap, a filter.
 
 ## 4. Output
 
-The `documentation` pod's `submit_outcome` schema is **identical** to `implement`'s:
+The `documentation` pod's `submit_outcome` schema (`title`/`body`/`change_significance`/
+`merge_order` shape) matches `implement`'s code actions, but the action enum is its own,
+[reduced set](../reference/mcp-tools.md) - no approval gate to drive, so no gate actions:
 
 ```json
 {"action":"submitted","title":"...","body":"...",
@@ -63,11 +65,22 @@ or
 ```json
 {"action":"declined","decline_reason":"..."}
 ```
+or
+```json
+{"action":"discuss","reason":"..."}
+```
 
-Either way, the operator stamps `documentedBy` on **every** Task in `spec.documentsTasks` as the
+`submitted` and `declined` stamp `documentedBy` on **every** Task in `spec.documentsTasks` as the
 batch exits - `submitted` moves the state `under-implementation -> awaiting-review` (the docs MR goes through
 the same [review](review.md) and [merge](merge-and-deploy.md) path as any other MR); `declined`
 moves it straight to `done`.
+
+`discuss` ([tatara-cli#104](https://github.com/szymonrychu/tatara-cli/pull/104),
+[tatara-operator#628](https://github.com/szymonrychu/tatara-operator/pull/628)) is for a
+technical blocker, not a content judgment - `declined` is still the correct call for "nothing
+delivered was doc-relevant". It parks `awaiting-human` rather than stamping `documentedBy`, and
+only releases on the next non-bot comment, so it requires an open MR on the Task already (open
+one before calling `discuss`, or there is nothing for a human to comment on).
 
 !!! warning "The batch cannot pin its parents"
     A `documentation` Task stuck past its 2h stage-work budget (`docStageBudget`) is force-moved to
