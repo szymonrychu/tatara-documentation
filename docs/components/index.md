@@ -87,7 +87,7 @@ agent turn loop.
     tatara-memory), ingests repos, receives HMAC-verified GitHub/GitLab and
     bearer-verified Grafana webhooks, admits agent pods against the
     `maxConcurrentAgents` gate, spawns `tatara-claude-code-wrapper` pods, drives
-    the 15-stage Task machine end to end, walks the merge sequence and the
+    the 8-state Task machine end to end, walks the merge sequence and the
     semver push-CD cascade itself, and writes results back as PRs, issue
     comments, and its own posted review.
 

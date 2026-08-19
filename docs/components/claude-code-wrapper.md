@@ -23,7 +23,16 @@ This gives agent sessions the full Claude Code harness: skills, slash commands, 
    - `~/.claude/settings.json` (Stop hook path, `bypassPermissions`, MCP auto-enable, denied interactive pickers)
    - `~/.claude.json` (seeds onboarding flags so no interactive dialogs appear)
    - `~/.claude/CLAUDE.md` and `/workspace/CLAUDE.md`
-   - Skills: baked (`/templates/skills`) + custom (`/etc/wrapper/skills`)
+   - Skills: cloned from the configured skills repo into a staging dir and
+     promoted by rename on success (`SKILLS_SRC_DIRS`), plus any custom
+     `TATARA_EXTRA_SKILL_SOURCES`. Nothing is baked into the image - the
+     20 skills once shipped in `/templates/skills` were dropped from the
+     image on 2026-06-28, and the clone is the sole source. **The boot now
+     fails** if that install produces zero skills while at least one source
+     was configured ([tatara-claude-code-wrapper#180](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/180)),
+     rather than the previous fail-open that could produce an agent pod with
+     no skills and no typed subagents. `installAgents` (the `.claude/agents`
+     palette) is unaffected and stays fail-open.
 3. **Spawn `claude`** under a PTY. Start the ring-buffer reader and process-wait goroutine.
 4. **`bootWait`**: The "Bypass Permissions mode" warning is not seedable and appears on every boot. The wrapper detects it in the ring buffer (ANSI/whitespace-stripped matching) and accepts it (Down + Enter). Then waits for output quiescence (no new PTY bytes for >1.5s, floored at ~4s) before marking the session ready.
 5. **Start HTTP servers.** `/readyz` is not served until `Start` returns.
@@ -173,3 +182,6 @@ File/list config is mounted under `/etc/wrapper` (chart values: `globalClaudeMd`
 | `ccw_turn_stall_suspected_total` | counter | Inactivity-timer firings since it stopped killing turns - see [The wrapper no longer kills a turn on inactivity](#the-wrapper-no-longer-kills-a-turn-on-inactivity) |
 | `ccw_safety_push_total{result}` | counter | Periodic `BRANCH_PUSH_INTERVAL_SECONDS` push-only safety-net attempts |
 | `ccw_bootstrap_reconcile_total{result}` | counter | Resume-time base-branch reconcile outcomes: `merged`, `up_to_date`, `conflict`, `base_unresolved`, `fetch_fail` |
+| `ccw_skills_installed_total{profile}` | counter | Skills installed at boot. Renamed from `wrapper_skills_installed_total` ([#180](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/180)) - the old `wrapper_`/`agent_` prefix was outside the pod's own push allowlist, so this and the two metrics below never reached Prometheus at all under their old names |
+| `ccw_skills_clone_failures_total{source}` | counter | Skills clone failures, `source=skills_repo` or `extra` (a bad `TATARA_EXTRA_SKILL_SOURCES` entry is not a fleet-wide outage) |
+| `ccw_agents_installed_total` | counter | Agents (`.claude/agents`) installed at boot |
