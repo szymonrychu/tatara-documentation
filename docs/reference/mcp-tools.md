@@ -378,10 +378,10 @@ state.
   "is_pr":{"type":"boolean","description":"kind=comments only: read the MR thread instead of the issue thread."},
   "state":{"type":"string","enum":["open","closed","merged","all"],
     "description":"kind=issues (open|closed|all) and kind=mr (open|merged|closed|all)."},
-  "since":{"type":"string","description":"kind=issues|mr only. RFC3339."},
+  "since":{"type":"string","description":"kind=issues|mr only. RFC3339. Compared against the forge's updatedAt, so it selects issues and merge requests with activity since that instant - not the mirror's last refresh."},
   "labels":{"type":"string","description":"kind=issues only. Comma-separated."},
   "since_days":{"type":"integer","description":"kind=commits only. Default 30."},
-  "limit":{"type":"integer"}},
+  "limit":{"type":"integer","description":"Selects the NEWEST N by number (kind=issues|mr default 100, max 500), not the oldest."}},
  "required":["kind","repo"],"additionalProperties":false}
 ```
 
