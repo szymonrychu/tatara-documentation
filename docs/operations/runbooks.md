@@ -282,6 +282,36 @@ Act before the remaining primary also fails - a second member down is a full out
 
 ---
 
+<a id="tatara-runbook-memory-postgres-connection-pool-saturated"></a><!-- alert: "Memory Postgres connection pool saturated" status: covered -->
+<a id="tatara-runbook-memory-postgres-connection-pool-waiting"></a><!-- alert: "Memory Postgres connection pool waiting" status: covered -->
+## Memory Postgres connection pool saturated or waiting
+
+**Symptoms:** `Memory Postgres connection pool saturated` (warning, `alerts/tatara-memory.yaml`) fires when `sum by (pod) (go_sql_in_use_connections{...,db_name="tatara_memory"})` divided by `sum by (pod) (go_sql_max_open_connections{...,db_name="tatara_memory"})` exceeds 0.8 for 10m, scoped to `namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*"`. `Memory Postgres connection pool waiting` (warning, same file) fires when `sum by (pod) (rate(go_sql_wait_duration_seconds_total{...,db_name="tatara_memory"}[5m]))` exceeds 0.5 for 10m, same scope.
+
+**What it means:** Both read `client_golang`'s `collectors.NewDBStatsCollector(db, "tatara_memory")`, wired at `cmd/tatara-memory/app.go:315`. The `db_name="tatara_memory"` pin on both is load-bearing, not decorative: Grafana's own backing Postgres pool exports the same `go_sql_*` family, and today the only `go_sql_in_use_connections` series in this Prometheus at all belong to `job="prometheus-grafana"`, `namespace="monitoring"` - without the pin, either rule would alert on Grafana's pool instead of memory's.
+
+`tatara-memory` shares one connection pool across the whole process, `/readyz` included. If the pool stays full, readiness starts failing and a rollout deadlocks against its own health check. Waiting is the earlier, more honest symptom of the two: seconds spent waiting to acquire a pool connection per second of wall clock means callers are already queuing before anything actually errors, so anything sustained above 0 means real queuing, and 0.5 (the chart's `dbPoolWaitSecondsPerSecond`) is the threshold. Saturated, the chart's own 0.8 threshold, confirms the queue has nowhere left to drain into. Treat #2 and #3 as one investigation - waiting climbs before saturated crosses 80%, and by the time both are firing together the pool is the bottleneck, not a symptom of one.
+
+This is one of the two controls written for tatara-memory#89: a wedged code-graph analytics recompute held Postgres connections, `mem-mtg-pg` backends climbed from 4 to 87 over 5.5 hours, and there was no signal at all from the tatara-memory process itself - the incident was only visible six hours in, database-side, once the pool hit `SQLSTATE 53300` and every non-superuser slot was held. Neither of these rules existed then.
+
+**This is dormant today.** The memory subsystem has been off on every project (`tatara`, `infrastructure`, `mtg`) since 2026-08-09 - `operator_memory_stacks{phase="Disabled"}` reads 1 for all three, and every Repository CR reports `phase: MemoryDisabled`. With no `mem-*` pod running, neither `go_sql_in_use_connections` nor `go_sql_wait_duration_seconds_total` has a single series in Prometheus right now, and the diagnosis queries below returning nothing is the expected state, not evidence the exporter is broken. These rules are armed ahead of the re-enable specifically so the #89 gap does not exist blind again once memory comes back.
+
+**Diagnosis:**
+```promql
+sum by (pod) (go_sql_in_use_connections{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*",db_name="tatara_memory"})
+/
+clamp_min(sum by (pod) (go_sql_max_open_connections{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*",db_name="tatara_memory"}), 1)
+sum by (pod) (rate(go_sql_wait_duration_seconds_total{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*",db_name="tatara_memory"}[5m]))
+```
+```bash
+kubectl -n tatara exec <cnpg-pod> -- psql -U postgres -c "select count(*), state from pg_stat_activity where datname = 'tatara_memory' group by state;"
+kubectl -n tatara logs deploy/mem-<project> --tail=100
+```
+
+**Fix:** Find what is holding connections open before raising the pool size - a bigger pool against a wedged holder only delays the same outage. Check for a wedged code-graph analytics recompute (see [Memory code-graph analytics recompute timing out](#tatara-runbook-memory-code-graph-analytics-recompute-timing-out) and [Code graph quality degrading](#code-graph-quality-degrading-partial-graph) below) and for CNPG replica trouble (see [Memory postgres/neo4j replica stuck](#memory-postgresneo4j-replica-stuck-ha-degraded-api-still-serving) above and [CephFS write-cap wedge](#cephfs-write-cap-wedge-cnpg-checkpoint-hang) below). If the pool is genuinely undersized for legitimate concurrent load, raise its max-open-connections config; otherwise the fix is releasing the holder, not widening the pool.
+
+---
+
 ## CephFS write-cap wedge (CNPG checkpoint hang)
 
 **Symptoms:** CNPG Postgres pod stuck in `end-of-recovery checkpoint`, pwrite64 hang in `D` state, all agent turns stalled.
@@ -645,6 +675,29 @@ sum(rate(http_requests_total{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4
 ```
 
 **Fix:** Identify the failing route from the logs. If the errors are unrecovered panics rather than handled 5xx, see "Service HTTP handler panic" below. For the memory API, check the project's Postgres/Neo4j/LightRAG dependencies are healthy, since the API's own 5xx often reflects a downstream failure rather than a bug in the API layer itself.
+
+---
+
+<a id="tatara-runbook-memory-bulk-admission-shedding"></a><!-- alert: "Memory bulk admission shedding" status: covered -->
+## Memory bulk admission shedding
+
+**Symptoms:** `Memory bulk admission shedding` (warning, `alerts/tatara-memory.yaml`) fires when `sum by (class) (rate(http_admission_total{...,result="shed"}[10m]))` exceeds 0.05/s for 10m, scoped to `namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*"`.
+
+**What it means:** Shed load is deliberately answered with a 429 and a `Retry-After` header, not a 5xx, so [Service HTTP 5xx error ratio high](#service-http-5xx-error-ratio-high) above structurally cannot see a concurrent-ingest burst - shedding and 5xx are disjoint signals by design. `class` names which admission budget is doing the shedding. A firing rule means callers are offering more concurrent bulk work than that budget allows, and the service is protecting its own Postgres pool by refusing the excess rather than letting it queue - this is the admission control working as designed, not the service failing. 0.05/s is roughly 30 shed requests across the 10m window, the chart's `admissionShedRate`, chosen to catch sustained overload rather than one burst.
+
+tatara-memory#109 is open and reasons about this alert as though its expression were merely too narrow to catch everything. It was not narrow - until this port, it did not exist on any delivering plane at all: chart-only, and the chart is never installed. It is also worth being precise about what still will not fire it after this port: `http_admission_total` is incremented only by the admission-budget path, not by Postgres lock contention, so a 429 storm caused by `55P03` lock timeouts on the database side still will not move this metric or fire this rule.
+
+**This is dormant today.** Memory has been off on every project since 2026-08-09 (`operator_memory_stacks{phase="Disabled"}` = 1 across `tatara`, `infrastructure`, `mtg`); with no `mem-*` pod serving traffic, `http_admission_total` has no series in Prometheus at all right now, and an empty diagnosis result is the expected state, not a sign the exporter regressed.
+
+**Diagnosis:**
+```promql
+sum by (class) (rate(http_admission_total{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*",result="shed"}[10m]))
+```
+```bash
+kubectl -n tatara logs deploy/mem-<project> --tail=100 | grep -i admission
+```
+
+**Fix:** Find the caller pushing whole-repo or otherwise unbatched bulk work in one request against the named `class` - `tatara-memory-repo-ingester` is the usual offender. Either get that caller to batch its writes under the budget, or, if the offered load is legitimate and sustained, raise the budget for that class. Do not treat a firing rule as a bug to silence; it is the pool-protection mechanism reporting that it had to act.
 
 ---
 
@@ -1360,6 +1413,30 @@ clamp_min(sum(rate(tatara_memory_op_total{namespace="tatara",op!~"get|get_entity
 
 ---
 
+<a id="tatara-runbook-memory-api-request-p99-latency-high"></a><!-- alert: "Memory API request p99 latency high" status: covered -->
+## Memory API request p99 latency high
+
+**Symptoms:** `Memory API request p99 latency high` (warning, `alerts/tatara-memory.yaml`) fires when `histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{...}[10m])))`, guarded by `and on() (sum(rate(http_request_duration_seconds_count{...}[10m])) > 0)`, exceeds 2.5s for 15m, scoped to `namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*"`.
+
+**What it means:** This is the memory API's only latency witness on the delivering plane - nothing else here watches how long a `tatara-memory` request actually takes end to end. The `and on()` clause is an idle-NaN guard: `histogram_quantile` over zero requests in the window returns NaN, and without the guard that would read the same as "no data" rather than "idle" - the clause makes the rule only evaluate true when the service actually served traffic, so an idle service cannot read as a slow one. The 2.5s threshold is the chart's `retrievalLatencyP99Seconds`.
+
+Worth recording precisely, because it has been wrong elsewhere: the histogram is `requestDurationBuckets` (`internal/httpapi/middleware.go`), which extends Prometheus's `DefBuckets` with 30/60/120/240/300, so this quantile saturates at **300s**, not at `DefBuckets`' 10s ceiling. Three separate comments across tatara-memory and tatara-operator asserted the 10s ceiling and had been stale since those extra buckets landed; they are corrected in the same change that ports this rule.
+
+**This is dormant today.** Memory has been off on every project since 2026-08-09 (`operator_memory_stacks{phase="Disabled"}` = 1 across `tatara`, `infrastructure`, `mtg`); with no `mem-*` pod serving requests, `http_request_duration_seconds_bucket` has no series in Prometheus at all right now, and the diagnosis query below returning nothing is the expected state, not evidence of a stalled exporter.
+
+**Diagnosis:**
+```promql
+histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*"}[10m])))
+and on() (sum(rate(http_request_duration_seconds_count{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*"}[10m])) > 0)
+```
+```bash
+kubectl -n tatara logs deploy/mem-<project> --tail=100
+```
+
+**Fix:** Identify which route is slow from the memory API's own request logs. Because `tatara-memory` fronts LightRAG, Neo4j, and Postgres, elevated p99 here often traces to one of those three rather than the API layer itself - cross-check [LightRAG backend failing or slow](#lightrag-backend-failing-or-slow) above and [Memory Postgres connection pool saturated or waiting](#memory-postgres-connection-pool-saturated-or-waiting) above, since queuing for a database connection shows up here as tail latency before it shows up as an outright error.
+
+---
+
 <a id="tatara-runbook-operator-memory-retrieval-surface-absent"></a><!-- alert: "Operator memory retrieval surface absent" status: covered -->
 <a id="tatara-runbook-operator-tool-surface-probe-failing"></a><!-- alert: "Operator tool-surface probe failing" status: covered -->
 ## Memory retrieval or tool surface absent
@@ -1434,11 +1511,16 @@ max by (project, repo) (operator_repository_ingest_gated{namespace="tatara"})
 <a id="tatara-runbook-tatara-ingester-quarantining-files-analyzer-hard-error"></a><!-- alert: "Tatara ingester quarantining files (analyzer hard-error)" status: covered -->
 <a id="tatara-runbook-memory-ingest-item-error-rate-elevated"></a><!-- alert: "Memory ingest item error rate elevated" status: covered -->
 <a id="tatara-runbook-memory-code-graph-analytics-stalled-with-dirty-repos"></a><!-- alert: "Memory code-graph analytics stalled with dirty repos" status: covered -->
+<a id="tatara-runbook-memory-code-graph-analytics-recompute-timing-out"></a><!-- alert: "Memory code-graph analytics recompute timing out" status: covered -->
 ## Code graph quality degrading (partial graph)
 
-**Symptoms:** `Ingester LLM call failure ratio high` (warning, `alerts/tatara-ingester.yaml`) fires when the LLM call failure ratio exceeds 30% over 1h (gated to at least 20 calls). `Tatara ingester quarantining files (analyzer hard-error)` (warning, same file) fires on any quarantined file in 1h. `Memory ingest item error rate elevated` (info, `alerts/tatara-memory.yaml`) fires on any nonzero error/timeout rate on ingest items over 30m. `Memory code-graph analytics stalled with dirty repos` (warning, same file) fires when dirty repos exist with no analytics recompute in 30m.
+**Symptoms:** `Ingester LLM call failure ratio high` (warning, `alerts/tatara-ingester.yaml`) fires when the LLM call failure ratio exceeds 30% over 1h (gated to at least 20 calls). `Tatara ingester quarantining files (analyzer hard-error)` (warning, same file) fires on any quarantined file in 1h. `Memory ingest item error rate elevated` (info, `alerts/tatara-memory.yaml`) fires on any nonzero error/timeout rate on ingest items over 30m. `Memory code-graph analytics stalled with dirty repos` (warning, same file) fires when dirty repos exist with no analytics recompute in 30m. `Memory code-graph analytics recompute timing out` (warning, same file, `namespace="tatara"` only) fires when `sum(increase(code_graph_analytics_runs_total{result="timeout"}[1h]))` is above 0 for 5m.
 
-**What it means:** These four all shrink or stale the code graph without failing the ingest run itself, so they are easy to miss. The optional Phase 2 LLM semantic-extraction stage enriches the graph with concept and rationale nodes beyond plain AST analysis; a high failure ratio there means that enrichment is degrading best-effort while the run still reports success. A quarantined file is held at its last-good graph state and dropped from further updates until its next diff edit - the affected repo/language has an incomplete graph until then; check the ingest job's WARN logs for the analyzer name, paths, and error. Elevated memory ingest item errors mean individual chunks/entities are being dropped inside `tatara-memory` even when the overall job succeeds. Stalled analytics means centrality/community data (used by graph-aware queries) is going stale because dirty repos are piling up with no recompute.
+**What it means:** These five all shrink, stale, or wedge the code graph without failing the ingest run itself, so they are easy to miss. The optional Phase 2 LLM semantic-extraction stage enriches the graph with concept and rationale nodes beyond plain AST analysis; a high failure ratio there means that enrichment is degrading best-effort while the run still reports success. A quarantined file is held at its last-good graph state and dropped from further updates until its next diff edit - the affected repo/language has an incomplete graph until then; check the ingest job's WARN logs for the analyzer name, paths, and error. Elevated memory ingest item errors mean individual chunks/entities are being dropped inside `tatara-memory` even when the overall job succeeds. Stalled analytics means centrality/community data (used by graph-aware queries) is going stale because dirty repos are piling up with no recompute.
+
+Timing-out is the complementary arm of stalled analytics, not a duplicate of it, and both are wanted on the same section deliberately: stalled fires on **zero** runs in 30m; timing-out fires on runs that **do** run but get cut off by `ANALYTICS_RECOMPUTE_TIMEOUT`. A recompute that runs on schedule and is cut off by its deadline every single time satisfies neither alone - `rate(code_graph_analytics_runs_total[30m]) != 0` keeps stalled quiet even though nothing is actually completing. That gap is exactly how tatara-memory#89 started: a wedged recompute held Postgres connections for 5.5 hours with no signal from the tatara-memory process at all, only visible six hours later, database-side, once the pool ran out of slots. A recompute cut off by its own timeout while holding those same connections is the leading indicator that would have caught it early - cross-check [Memory Postgres connection pool saturated or waiting](#memory-postgres-connection-pool-saturated-or-waiting) above whenever this one is firing.
+
+**This is dormant today.** Memory has been off on every project since 2026-08-09 (`operator_memory_stacks{phase="Disabled"}` = 1 across `tatara`, `infrastructure`, `mtg`); the analytics worker producing `code_graph_analytics_runs_total` emits one series set per project, and with no project running memory there are none right now - a diagnosis query returning nothing is the expected state today, not evidence the worker stopped.
 
 **Diagnosis:**
 ```bash
@@ -1449,9 +1531,10 @@ kubectl -n tatara logs deploy/mem-<project> --tail=100
 (sum(increase(llm_calls_total{result="fail"}[1h])) / clamp_min(sum(increase(llm_calls_total[1h])), 1)) * (sum(increase(llm_calls_total[1h])) >= bool 20)
 sum(increase(ingest_files_quarantined_total[1h]))
 max(code_graph_analytics_dirty_repos{namespace="tatara"}) * on() group_left() (sum(rate(code_graph_analytics_runs_total{namespace="tatara"}[30m])) == bool 0)
+sum(increase(code_graph_analytics_runs_total{namespace="tatara",result="timeout"}[1h]))
 ```
 
-**Fix:** For LLM failures, check the OpenAI Secret and `SEMANTIC_MODEL` config on the affected project - semantic extraction runs AST-only and does not fail the job if the Secret is absent, so a failure ratio here means credentials or the API itself, not a missing config. For quarantined files, fix the underlying parse error named in the WARN log; the file recovers automatically on its next diff edit. For elevated memory ingest item errors, check `deploy/mem-<project>` logs for the specific item type failing. For stalled analytics, no confirmed fix is named beyond confirming the analytics recompute loop in `tatara-memory` is still running; if dirty repos keep accumulating with zero runs, escalate as a stuck background job in that service.
+**Fix:** For LLM failures, check the OpenAI Secret and `SEMANTIC_MODEL` config on the affected project - semantic extraction runs AST-only and does not fail the job if the Secret is absent, so a failure ratio here means credentials or the API itself, not a missing config. For quarantined files, fix the underlying parse error named in the WARN log; the file recovers automatically on its next diff edit. For elevated memory ingest item errors, check `deploy/mem-<project>` logs for the specific item type failing. For stalled analytics, no confirmed fix is named beyond confirming the analytics recompute loop in `tatara-memory` is still running; if dirty repos keep accumulating with zero runs, escalate as a stuck background job in that service. For timing-out, treat it as a wedge investigation, not a config tune: raising `ANALYTICS_RECOMPUTE_TIMEOUT` only hides the wedge for longer and lets it hold Postgres connections longer with it. Check the Postgres pool state (`go_sql_in_use_connections`, above) and `pg_stat_activity` for a long-running query tied to the analytics worker, and treat any recurring timeout as the same class of incident as tatara-memory#89 until proven otherwise.
 
 ---
 
