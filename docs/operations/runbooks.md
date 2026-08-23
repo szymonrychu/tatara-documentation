@@ -1219,11 +1219,16 @@ sum by (reason) (increase(operator_gc_blocked_total{namespace="tatara",job="tata
 
 <a id="tatara-runbook-operator-sweep-heartbeat-stale"></a><!-- alert: "Operator sweep heartbeat stale" status: covered -->
 <a id="tatara-runbook-operator-sweep-erroring"></a><!-- alert: "Operator sweep erroring" status: covered -->
+<a id="tatara-runbook-operator-sweep-skip-persistent"></a><!-- alert: "Operator sweep skip persistent" status: covered -->
 ## Sweep heartbeat stale or erroring
 
-**Symptoms:** `Operator sweep heartbeat stale` (critical, `alerts/tatara-operator.yaml`) fires when a project/activity's sweep is more than 3h past its own computed next-expected run, or when the metric is absent entirely (NoData is deliberately configured to fire on this rule too). `Operator sweep erroring` (warning, same file) fires when a sweep pass errors repeatedly within 1h, even while the heartbeat itself stays green.
+**Symptoms:** `Operator sweep heartbeat stale` (critical, `alerts/tatara-operator.yaml`) fires when a project/activity's sweep is more than 3h past its own computed next-expected run, or when the metric is absent entirely (NoData is deliberately configured to fire on this rule too). `Operator sweep erroring` (warning, same file) fires when a sweep pass errors repeatedly within 1h, even while the heartbeat itself stays green. `Operator sweep skip persistent` (warning, same file) fires when one `(project, activity, reason)` triple records 6 or more skips in 24h.
 
 **What it means:** The operator computes each activity's next-expected run from its own cron schedule and its own last recorded success, so a heartbeat breach is a genuinely missed run, not a cadence mismatch against the alert. An absent series means the operator published no next-expected timestamp for any activity at all - consistent with the whole sweep loop, or the operator process itself, being down. The erroring rule catches a different failure: some passes succeed (keeping the heartbeat green) while others for the same project/activity throw, with `reason` naming why.
+
+Skip-persistent is different from both: the sweep is running, on cadence, without errors, and is deliberately declining to act on the same item every single pass. **One skip is a normal steady state** - `reason="mr_claimed_by_other_task"` means a live Task legitimately controller-owns that MergeRequest, and a parked Task still owns its MR because parking is re-entrant. The alert only fires on a skip that never clears, which means the owning Task has stopped progressing and is not being reaped. At the 4h `issueScan` cadence, 6 skips in 24h is "every pass for a full day".
+
+**`reason="mint_budget_bound"` is excluded from the expression and the exclusion is load-bearing.** That reason is a cap doing its job, not a failure: an orphan deferred because `maxOpenTasks` is full is emitted on every pass for as long as the backlog lasts, so including it would pin this alert on permanently and bury the `mr_claimed_by_other_task` signal it exists for. A budget that never frees shows up instead as a Task whose `operator_task_state_age_seconds` keeps climbing, and as [Sweep budget capped](#tatara-runbook-operator-sweep-creation-budget-chronically-capped) below. Do not "fix" a firing skip-persistent by widening the exclusion.
 
 **Diagnosis:**
 ```bash
@@ -1233,9 +1238,13 @@ kubectl -n tatara logs deploy/tatara-operator | grep -i sweep | tail -50
 ```
 ```promql
 time() - operator_sweep_next_expected_timestamp_seconds{namespace="tatara",job="tatara-operator"}
+sum by (project, activity, reason) (increase(operator_sweep_skipped_total{namespace="tatara",job="tatara-operator",reason!="mint_budget_bound"}[24h]))
+max by (task) (operator_task_state_age_seconds{namespace="tatara",job="tatara-operator"})
 ```
 
 **Fix:** The operator is leader-elected across 3 replicas; only the leader runs the sweep loop, so confirm leadership is actually held by a healthy pod - a flapping or crash-looping leader stalls every project's sweeps at once, matching the NoData case. If leadership is stable, check the named `project`/`activity` in the logs above for a stuck reconcile. For sweep erroring, the `reason` label narrows the failing pass; one project/activity erroring while others succeed points at that project's own Repository/Issue state rather than the operator process.
+
+For skip-persistent, the firing series names the `reason`; for `mr_claimed_by_other_task`, find the Task that owns the MergeRequest the sweep keeps declining, using the `operator_task_state_age_seconds` query above to spot the one whose age keeps climbing. Then resolve it or reap it - the skip clears as soon as the claim is released. This alert replaced an ERROR-line trickle that used to report the same condition as a repeating sweep fault, so an absence of matching ERROR lines is expected and is not evidence the alert is wrong.
 
 ---
 
@@ -1568,23 +1577,27 @@ max by (project) (operator_token_budget_used_ratio{namespace="tatara",job="tatar
 <a id="tatara-runbook-claude-account-usage-window-near-emergency-ceiling"></a><!-- alert: "Claude account usage window near emergency ceiling" status: covered -->
 <a id="tatara-runbook-claude-account-monthly-overage-climbing"></a><!-- alert: "Claude account monthly overage climbing" status: covered -->
 <a id="tatara-runbook-claude-code-api-429-rate-reactive-backstop-pending-otel-deployment"></a><!-- alert: "Claude Code API 429 rate (reactive backstop) - PENDING OTel deployment" status: covered -->
+<a id="tatara-runbook-claude-account-usage-gate-not-ready"></a><!-- alert: "Claude account usage gate not ready" status: covered -->
 ## Claude account usage gate
 
-**Symptoms:** `Claude account usage poll unhealthy` (`alerts/tatara-usage-gate.yaml`, warning) fires when `tatara_account_usage_poll_health` is below 1 for 15m while the poller is enabled. `Claude account usage window near emergency ceiling` (`alerts/tatara-usage-gate.yaml`, critical) fires when the highest account usage window exceeds 80% utilization for 15m. `Claude account monthly overage climbing` (`alerts/tatara-usage-gate.yaml`, warning) fires when monthly pay-as-you-go overage utilization exceeds 80% for 30m. `Claude Code API 429 rate (reactive backstop) - PENDING OTel deployment` (`alerts/tatara-usage-gate.yaml`, critical) fires on any nonzero HTTP 429 rate over 5m, but the metric it reads does not exist on the platform yet.
+**Symptoms:** `Claude account usage gate not ready` (`alerts/tatara-usage-gate.yaml`, warning) fires when `tatara_account_usage_gate_ready` reads 0 for 30m. `Claude account usage poll unhealthy` (`alerts/tatara-usage-gate.yaml`, warning) fires when `tatara_account_usage_poll_health` is below 1 for 15m while the poller is enabled. `Claude account usage window near emergency ceiling` (`alerts/tatara-usage-gate.yaml`, critical) fires when the highest account usage window exceeds 80% utilization for 15m. `Claude account monthly overage climbing` (`alerts/tatara-usage-gate.yaml`, warning) fires when monthly pay-as-you-go overage utilization exceeds 80% for 30m. `Claude Code API 429 rate (reactive backstop) - PENDING OTel deployment` (`alerts/tatara-usage-gate.yaml`, critical) fires on any nonzero HTTP 429 rate over 5m, but the metric it reads does not exist on the platform yet.
 
-**What it means:** These four gate the shared Claude subscription from different angles. Poll-unhealthy means the `/api/oauth/usage` poller has exceeded its failure threshold and the snapshot the gate holds is stale; the gate fails open on the last-known windows until they expire rather than blocking spawns on stale data (a `claudeSubscription`-mode project has no other input to fall back to). Near-emergency-ceiling means the account is close to a usage-window cap, with only the incident kind's 98% ceiling still having headroom; the 80% threshold is provisional, reused from the operator's `DefaultEmergencyPercent` convention pending real usage data. Monthly-overage is read-only and informational - overage never gates spawning by design, it exists for a human to decide whether to raise the plan limit or curb discretionary agent kinds. The 429 rule is meant as the reactive backstop of last resort, but it needs Claude Code's native OTel wired on wrapper pods and an OTLP-to-Prometheus collector in tatara-helmfile, neither of which has landed; the `or vector(0)` keeps the series defined, so today this rule can only read 0 and should never actually fire.
+**What it means:** These five gate the shared Claude subscription from different angles. Gate-not-ready is the innermost one and the only one that reports the gate's own verdict rather than an input to it: `tokenBudget` is enabled in `claudeSubscription` mode but no snapshot newer than `tokenBudgetMaxSnapshotAge` is governing admission, so the gate **fails open and admits every spawn** regardless of how much of the subscription is already burnt. It exists because the only budget rule that predated it watched `operator_admission_blocked_total{reason="token_budget"}`, a derived counter that by construction never increments while the gate evaluates nothing - the gate ran inert for weeks reading green. The metric is a label-less `GaugeVec` whose child is created on first `Set`, so a project with the gate disabled emits **no series at all** and cannot fire this: absent is NoData is OK, and that is the correct reading rather than a gap. Poll-unhealthy means the `/api/oauth/usage` poller has exceeded its failure threshold and the snapshot the gate holds is stale; the gate fails open on the last-known windows until they expire rather than blocking spawns on stale data (a `claudeSubscription`-mode project has no other input to fall back to). Near-emergency-ceiling means the account is close to a usage-window cap, with only the incident kind's 98% ceiling still having headroom; the 80% threshold is provisional, reused from the operator's `DefaultEmergencyPercent` convention pending real usage data. Monthly-overage is read-only and informational - overage never gates spawning by design, it exists for a human to decide whether to raise the plan limit or curb discretionary agent kinds. The 429 rule is meant as the reactive backstop of last resort, but it needs Claude Code's native OTel wired on wrapper pods and an OTLP-to-Prometheus collector in tatara-helmfile, neither of which has landed; the `or vector(0)` keeps the series defined, so today this rule can only read 0 and should never actually fire.
 
 **Diagnosis:**
 ```bash
 kubectl -n tatara logs deploy/tatara-operator | grep -i usage_poll | tail -50
 ```
 ```promql
+tatara_account_usage_gate_ready
+tatara_account_usage_snapshot_age_seconds
 tatara_account_usage_poll_health and (tatara_account_usage_poller_enabled == 1)
 max(tatara_account_usage_utilization)
 tatara_account_overage_percent
 ```
+For gate-not-ready, `tatara_account_usage_snapshot_age_seconds` names **which feed went quiet and how long ago** via its `source` label. `source="poller"` stale is the `/api/oauth/usage` path - continue with poll-unhealthy below. `source="wrapper"` stale is the statusline path: agent pods report usage through `cc-statusline` on the turn-complete callback, so a dead wrapper feed with turns still completing means either the statusline is not firing in the pods or the operator is not persisting `Task.status.accountUsage`. Check `ccw_statusline_reports_total` on the pushed wrapper metrics to tell those two apart.
 
-**Fix:** For poll-unhealthy, check operator logs for the poll failure reason (auth, 429, schema drift on the `/api/oauth/usage` response) and fix the underlying cause; the gate already fails open by design, so this is not itself an outage, but it is running blind. For near-emergency-ceiling, treat as critical: reduce spawn rate for non-incident kinds via [Tuning](tuning.md) until the window resets, since only incident work still has headroom. For monthly-overage, nothing is blocked automatically - a human decides whether to raise the account limit or curb discretionary kinds. For the 429 backstop, if it fires at all today, treat that as a metric-plumbing bug (confirm whether OTel Phase B and the OTLP collector Phase D have shipped) rather than a real 429 burst; once both phases land, any nonzero reading is a live incident per the design's floor.
+**Fix:** For gate-not-ready, treat it as **admission control being off, not as a metrics problem**: every spawn is being admitted unbudgeted for as long as it fires. Restore whichever feed the `source` label names above, and do not silence it by widening `tokenBudgetMaxSnapshotAge` - that only makes a staler snapshot count as fresh and returns the gate to the inert-but-green state it was built to expose. If the gate is genuinely meant to be off for this project, disable `tokenBudget` so the series disappears entirely rather than leaving it enabled and unfed. For poll-unhealthy, check operator logs for the poll failure reason (auth, 429, schema drift on the `/api/oauth/usage` response) and fix the underlying cause; the gate already fails open by design, so this is not itself an outage, but it is running blind. For near-emergency-ceiling, treat as critical: reduce spawn rate for non-incident kinds via [Tuning](tuning.md) until the window resets, since only incident work still has headroom. For monthly-overage, nothing is blocked automatically - a human decides whether to raise the account limit or curb discretionary kinds. For the 429 backstop, if it fires at all today, treat that as a metric-plumbing bug (confirm whether OTel Phase B and the OTLP collector Phase D have shipped) rather than a real 429 burst; once both phases land, any nonzero reading is a live incident per the design's floor.
 
 ---
 
@@ -1878,3 +1891,94 @@ Cross-reference the two: if the project's pod's node is not in the collector lis
 **Fix:** Same remediation as [Log collector node coverage incomplete](#log-collector-node-coverage-incomplete) - this is an infra gap in the collector DaemonSet's `nodeSelector`/`tolerations`, not something a tatara-* repo can patch. Until the collector reaches every node, treat this rule's coverage as informational rather than a guarantee, and do not read a quiet `Tatara memory error log burst` for an affected project as confirmation that project's memory stack is error-free.
 
 **Memory is becoming optional - do not let this read as a standing fault once it is disabled.** The memory subsystem is being made optional platform-wide and is shortly being turned off for all three current projects (`tatara`, `infrastructure`, `mtg`). This rule, like `Tatara memory error log burst`, is gated on the Project still running a memory stack: once a Project's memory is disabled, it has no `mem-<project>` pod at all, and "no memory logs" for that project is the **correct**, expected state - not an incident, and not something this runbook should ever be paged for again on that project. If this alert or its sibling fires for a project with memory disabled, that is the rule's project gate failing to exclude it (a stale label match, a missing `unless` clause), not a real coverage gap - fix the rule expression rather than chasing a collector that is correctly serving zero relevant pods.
+
+---
+
+<a id="tatara-runbook-operator-task-residency-cap-exceeded"></a><!-- alert: "Operator task residency cap exceeded" status: covered -->
+## Task hit the absolute residency cap
+
+**Symptoms:** `Operator task residency cap exceeded` (`alerts/tatara-operator.yaml`, warning) fires when any Task is parked by the absolute residency backstop in the last 1h, broken out by `state` and `kind`.
+
+**What it means:** A Task ran for longer than `ResidencyCapAll` (24h) measured from `stateEnteredAt` plus any carried elapsed residency, and the backstop parked it. **This is the last line of defence firing, not the normal deadline.** The per-state deadline is supposed to catch a stuck Task long before this: tatara-operator#521 replaced a live state's work clock with an idle clock on `conversationLastEventAt`, which resets on every message, so a chatty reviewer or a ping-ponging agent conversation can hold that clock open indefinitely while real time keeps running. This counter is how often the absolute bound had to do the job the per-state deadline did not.
+
+A single event is worth reading; a **sustained** rate is the real signal, and it means agents are converging slowly or not at all rather than that one Task got unlucky. The `state` label says where the time went and `kind` says which agent kind is doing it - a rate concentrated in one `(state, kind)` pair is a workflow problem in that agent, not a platform-wide one.
+
+**Diagnosis:**
+```promql
+sum by (state, kind) (increase(operator_task_residency_exceeded_total{namespace="tatara",job="tatara-operator"}[1h])) or vector(0)
+max by (task) (operator_task_state_age_seconds{namespace="tatara",job="tatara-operator"})
+```
+```bash
+kubectl -n tatara get tasks -o custom-columns=NAME:.metadata.name,STATE:.status.state,PARK:.status.parkReason,ENTERED:.status.stateEnteredAt
+kubectl -n tatara logs deploy/tatara-operator | grep -i residency | tail -50
+```
+
+**Fix:** Read the parked Task's conversation to find what it was doing for 24h. The two common shapes are a review loop that never converges (agent and reviewer trading messages without the diff changing) and an agent waiting on something that never arrives. Neither is fixed by raising `ResidencyCapAll` - the cap firing is the symptom, and raising it only lengthens the wasted turn. If the same `(state, kind)` pair keeps appearing, the fix belongs in that agent's own convergence logic or in the per-state deadline that should have caught it first; escalate to tatara-operator with the `state`/`kind` breakdown rather than tuning the backstop.
+
+---
+
+<a id="tatara-runbook-operator-parked-task-with-live-pod"></a><!-- alert: "Operator parked task with live pod" status: covered -->
+## Parked Tasks still holding a live agent pod
+
+**Symptoms:** `Operator parked task with live pod` (`alerts/tatara-operator.yaml`, warning) fires when the operator repairs more than 2 parked-Task-with-live-pod inconsistencies in 1h, broken out by `project` and `park_reason`.
+
+**What it means:** `parkReason` set while the Task's agent pod is still running is **transient by design and should essentially never be observed**: `ParkTask` stamps the park flag and deletes the pod in one call, so the window between the two is sub-second. A repair means something found the pair in that state long after it should have closed, and the repair itself is a backstop, not the mechanism.
+
+A sustained non-zero rate means the park-then-stop sequence is not completing. The cost is not the stray pod: **admission slots leak.** A parked Task is no longer counted as active, but its pod still occupies concurrency, so the pool silently shrinks with no clock armed on the leaked capacity and nothing to page about it except this counter. The threshold is 2/h rather than 0 because a single repair around a leader-election changeover or an API-server blip is a benign race; a rate is not.
+
+**Diagnosis:**
+```promql
+sum by (project, park_reason) (increase(operator_task_parked_with_live_pod_repaired_total{namespace="tatara",job="tatara-operator"}[1h])) or vector(0)
+operator_tasks_inflight{namespace="tatara",job="tatara-operator"}
+```
+```bash
+kubectl -n tatara get tasks -o json | jq -r '.items[] | select(.status.parkReason != null and .status.parkReason != "") | "\(.metadata.name) \(.status.parkReason)"'
+kubectl -n tatara get pods -l tatara.dev/task --show-labels
+```
+Cross-reference the two lists: a Task name that appears in both is a live instance of the condition, not a historical repair.
+
+**Fix:** Confirm whether the leak is still open (a parked Task whose pod is present right now) or whether the repair already closed it. If open, deleting the pod is the safe immediate action - the Task is already parked, so nothing is lost. Then find why `ParkTask` did not complete its own delete: the usual causes are a leader-election changeover between the stamp and the delete, and a pod delete that errored and was not retried. If `park_reason` is concentrated on one value, that park path is the one dropping its delete, and the fix is in tatara-operator's park handling for that reason rather than in the repair backstop.
+
+---
+
+<a id="tatara-runbook-operator-merged-a-pr-with-no-semver-label"></a><!-- alert: "Operator merged a PR with no semver label" status: covered -->
+## Merged with no semver label, so CI cut no release tag
+
+**Symptoms:** `Operator merged a PR with no semver label` (`alerts/tatara-operator.yaml`, warning) fires when `operator_semver_label_missing_total` increases at all in 1h, broken out by `repo`.
+
+**What it means:** The operator merged a MergeRequest that carried no declared change significance, so no `semver:<level>` label was on the PR at the merge commit. Under semver push-CD the tag is cut **from that label, at that commit** - no label means the push-CD pipeline cuts no tag, and no tag means no publish, no pin bump, and a `deploying` stage that never resolves. **The change is on `main` and is not on the cluster**, which reads as a successful merge from every other angle.
+
+The merge is deliberately **not** stalled on this. Blocking it would strand a reviewed, approved change behind an operator bug, which is worse than shipping it untagged and paging. That trade is the reason this alert has to exist: the operator has chosen to create the inconsistency, so something has to report it.
+
+**Diagnosis:**
+```promql
+sum by (repo) (increase(operator_semver_label_missing_total{namespace="tatara",job="tatara-operator"}[1h])) or vector(0)
+```
+Find the untagged merge commit in the named `repo`, and confirm no tag points at it. In a workstation shell with `gh` auth (in-cluster agent pods have no forge token):
+```bash
+git -C <repo> fetch --tags && git -C <repo> log --oneline -5 --decorate main
+```
+
+**Fix:** **A human must tag the merged commit** - this is one of the few places the platform cannot self-heal, because the tag-cutting job is push-triggered and tag mode is not idempotent, so it cannot simply be re-run. Tag the merge commit with the level the change should have declared, then let the normal publish and pin flow proceed. Never hand-edit a deploy pin to paper over the missing release. Separately, find why the label was absent at merge time: the operator applies `semver:<level>` itself as a projection of `MergeRequest.status.significance` **before** merging, so a missing label means either the significance was never set on the MergeRequest or the label write lost a race with the merge - both are tatara-operator bugs and belong in an issue there with the `repo` label value and the merge SHA.
+
+---
+
+<a id="tatara-runbook-operator-pushed-metrics-dropped"></a><!-- alert: "Operator pushed metrics dropped" status: covered -->
+## Pushed metric families dropped for an unallowed name
+
+**Symptoms:** `Operator pushed metrics dropped` (`alerts/tatara-operator.yaml`, warning) fires when `operator_push_series_dropped_total{reason="reserved_name"}` increases at all in 15m.
+
+**What it means:** Short-lived pods (agent wrappers, ingest jobs) cannot be scraped, so they **push** their metric families to the operator's push receiver, which re-exposes them for Prometheus. The receiver admits a family only if its name matches a prefix in `pushMetricsAllowedPrefixes` (`PUSH_METRICS_ALLOWED_PREFIXES`). A family that matches none is dropped before it ever reaches Prometheus.
+
+This is allowlist drift, and it is silent on the producing side: the pod pushes successfully, exits, and the metric simply never exists. **Any alert or dashboard panel on that family then reads NoData forever** - the same silent-green class the metric-provenance lint guards inside this repo, arriving instead through the push path where the lint cannot see it. The usual cause is a wrapper or ingester adding a new metric family whose prefix nobody added to the allowlist.
+
+**Diagnosis:**
+```promql
+sum by (reason) (increase(operator_push_series_dropped_total{namespace="tatara",job="tatara-operator",reason="reserved_name"}[15m])) or vector(0)
+```
+The counter says a drop happened; it does not carry the family name. The receiver logs each dropped family at WARN on every affected push:
+```bash
+kubectl -n tatara logs deploy/tatara-operator | grep push_series_dropped | tail -50
+```
+
+**Fix:** Take the dropped family names from those log lines and add their prefix to `pushMetricsAllowedPrefixes` in `tatara-helmfile` (`values/tatara-operator/default.yaml`), which is where this cluster widens the chart default. Prefer the narrowest prefix that admits the new family - the allowlist is what keeps a misbehaving pod from injecting arbitrary series into the platform's metric namespace, so widening it to a bare component prefix to make one alert go away gives up that property. Once the prefix lands and the operator rolls, the family appears on the next push; anything the pods pushed while it was denied is lost and does not backfill.
