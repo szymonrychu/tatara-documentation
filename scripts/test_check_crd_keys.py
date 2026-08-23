@@ -216,6 +216,33 @@ class Check(unittest.TestCase):
         self.assertIn("inventedKey", problems[0])
 
 
+class DeadMarkers(unittest.TestCase):
+    def _root(self, pages):
+        root = pathlib.Path(tempfile.mkdtemp())
+        for rel, body in pages.items():
+            p = root / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(body)
+        return root
+
+    def test_a_marker_on_a_line_that_is_extracted_is_live(self):
+        root = self._root({"docs/a.md": "| `mrScan` | x | <!-- crd-ok: mrScan -->"})
+        self.assertEqual(g.dead_markers(root), [])
+
+    def test_a_marker_on_prose_excuses_nothing_and_is_reported(self):
+        # The exact shape that got past review once: a retirement admonition names
+        # the key in a sentence, which this guard never extracts from, so the marker
+        # is decoration that reads as a waiver.
+        root = self._root(
+            {"docs/a.md": "!!! danger\n    Retired. <!-- crd-ok: maxConsecutiveSkips -->"}
+        )
+        self.assertEqual(g.dead_markers(root), ["docs/a.md:2: `crd-ok: maxconsecutiveskips`"])
+
+    def test_a_marker_naming_a_different_key_than_the_line_carries(self):
+        root = self._root({"docs/a.md": "| `mrScan` | x | <!-- crd-ok: somethingElse -->"})
+        self.assertEqual(g.dead_markers(root), ["docs/a.md:1: `crd-ok: somethingelse`"])
+
+
 class Currency(unittest.TestCase):
     """The comparator the scheduled bump job's verdict rests on."""
 

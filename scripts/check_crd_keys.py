@@ -35,8 +35,18 @@ before they were chosen (#55 pre-mortem 3):
 
   1. camelCase KEYS in fenced ```yaml / ```yml blocks. This is the copy-paste surface: it
      is what a maintainer actually pastes into a Project CR or a helmfile values file.
-  2. The LEADING backticked literal of a markdown table row. This is the reference-table
-     surface, where a field gets its type, default and description.
+  2. The leading backticked literal of a markdown table row, WHEN THE FIRST CELL HOLDS
+     EXACTLY THAT AND NOTHING ELSE. This is the reference-table surface, where a field
+     gets its type, default and description.
+
+     The exactness is the scope, not an accident. 24 rows on this site lead with a
+     literal and then keep going - a cell reading `tokensInput / tokensOutput / ...`, the
+     multi-identifier rows of the migration tables on `reference/task.md`. Reading the
+     first literal out of those would flag a column whose entire job is to name
+     identifiers that no longer exist, and the retired ones are already covered by
+     `check-stale-terms.sh`. It also means a marker placed INSIDE the first cell
+     silently stops the row being extracted rather than waiving it; `dead_markers()`
+     below reports that, because it happened once while this guard was being written.
 
 Prose is deliberately out of scope. Widening to every backticked token on every page pulls
 in Go symbols, HTTP paths, CLI flags and ordinary English, and the guard degrades into a
@@ -260,6 +270,28 @@ def unused_waivers(
     return sorted(k for k in waivers if k not in seen)
 
 
+def dead_markers(root: pathlib.Path) -> list[str]:
+    """`<!-- crd-ok: x -->` markers that excuse nothing on their own line.
+
+    A marker on a line this guard does not even extract from - prose, a heading, a
+    table row whose first cell is not a single literal - looks like a deliberate
+    waiver and is not one. Left unreported they accumulate, and the next reader
+    cannot tell a load-bearing marker from decoration. Reported, never fatal:
+    rewording a paragraph should not red CI."""
+    out: list[str] = []
+    for page in pages(root):
+        rel = page.relative_to(root)
+        markdown = page.read_text()
+        extracted: dict[int, set[str]] = {}
+        for f in extract_yaml_keys(markdown) + extract_table_keys(markdown):
+            extracted.setdefault(f.line, set()).add(f.name.lower())
+        for lineno, line in enumerate(markdown.splitlines(), start=1):
+            for name in sorted(marker_names(line)):
+                if name not in extracted.get(lineno, set()):
+                    out.append(f"{rel}:{lineno}: `crd-ok: {name}`")
+    return out
+
+
 def load_snapshot(path: pathlib.Path) -> dict:
     try:
         payload = json.loads(path.read_text())
@@ -318,6 +350,15 @@ def main(argv: list[str]) -> int:
         )
         for k in stale:
             print(f"  - {k}")
+
+    dead = dead_markers(root)
+    if dead:
+        print(
+            f"\nnote: {len(dead)} `crd-ok` marker(s) excuse nothing on their own line "
+            "and can be deleted (not a failure):"
+        )
+        for m in dead:
+            print(f"  - {m}")
     return 0
 
 

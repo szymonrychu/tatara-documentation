@@ -393,7 +393,7 @@ too:
 | `stage=merging`, `deploying` | `status.state=merged`, `deployed` |
 | `stage=documenting` | `status.state=under-implementation` with `agentKind=documentation` |
 | `status.stageEnteredAt` / `stageWorkStartedAt` / `stageReason` | `status.stateEnteredAt` / `stateWorkStartedAt` / `stateReason` (the last now mandatory only on `rejected`, not on every terminal) |
-| `status.parkedFromStage` <!-- crd-ok: parkedFromStage --> | `status.parkedFromState` (same observability-only semantics, plus one load-bearing use: the `no-outcome` un-park gate) |
+| `status.parkedFromStage` | `status.parkedFromState` (same observability-only semantics, plus one load-bearing use: the `no-outcome` un-park gate) <!-- crd-ok: parkedFromStage --> |
 | `Task.spec.kind: clarify` | `Task.spec.kind: implement` (`SweepIssueKind`) - the same mint path, an issue webhook or the backlog sweep. Its three decisions became `action` values on the `implement` outcome - see [Approval Gates](../operations/security/approval-gates.md) |
 
 `Note.Agent`'s enum still lists `clarify` as a valid **historical** value
