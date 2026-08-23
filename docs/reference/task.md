@@ -157,6 +157,7 @@ stall detection and a hardcoded 24h residency cap).
 | `notes` | `[]Note` | The append-only journal. **It is the continuation state.** See [Task notes](task-notes.md) |
 | `pendingEvents` | `[]TaskEvent` | Mid-flight SCM events awaiting the next turn boundary. See [below](#mid-flight-events) |
 | `stats` | [TaskStats](#taskstats) | Tokens, turns, pods, artifacts |
+| `accountUsage` | `*TaskAccountUsage` | This Task's pod's newest Claude subscription usage snapshot (`observedAt`, `fiveHourPercent`, `fiveHourReset`, `weeklyPercent`, `weeklyReset`), reported by the agent's silent `cc-statusline` command via the wrapper's turn-complete callback. Nil until the pod's statusline has reported at least once. Per-Task input only - the `tokenBudget` gate itself reads a leader-only fleet-wide fold of every Task's snapshot, not this field directly. See [Tuning](../operations/tuning.md#cap-spend) ([tatara-operator#633](https://github.com/szymonrychu/tatara-operator/pull/633)) |
 | `deliveredAt` | time | When the Task reached `done`. The reaper's 48h clock runs from here |
 | `documentedBy` | string | The nightly documentation batch Task that covered this delivered Task. Empty until a batch covers it, and **permanently empty** for a Task that shipped no code |
 | `issueRefs` | `[]string` | The `Issue` CRs this Task owns. `MaxItems=50` |
