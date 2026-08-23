@@ -310,6 +310,20 @@ carries no value for it.
     ceiling bounds what tatara approves for *itself*; a human who read the plan
     and said go ahead already made the judgement it stands in for.
 
+!!! warning "The ceiling measures a SELF-DECLARED level, so it bounds mistakes and not intent"
+    `change_significance` is whatever the agent says it is. The operator checks
+    that the value is in the enum and nothing anywhere compares it to the diff,
+    so an agent that declares `patch` walks past a `minor` ceiling with a
+    breaking change. A review outcome may also **raise**
+    `MergeRequest.status.significance` past the ceiling, and nothing re-checks
+    it there: that handler's Task is the review Task, which owns the merge
+    requests and not the Issues the evidence lives on.
+
+    Read the ceiling as a bound on how much tatara can ship **by honest
+    accident**, not as a containment boundary against an agent trying to get
+    past it. The containment boundary is `off`, which stops the self-approval
+    path firing at all.
+
 The other four axes of the carve-out are unchanged and all still hold: the issue
 must be open, bot-authored, carry a valid `tatara-proposed-by` marker, and still
 match its filing-time `Spec.proposalBodyHash` anchor. Raising the ceiling widens
