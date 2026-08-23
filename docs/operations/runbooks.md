@@ -1416,9 +1416,9 @@ clamp_min(sum(rate(tatara_memory_op_total{namespace="tatara",op!~"get|get_entity
 <a id="tatara-runbook-memory-api-request-p99-latency-high"></a><!-- alert: "Memory API request p99 latency high" status: covered -->
 ## Memory API request p99 latency high
 
-**Symptoms:** `Memory API request p99 latency high` (warning, `alerts/tatara-memory.yaml`) fires when `histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{...}[10m])))`, guarded by `and on() (sum(rate(http_request_duration_seconds_count{...}[10m])) > 0)`, exceeds 2.5s for 15m, scoped to `namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*"`.
+**Symptoms:** `Memory API request p99 latency high` (warning, `alerts/tatara-memory.yaml`) fires when `histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{...}[10m])))`, guarded by `and on() (sum(rate(http_request_duration_seconds_count{...}[10m])) > 0)`, exceeds 2.5s for 15m, scoped to `namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*",route!~"/readyz|/healthz|/metrics"`.
 
-**What it means:** This is the memory API's only latency witness on the delivering plane - nothing else here watches how long a `tatara-memory` request actually takes end to end. The `and on()` clause is an idle-NaN guard: `histogram_quantile` over zero requests in the window returns NaN, and without the guard that would read the same as "no data" rather than "idle" - the clause makes the rule only evaluate true when the service actually served traffic, so an idle service cannot read as a slow one. The 2.5s threshold is the chart's `retrievalLatencyP99Seconds`.
+**What it means:** This is the memory API's only latency witness on the delivering plane - nothing else here watches how long a `tatara-memory` request actually takes end to end. The probe routes are excluded on both sides, the same three [Service HTTP 5xx error ratio high](#service-http-5xx-error-ratio-high) excludes: `/readyz` and `/healthz` are fast and scraped on a fixed per-pod cadence, so they are a large, permanently-fast share of the population, and a p99 is a rank - padding the population with fast samples walks that rank down into the fast buckets, so the busier the probes, the more real tail latency the rule would tolerate before firing. The `and on()` clause is an idle-NaN guard: `histogram_quantile` over zero requests in the window returns NaN, and without the guard that would read the same as "no data" rather than "idle" - the clause makes the rule only evaluate true when the service actually served traffic, so an idle service cannot read as a slow one. The 2.5s threshold is the chart's `retrievalLatencyP99Seconds`.
 
 Worth recording precisely, because it has been wrong elsewhere: the histogram is `requestDurationBuckets` (`internal/httpapi/middleware.go`), which extends Prometheus's `DefBuckets` with 30/60/120/240/300, so this quantile saturates at **300s**, not at `DefBuckets`' 10s ceiling. Three separate comments across tatara-memory and tatara-operator asserted the 10s ceiling and had been stale since those extra buckets landed; they are corrected in the same change that ports this rule.
 
@@ -1426,8 +1426,8 @@ Worth recording precisely, because it has been wrong elsewhere: the histogram is
 
 **Diagnosis:**
 ```promql
-histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*"}[10m])))
-and on() (sum(rate(http_request_duration_seconds_count{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*"}[10m])) > 0)
+histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*",route!~"/readyz|/healthz|/metrics"}[10m])))
+and on() (sum(rate(http_request_duration_seconds_count{namespace="tatara",pod=~"mem-.+",pod!~"mem-.*-(neo4j|pg|lightrag).*",route!~"/readyz|/healthz|/metrics"}[10m])) > 0)
 ```
 ```bash
 kubectl -n tatara logs deploy/mem-<project> --tail=100
