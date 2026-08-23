@@ -398,9 +398,12 @@ current state**, never stored:
   both recovery drivers call, bailed unconditionally whenever a Task owned zero
   Issue mirrors. A maintainer comment on its merge request was silently
   swallowed - no side effect, no log line, no metric.
-  `stage.UnparkMaintainerComment` now drives this shape directly, spending one
-  unspent non-bot event per lap (`UnparkConsumedAt`): a park **before** the
-  merge stage releases in place, with `stageElapsedCarrySeconds` zeroed rather
+  `stage.UnparkMaintainerComment` now drives this shape directly, spending
+  every unspent non-bot event in the one release (`UnparkConsumedAt` marks
+  each event's own idempotency, not a one-per-lap throttle - a Task carrying
+  three unanswered comments has all three stamped by this one release): a
+  park **before** the merge stage releases in place, with
+  `stageElapsedCarrySeconds` zeroed rather
   than carried (unlike `reArm`) - every reason this shape can park under
   already sits at or past the residency cap, so preserving the carry would
   admit the Task only to re-park it `stage-deadline` before its pod could run.
