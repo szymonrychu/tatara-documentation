@@ -151,7 +151,12 @@ zero forge requests, except `scm_read(kind=ci)`.
 
 The mirror is at most one sweep behind. Every `scm_read` response carries
 `lastSyncedAt` so an agent can **see** the staleness rather than assume
-freshness. There is deliberately **no `refresh=true` escape hatch**: adding
+freshness. `lastSyncedAt` dates the **sweep**, not the row: an issue's or
+merge request's own recency is `updatedAt`, which is the field
+`scm_read(kind=issues|mr, since=...)` filters on. Reading `lastSyncedAt` as
+forge activity is the misreading
+[tatara-operator#636](https://github.com/szymonrychu/tatara-operator/issues/636)
+was reported from. There is deliberately **no `refresh=true` escape hatch**: adding
 one would hand every agent a forge-fanout button. The one path where
 staleness is dangerous - `refine` closing an issue - re-validates live
 immediately before each close.

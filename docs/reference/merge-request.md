@@ -43,7 +43,7 @@ lookup, never a label selector.
 | `author` | `string` | PR/MR author's forge login |
 | `body` | `string` (max 65536 chars) | PR/MR body, last synced |
 | `createdAt` | `*Time` | When the PR/MR was opened |
-| `updatedAt` | `*Time` | Last forge-side update timestamp |
+| `updatedAt` | `*Time` | Last forge-side update timestamp. The field `scm_read(kind=mr, since=...)` filters on, and surfaced in that response alongside `createdAt` since [tatara-operator#636](https://github.com/szymonrychu/tatara-operator/issues/636) - before which an agent could only see the mirror's `lastSyncedAt` and had to read sweep time as MR activity |
 | `state` | `open` \| `merged` \| `closed` | SCM truth |
 | `status` | `new` \| `approved` \| `needs-changes` \| `rejected` | **The platform's review state.** Operator-owned, written only from an accepted review `submit_outcome` |
 | `headBranch` | `string` | The PR/MR's source branch <!-- stale-ok: headBranch --> |
