@@ -56,7 +56,6 @@ Controls every agent pod spawned by this project.
 | `maxTurnsPerPod` | `int` | `40` | **Deprecated, zero effect.** Ceiling on agent turns within one pod run used to exist independently of `maxTurnsPerTask`; the field is kept only because helmfile still sets it (removing it is a breaking CRD change reserved for a later `semver:major`). |
 | `maxTurnsPerTask` | `int` | `300` | **Deprecated, zero effect.** Used to be the lifetime turn ceiling across every pod of the Task; a turn count measures how much an agent has done, not whether it is stuck, so it no longer parks or fails anything. See [stall detection](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop) and the [residency cap](task-stages.md#the-deadline-invariant) for what replaced it. |
 | `maxReviewRounds` | `int` | `3` | **Deprecated, zero effect.** Used to park the Task at `review-loop-exhausted` after this many `request_changes` verdicts; a round count measures conversation length, not convergence, so the `reviewing <-> implementing` cycle is no longer capped by this field. |
-| `maxHumanReviewRounds` | `int` | `5` | Un-parks of a `review`-kind Task back to `reviewing` on a human PR comment. At the cap it stays parked at `awaiting-human` - a human's PR is fixed by the human. Still active - unlike `maxReviewRounds` above, this counter was not retired. |
 | `maxPodRecreations` | `int` | `3` | **Deprecated, zero effect.** Used to park the Task at `pod-recreation-exhausted` after this many respawns within the current state; repeated pod death is now treated as a crash to *alert* on (`operator_pod_recreations_total`, still counted and labeled by `reason` - see [Runbooks](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)), not a Task to terminate. The [residency cap](task-stages.md#the-deadline-invariant) (24h, hardcoded, not a field) is the only remaining backstop against an endless respawn loop. |
 | `turnTimeoutSeconds` | `int` | `1800` | Inactivity window per turn in seconds. **Meaning changed**: this no longer kills the turn. After this many seconds with no agent activity the operator sends a probe (`POST /v1/probe`) instead, waits `stallProbeGraceSeconds` for a reply, retries up to `stallProbeMaxAttempts` times, and only then interrupts the session and runs the ordinary stop-and-handoff sequence. A turn actively producing output is never probed. See [stall detection](../architecture/agent-execution.md#stall-detection-probe-interrupt-stop) in Agent Execution. |
 | `stallProbeGraceSeconds` | `int` | `300` | How long the operator waits for a stall probe to be answered before counting the attempt unanswered. The probe is delivered at the agent's next tool-call boundary, so a healthy agent inside one long tool call answers late rather than never. Minimum `60`. |
@@ -73,6 +72,11 @@ Controls every agent pod spawned by this project.
 | `extraSidecarContainers` | `[]Container` | - | Additional containers appended after the wrapper in the agent pod. Useful for a local proxy, or for an MCP server that isn't already reachable as a service - for an existing HTTP/SSE MCP endpoint, prefer [`mcpServers`](#mcpserverspec) below. |
 | `extraInitContainers` | `[]Container` | - | Init containers added to the agent pod. Run to completion before the wrapper starts. |
 | `mcpServers` | [`[]MCPServerSpec`](#mcpserverspec) | `[]` | Additional MCP servers to merge into this project's agent pods, on top of the platform-owned servers and any overlay-dir fragments baked into the image. Serialized to the wrapper as the `TATARA_EXTRA_MCP_SERVERS` env var (compact JSON; omitted entirely when empty). The operator validates shape only - reserved-name enforcement and the merge itself happen in the wrapper, see [tatara-claude-code-wrapper](../components/claude-code-wrapper.md#configuration). |
+
+!!! warning "`maxHumanReviewRounds` is a CONSTANT, not a field on this spec"
+    The bound is real: a `review`-kind Task un-parks from `awaiting-human` back to `reviewing` on each human PR comment, and at **5** laps it stays parked, because a human's PR is fixed by the human. But the 5 is `MaxHumanReviewRounds` in `tatara-operator/api/v1alpha1/constants.go`, and **it has never been a `Project` field.** Writing `agent.maxHumanReviewRounds: 8` into a `Project` gets you 5: the CRD is a structural schema, so the apiserver PRUNES the unknown key with no error, no event and no log line, and `helmfile diff` shows the value going in.
+
+    That is the same reason the [residency cap](task-stages.md#the-deadline-invariant) is a constant rather than a field - see `internal/stage/liveness.go` - and it is deliberate in both cases: a silently-pruned bound is no bound at all. Neither is per-project tunable; changing either is an operator release.
 
 !!! danger "There is no resume mode"
     `contextWindowTokens` and the old compacted-handover threshold field are gone. <!-- stale-ok: handover --> Every pod's turn-0 gets the identical [context bundle](context-bundle.md) render, bounded by `Project.spec.maxBundleBytes` - there is no partial-resume calculation and nothing carries a Claude session id across a pod boundary. What carries forward between pods is [`Task.status.notes`](task-notes.md).
@@ -331,14 +335,15 @@ Configure `board` to enable project-board synchronization.
 
 All cron fields use standard 5-field cron syntax (`minute hour dom month dow`). An empty `schedule` disables that activity.
 
-### `scm.cron.mrScan` and `scm.cron.issueScan`
-
-Both activities share the `CronActivity` shape.
+### `scm.cron.issueScan`
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `schedule` | `string` | - | 5-field cron expression. Empty disables the activity. |
 | `maxPerRepo` | `int` | `1` | Maximum in-progress tasks of this type per repository (per-repo lane throttle). A repository whose lane is full is skipped until the in-flight task completes. |
+
+!!! danger "`scm.cron.mrScan` no longer exists"
+    The MR-scan cron was removed from the CRD when the sweep became the single issue and PR intake. A `Project` that still carries an `mrScan` block applies without error and the block is **pruned silently** - there is no warning anywhere. Scheduled PR re-review is part of the sweep and is scoped by [`prReactionScope`](#merge-and-review-policy) above. This matches [Project configuration](project-configuration.md#cron-activities).
 
 ### `scm.cron.brainstorm`
 
@@ -351,9 +356,17 @@ Opt-in self-driven issue-proposal cycle. Disabled unless `enabled: true`.
 | `targetOpenProposals` | `int` | `3` | The backlog TARGET: how many proposals the operator keeps open and awaiting a maintainer decision across all repos in the project. It refills toward this level and never closes a proposal to reconcile downward. `0` disables refill. |
 | `maxOpenProposals` | `int` | `5` | **Deprecated.** The pre-target ceiling, retained as an alias: honoured as the target only when `targetOpenProposals` is unset, so an unmigrated `Project` keeps working. Set `targetOpenProposals` instead. |
 | `historyWindow` | `int` | `20` | How many recent brainstorm proposals are rendered into the session's turn-0 prompt as the `<proposal_history>` block, with their outcome and maintainer comments. `0` omits the block. |
-| `maxConsecutiveSkips` | `int` | `3` | Circuit-breaker threshold. After this many consecutive sessions ending in `action: skip`, the event-driven refill path is suppressed until a cron tick resets the counter. `0` disables the breaker. |
-| `staleProposalDays` | `int` | `0` (reaper off) | Opts in the staleness reaper: a positive value auto-closes bot-authored proposals with no human engagement (no human comment, no live work) for at least that many days, clearing dead proposals out of the `targetOpenProposals` backlog. `<=0` (the unset default) disables the reaper entirely. This is an explicit opt-in sentinel, not a kubebuilder default - "unset" must never be indistinguishable from an active value. |
+| `minSessionIntervalMinutes` | `int` | `12` | Floors the wall-clock gap between two brainstorm sessions, whichever path dispatched the prior one. A **rate limit, not a breaker**: it delays a refill, it never suppresses one, and it never inspects how the prior session ended. A positive value is an explicit floor; `0` (unset) is the `12`-minute default; a **negative** value is the explicit opt-out. |
+| `staleProposalDays` | `int` | `0` | Intended window for a staleness reaper over bot-authored proposals with no human engagement. A positive value is an explicit window, `0` (unset) means the default window, and a **negative** value is the explicit opt-out. See the warning below before setting it. |
 | `sources` | `[]string` | - | Knowledge sources the brainstorm agent may consult. Allowed values: `docs`, `memory`, `internet`. An empty list uses only repository contents. |
+
+!!! danger "The brainstorm circuit breaker no longer exists"
+    The brainstorm circuit breaker is **retired**. <!-- stale-ok: maxConsecutiveSkips --><!-- crd-ok: maxConsecutiveSkips --> It suppressed the event-driven refill path once consecutive `action: skip` sessions crossed a threshold, and only a cron tick could reset it - so the two mechanisms were load-bearing for each other, and a wedged fast path could only be un-wedged by the slow one. Worse, it counted **correct** behaviour: an agent reporting "nothing worth proposing" is the system working, and the breaker charged that toward a brake until a healthy project switched its own fast path off. See `internal/controller/proposalcount.go`.
+
+    `maxConsecutiveSkips` is not a `Project` field and the apiserver prunes it silently. There is no `operator_brainstorm_breaker_trip_total` metric; nothing emits it. <!-- stale-ok: maxConsecutiveSkips, operator_brainstorm_breaker_trip_total --> **`minSessionIntervalMinutes` above is the replacement**, and it is a different shape on purpose - a durable per-project floor between sessions, not a counter of how a session ended. A deliberate stop is now an explicit state the agent asks for (`action: exhausted`), not an inference from a counter.
+
+!!! warning "`staleProposalDays` is accepted but nothing reads it yet"
+    The field is in the CRD, so setting it is not pruned and `helmfile diff` is honest - but no reaper consumes it. `grep -rn StaleProposal` over `tatara-operator/internal/` finds no reader, and the operator's own `MEMORY.md` records it as documented-but-deliberately-not-built. Proposals are not auto-closed on age today, whatever this is set to. The three live projects set `staleProposalDays: 14`, which is a statement of intent rather than an active window.
 
 !!! note "One brainstorm per project per cycle"
     `maxPerCycle` is deprecated and ignored. The controller hard-caps brainstorm at one task per project per cycle.
@@ -438,13 +451,16 @@ All timestamps are RFC 3339 and reflect the last time the corresponding activity
 
 | Field | Activity |
 |---|---|
-| `lastMRScan` | MR/PR review scan |
 | `lastIssueScan` | Issue scan |
 | `lastBrainstorm` | Brainstorm cycle |
 | `lastDocumentation` | Documentation cron cycle |
 | `lastRefine` | Refine pre-step |
-| `lastCDScan` | RETIRED - there is no independent deploy-supervision backstop cron any more; every stage's stall detection is the fixed per-stage clock on the [Task stage machine](task-stages.md). Read-only, kept only for back-compat round-trip of stored Projects; no writer sets it any more. |
-| `lastHealthCheck` | RETIRED - `healthCheck` no longer fires. <!-- stale-ok: healthCheck --> Read-only, kept only for back-compat round-trip of stored Projects; no writer sets it any more. |
+| `lastUpgrade` | Upgrade cron cycle |
+
+!!! warning "Three status timestamps documented here were removed from the CRD, not deprecated"
+    `lastMRScan`, `lastCDScan` and `lastHealthCheck` are **not in `ProjectStatus`** and are not in the rendered CRD. They were previously described here as read-only and "kept for back-compat round-trip of stored Projects", which was never true: an absent field is not round-tripped, it is pruned on write. A stored `Project` that still carries one loses it on the next apply, silently. <!-- stale-ok: healthCheck -->
+
+    The mechanisms are gone with the fields. There is no independent deploy-supervision backstop cron - every stage's stall detection is the fixed per-stage clock on the [Task stage machine](task-stages.md) - `healthCheck` no longer fires, <!-- stale-ok: healthCheck --> and `mrScan`, the only writer of the MR-scan mark, was deleted in the 2026-07-13 redesign.
 
 ### TokenBudgetStatus
 
@@ -498,7 +514,6 @@ spec:
     maxTurnsPerPod: 40
     maxTurnsPerTask: 300
     maxReviewRounds: 3
-    maxHumanReviewRounds: 5
     maxPodRecreations: 3
     modelByKind:
       documentation: claude-sonnet-5
@@ -577,11 +592,8 @@ spec:
       statusField: Status
 
     cron:
-      mrScan:
-        # (9)!
-        schedule: "*/15 * * * *"
-        maxPerRepo: 1
       issueScan:
+        # (9)!
         schedule: "0 * * * *"
         maxPerRepo: 1
       brainstorm:
@@ -609,10 +621,10 @@ spec:
 6. `capacity` overrides the `maxConcurrentAgents` default for queue admission. `alertCapacity` reserves dedicated slots so incident tasks are never starved by a backlog of normal-priority work.
 7. `botLogin` must match the SCM account whose token is in `scmSecretRef`. Mismatches cause the operator to misidentify its own comments as human input.
 8. `maintainerLogins` + `reporterLogins` form the security perimeter. `maintainerLogins` is not optional hardening here - it is **required** for anything to ever be approved: empty means no login can ever be cited as a maintainer approval, so no issue advances out of `refined`.
-9. MR scan every 15 minutes, issue scan hourly, brainstorm weekly on Monday morning, documentation nightly.
+9. Issue scan hourly, brainstorm weekly on Monday morning, documentation nightly. There is no `mrScan` cron to set; scheduled PR re-review is part of the sweep.
 10. `agentPodTTLSeconds` bounds one pod's life, not the Task. `maxNewTasksPerSweep` and `maxOpenTasks` are separate Task-minting budgets from the pod-concurrency budget (`maxConcurrentAgents`) above. `maxBundleBytes` is the hard byte cap on every rendered context bundle.
-11. `maxTurnsPerPod`, `maxTurnsPerTask`, `maxReviewRounds`, and `maxPodRecreations` are **deprecated with zero effect** - kept only because helmfile still sets them. `maxHumanReviewRounds` is the one survivor of the old budget group and still bounds review re-entry on human PR comments. `modelByKind`/`effortByKind` tier specific **agent** kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a released tag to avoid `main` drift; it is hand-bumped in every project including `tatara`/`infrastructure` - no pipeline rewrites it - and `tatara-helmfile`'s `check_agent_pins()` guard fails CI if it (or the wrapper image tag) is ever left unpinned.
+11. `maxTurnsPerPod`, `maxTurnsPerTask`, `maxReviewRounds`, and `maxPodRecreations` are **deprecated with zero effect** - kept only because helmfile still sets them. Nothing survives that group as a live field: the review-re-entry bound is the `MaxHumanReviewRounds` **constant** (see the warning under [AgentSpec](#agentspec)), not something to write here. `modelByKind`/`effortByKind` tier specific **agent** kinds down (here `documentation`/`refine` drop to Sonnet at lower effort) while the project-wide `model`/`effort` fallback stays high-end for everything else. `skillsRef` pins the agent-skills clone to a released tag to avoid `main` drift; it is hand-bumped in every project including `tatara`/`infrastructure` - no pipeline rewrites it - and `tatara-helmfile`'s `check_agent_pins()` guard fails CI if it (or the wrapper image tag) is ever left unpinned.
 12. `tokenBudget` is off unless this block is present with `enabled: true`. `customWindow` mode meters absolute tokens against `tokenLimit` inside the cron-anchored `resetSchedule`/`windowDuration` window; `claudeSubscription` mode gates on wrapper-reported Claude usage percentages instead (see [TokenBudgetSpec](#tokenbudgetspec)).
-13. `staleProposalDays: 14` opts in the brainstorm staleness reaper: bot proposals with no human engagement for 14+ days are auto-closed, keeping the `targetOpenProposals` backlog from clogging with dead proposals. Omit or set `<=0` to keep the reaper off.
+13. `staleProposalDays: 14` is accepted by the CRD but read by nothing today - no reaper auto-closes stale proposals. See the warning under [`scm.cron.brainstorm`](#scmcronbrainstorm). `minSessionIntervalMinutes` is the knob that does bite on this cycle.
 14. `documentation.enabled` + `documentation.repo` is the real on-switch and docs-target repo for the nightly documentation agent; `scm.cron.documentation.schedule` (above) is a separate, also-required gate - the cron `CronActivity` has no `enabled` field of its own.
 15. `mcpServers` bring-your-own-MCPs into this project's agent pods, on top of the platform-owned servers. The operator only checks shape (`name` pattern, `type` enum); the wrapper does the actual merge and drops any entry that collides with a reserved platform name.

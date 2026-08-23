@@ -111,7 +111,7 @@ Two further caps bound the mint side, independent of the concurrency gate:
 
 ## Stall detection and the residency cap
 
-Token-metered spend gates (`maxTaskTokens`, the `tokenBudget` admission mode) are gone. <!-- stale-ok: maxTaskTokens --> A second generation of backstops - turn- and pod-recreation-count budgets on `Project.spec.agent` (`maxTurnsPerTask`, `maxReviewRounds`, `maxPodRecreations`) - is also gone as of [tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582) (O3): a turn, review-round, or respawn count measures how much an agent has *done*, not whether it is *stuck*, and each of those ceilings had killed healthy long-running work. `maxTurnsPerPod` and `maxHumanReviewRounds` are the two survivors - see [`AgentSpec`](../reference/project.md#agentspec) - and `maxHumanReviewRounds` is the only one still enforced.
+Token-metered spend gates (`maxTaskTokens`, the `tokenBudget` admission mode) are gone. <!-- stale-ok: maxTaskTokens --> A second generation of backstops - turn- and pod-recreation-count budgets on `Project.spec.agent` (`maxTurnsPerTask`, `maxReviewRounds`, `maxPodRecreations`) - is also gone as of [tatara-operator#582](https://github.com/szymonrychu/tatara-operator/pull/582) (O3): a turn, review-round, or respawn count measures how much an agent has *done*, not whether it is *stuck*, and each of those ceilings had killed healthy long-running work. `maxTurnsPerPod` survives as a field with zero effect - see [`AgentSpec`](../reference/project.md#agentspec). The human-review round bound is still enforced, but it is the `MaxHumanReviewRounds` **constant** and never was a field: writing `agent.maxHumanReviewRounds` into a `Project` is pruned silently by the apiserver.
 
 What replaced them is two-part:
 

@@ -90,24 +90,19 @@ reconcile tick still compete for one shared cap - see the levers table above.
 
 ---
 
-## Enable or disable the brainstorm staleness reaper
+## The brainstorm staleness reaper is not wired up
 
-`scm.cron.brainstorm.staleProposalDays` is an opt-in sentinel, not a normal
-default: `<= 0` (including unset) keeps the reaper off. A positive value
-auto-closes bot-authored proposals with no human engagement (no human
-comment, no live work) after that many days, freeing backlog space under
-`targetOpenProposals`.
+`scm.cron.brainstorm.staleProposalDays` is a real CRD field, so setting it
+applies cleanly and `helmfile diff` shows it going in - but **no code reads it.**
+There is no reaper: bot-authored proposals with no human engagement are not
+auto-closed at any age, whatever this is set to. `grep -rn StaleProposal` over
+`tatara-operator/internal/` finds no consumer, and the operator's `MEMORY.md`
+records the field as documented-but-deliberately-not-built.
 
-```yaml
-scm:
-  cron:
-    brainstorm:
-      enabled: true
-      targetOpenProposals: 3
-      staleProposalDays: 14   # 0 or omit to disable the reaper
-```
-
-All three live projects run `staleProposalDays: 14` (project-mtg went live 2026-07-24).
+All three live projects run `staleProposalDays: 14` (project-mtg went live
+2026-07-24). Read that as a statement of intent, not as an active 14-day window.
+Draining a clogged backlog is a manual close today, or a lower
+`targetOpenProposals` so less is refilled into it.
 
 ---
 
@@ -125,13 +120,19 @@ scm:
       enabled: true
       targetOpenProposals: 3
       historyWindow: 20
-      maxConsecutiveSkips: 3
+      minSessionIntervalMinutes: 12
 ```
 
-There is deliberately **no cooldown or hourly rate limit** between refills: the
-maintainer wants the backlog topped up the instant they act. If sessions start
-burning tokens without producing, `maxConsecutiveSkips` is the brake - and
-`operator_brainstorm_breaker_trip_total` is the metric that says so.
+If sessions start burning tokens without producing, `minSessionIntervalMinutes`
+is the brake. It floors the wall-clock gap between two brainstorm sessions
+whichever path dispatched the prior one, and it is a **rate limit, not a circuit
+breaker**: it delays a refill, never suppresses one, and it never inspects how
+the prior session ended. Positive is an explicit floor, `0` (unset) is the
+12-minute default, negative is the explicit opt-out. A deliberate stop is a
+separate thing the agent asks for by name (`action: exhausted`).
+
+!!! danger "The brainstorm circuit breaker is retired; do not reach for it"
+    The old brainstorm circuit breaker is gone. <!-- stale-ok: maxConsecutiveSkips, operator_brainstorm_breaker_trip_total --> It is not a `Project` field, so writing it applies clean and is **pruned silently**, and `operator_brainstorm_breaker_trip_total` is emitted by nothing - the metric a reader was previously sent to watch here does not exist in any repo. It counted an agent correctly reporting "nothing worth proposing" toward a brake, so a healthy project switched its own fast path off and only a cron tick could switch it back on. See `internal/controller/proposalcount.go`.
 
 ---
 
@@ -269,7 +270,6 @@ bounds a runaway `implement` Task now is the [24h residency cap](../reference/ta
 | `agent.maxTurnsPerPod` | `40` | **Deprecated, zero effect.** Kept only because helmfile still sets it |
 | `agent.maxTurnsPerTask` | `300` | **Deprecated, zero effect.** See the [residency cap](../reference/task-stages.md#residency-the-dead-man-switch) for what replaced it |
 | `agent.maxReviewRounds` | `3` | **Deprecated, zero effect.** The `awaiting-review <-> under-implementation` cycle is no longer capped by a round count |
-| `agent.maxHumanReviewRounds` | `5` | Un-parks of a `review`-kind Task back to `awaiting-review` on a human comment. At the cap it stays parked. This is what stops a chatty PR thread spawning one review pod per comment. Still active - not retired with the three above |
 | `agent.maxPodRecreations` | `3` | **Deprecated, zero effect.** A pod that never becomes Ready within `podReadyTimeout` (5m of `podStartedAt`) still respawns, but no longer terminates the Task - repeated respawns are now an alert (`operator_pod_recreations_total`, see [Runbooks](runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)) bounded only by the 24h residency cap |
 | `agent.turnTimeoutSeconds` | `1800` | **Meaning changed.** No longer kills the turn - after this many seconds of inactivity the operator probes the agent instead (`POST /v1/probe`), waits `stallProbeGraceSeconds` for a reply, retries up to `stallProbeMaxAttempts` times, then interrupts and runs the stop-and-handoff sequence. See [Stall probe unanswered](runbooks.md#tatara-runbook-operator-agent-stall-probe-unanswered) |
 | `agent.stallProbeGraceSeconds` | `300` (min `60`) | How long the operator waits for a stall probe to be answered before counting it unanswered |
@@ -279,6 +279,15 @@ bounds a runaway `implement` Task now is the [24h residency cap](../reference/ta
 one sweep pass's minting - both are different levers from
 `maxConcurrentAgents`, which is a pod-**concurrency** budget. Raising one does
 not raise the others.
+
+!!! warning "The human-review round cap is not on this list because it is not a field"
+    A `review`-kind Task un-parks from `awaiting-human` on each human comment and
+    stops doing so after **5** laps, which is what keeps a chatty PR thread from
+    spawning one review pod per comment. That 5 is the `MaxHumanReviewRounds`
+    constant in `tatara-operator/api/v1alpha1/constants.go`, not
+    `agent.maxHumanReviewRounds`. Writing the latter into a `Project` is pruned
+    silently by the apiserver and changes nothing - see
+    [AgentSpec](../reference/project.md#agentspec).
 
 **`agentPodTTLSeconds` bounds a pod, not a Task.** On expiry the operator
 stops admitting new turns, waits for the in-flight turn's callback (bounded by

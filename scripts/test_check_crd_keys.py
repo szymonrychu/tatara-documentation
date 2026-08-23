@@ -16,6 +16,7 @@ import tempfile
 import unittest
 
 import check_crd_keys as g
+import check_crd_keys_currency as c
 
 
 class ExtractYAMLKeys(unittest.TestCase):
@@ -213,6 +214,31 @@ class Check(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("docs/a.md:2", problems[0])
         self.assertIn("inventedKey", problems[0])
+
+
+class Currency(unittest.TestCase):
+    """The comparator the scheduled bump job's verdict rests on."""
+
+    def test_identical_key_sets_are_current(self):
+        snap = {"crdProperties": ["a"], "crdEnums": [], "chartValues": ["b"]}
+        self.assertEqual(c.compare(snap, dict(snap)), [])
+
+    def test_provenance_alone_is_not_drift(self):
+        # Every merge in any of the four repos moves provenance.commit. If that
+        # counted, the job would force-push a no-op onto an open PR every night.
+        old = {"crdProperties": ["a"], "provenance": {"sources": [{"commit": "aaa"}]}}
+        new = {"crdProperties": ["a"], "provenance": {"sources": [{"commit": "bbb"}]}}
+        self.assertEqual(c.compare(old, new), [])
+
+    def test_an_added_key_drifts_and_is_named(self):
+        drift = c.compare({"crdProperties": ["a"]}, {"crdProperties": ["a", "zNew"]})
+        self.assertIn("crdProperties: +1 -0", drift)
+        self.assertIn("  + zNew", drift)
+
+    def test_a_removed_key_drifts_and_is_named(self):
+        drift = c.compare({"chartValues": ["a", "gone"]}, {"chartValues": ["a"]})
+        self.assertIn("chartValues: +0 -1", drift)
+        self.assertIn("  - gone", drift)
 
 
 if __name__ == "__main__":

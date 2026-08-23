@@ -230,9 +230,9 @@ tool calls against the real schema; see
 
 ## MCP tool surface
 
-**20 tools total**, from five constructors: `CodeTools()` (4), `MemoryTools()`
+**21 tools total**, from five constructors: `CodeTools()` (4), `MemoryTools()`
 (5), `PlatformTools()` (7, including `report_internal_issue`), `SCMTools()`
-(3), `OutcomeTool(profile)` (1, the shaped `submit_outcome`). The prior
+(4), `OutcomeTool(profile)` (1, the shaped `submit_outcome`). The prior
 `AllTools()`, `ChatTools()`, and `HandoffTools()` constructors are deleted -
 chat is decommissioned and `task_note` now carries the continuity job chat and
 handoff tools used to. Server registration is
@@ -252,7 +252,7 @@ the [MCP Tool Profiles reference](../reference/mcp-tools.md#the-profile-gating-t
 | Group | Tools |
 |---|---|
 | Always-on (every profile, including the fail-closed empty one) | `task_get`, `task_context`, `task_note`, `project_get`, `repo_list`, `report_internal_issue` |
-| SCM (`SCMTools()`, 3) | `scm_read`, `issue_write`, `mr_write` - no `merge`, no `approve`, no `request_changes`; a review is posted by the operator from `submit_outcome` |
+| SCM (`SCMTools()`, 4) | `scm_read`, `issue_write`, `mr_write`, `mr_takeover_request` (granted to `implement` and `review` only) - no `merge`, no `approve`, no `request_changes`; a review is posted by the operator from `submit_outcome` |
 | Code-graph (`CodeTools()`, 4) | `code_search`, `code_context`, `code_graph`, `code_explain` |
 | Memory (`MemoryTools()`, 5) | `memory_query`, `memory_describe`, `memory_write`, `memory_entity`, `memory_edges` |
 | Platform (`PlatformTools()`, 7) | `task_get`, `task_list`, `task_context`, `task_note`, `project_get`, `repo_list`, `report_internal_issue` |

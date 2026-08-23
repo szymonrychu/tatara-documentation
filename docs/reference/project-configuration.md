@@ -177,9 +177,14 @@ changes nothing.
 | `maxReviewRounds` | `3` | Parked the Task after this many `request_changes` verdicts. | Nothing. The `reviewing`/`implementing` cycle is not capped by a round count. `status.reviewRounds` is still incremented for observability only. |
 | `maxPodRecreations` | `3` | Parked the Task after this many respawns. | An alert, not a cap: `operator_pod_recreations_total` is still counted and exported, and the residency cap is the only remaining backstop. See [Runbooks](../operations/runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop). |
 
-`maxHumanReviewRounds` (default `5`) is the one survivor of that group and is
-still live: it bounds un-parks of a `review`-kind Task back to `reviewing` on a
-human PR comment.
+Nothing in that group survives as a live field. The bound that people reach for
+here - "how many times does a human PR comment un-park a `review`-kind Task" - is
+real and is **5**, but it is the `MaxHumanReviewRounds` constant in
+`tatara-operator/api/v1alpha1/constants.go`, not `agent.maxHumanReviewRounds`.
+Writing that key into a `Project` is pruned silently by the apiserver and changes
+nothing. The [residency cap](task-stages.md#the-deadline-invariant) is a constant
+for the same stated reason: a bound that structural-schema pruning can drop is no
+bound at all.
 
 ```yaml
 spec:
@@ -408,7 +413,7 @@ activity. Five activities exist under `spec.scm.cron`.
     | `targetOpenProposals` | `*int` | `3` | The backlog **target**: how many proposals the operator keeps open and awaiting a maintainer decision across all repositories in the project. The controller refills toward it and never closes a proposal to reconcile downward. An explicit `0` disables refill. |
     | `maxOpenProposals` | `int` | `5` | **Deprecated.** The pre-target ceiling, retained as an alias honoured as the target only while `targetOpenProposals` is unset. Set `targetOpenProposals` instead. |
     | `historyWindow` | `*int` | `20` | How many recent proposals are rendered into the session's turn-0 prompt as the `<proposal_history>` block, with their outcome and maintainer comments. An explicit `0` omits the block. |
-    | `staleProposalDays` | `int` | reaper on, default window | Auto-closes bot-authored proposals with no human engagement for at least this many days, clearing dead proposals out of the backlog. A positive value sets an explicit window; the unset value of `0` enables the reaper with a generous but finite default window; a **negative** value is the explicit opt-out that disables the reaper. |
+    | `staleProposalDays` | `int` | `0` | The intended window for a staleness reaper over bot-authored proposals with no human engagement. Positive is an explicit window, `0` (unset) means the default window, negative is the explicit opt-out. **Read by nothing today** - the field is in the CRD and applies cleanly, but no reaper consumes it, so no proposal is auto-closed at any age. |
     | `minSessionIntervalMinutes` | `int` | `12` | Floors the wall-clock gap between two brainstorm sessions, whichever path dispatched the prior one. A rate limit, not a circuit breaker: it delays a refill, never suppresses one. Same sentinel semantics as `staleProposalDays` - positive is explicit, `0` is the default floor, negative disables it. |
     | `maxPerCycle` | `int` | `1` | **Deprecated and ignored.** The controller hard-caps brainstorm at one Task per project per cycle. |
     | `sources` | `[]string` | - | Knowledge sources the agent may consult. Enum per item: `docs`, `memory`, `internet`. An empty list uses only repository contents. |
@@ -610,8 +615,7 @@ spec:
     effort: xhigh               # (10)!
     turnTimeoutSeconds: 1800    # (11)!
     stallProbeGraceSeconds: 300
-    stallProbeMaxAttempts: 2
-    maxHumanReviewRounds: 5     # (12)!
+    stallProbeMaxAttempts: 2    # (12)!
 
   memory:
     pgInstances: 3              # (13)!
@@ -703,11 +707,11 @@ spec:
     long with no agent output the operator probes the agent, and only an
     unanswered probe sequence interrupts the session. A turn actively writing
     files or running tests is never probed.
-12. The one surviving budget counter of the old group. It bounds how many times a
-    human PR comment un-parks a `review`-kind Task back to `reviewing`.
-    `maxTurnsPerPod`, `maxTurnsPerTask`, `maxReviewRounds`, and
-    `maxPodRecreations` are deprecated with zero effect and are omitted here on
-    purpose.
+12. Unanswered probes before the operator interrupts the session and runs the
+    stop-and-handoff sequence. `maxTurnsPerPod`, `maxTurnsPerTask`,
+    `maxReviewRounds` and `maxPodRecreations` are deprecated with zero effect and
+    are omitted here on purpose; `maxHumanReviewRounds` is omitted because it is a
+    package constant and has never been a field on this spec.
 13. CNPG PostgreSQL replica count. `1` is acceptable for development; `3` gives HA
     and is the production setting.
 14. PVC storage per PostgreSQL replica (PGDATA). Scale with the number and size of

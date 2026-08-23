@@ -83,7 +83,7 @@ This is enforced in `settings.json` at the settings level (not via a prompt inst
 ## Layer 5: MCP tool surface gating per agent kind
 
 The operator sets `TATARA_TOOL_PROFILE` per agent kind. The `tatara-cli` MCP server filters the
-20-tool surface at startup, and the gating is **fail-closed** (uniformly, for both an empty and
+21-tool surface at startup, and the gating is **fail-closed** (uniformly, for both an empty and
 an unrecognized value): a profile the server does not recognise gets only the six always-on
 tools, not everything.
 
@@ -91,7 +91,7 @@ Each of the seven agent kinds gets a different grant, none of which includes a m
 `gh`/`glab`. See [MCP tools by agent kind](../../reference/mcp-tools.md#the-profile-gating-table)
 for the authoritative per-kind table - for example `incident` gets `task_list`, `scm_read`,
 `code_search`, `code_context`, `code_graph`, `code_explain`, `memory_query`, `memory_describe`,
-`memory_write`, `memory_entity`, `memory_edges` (no Grafana tool exists anywhere in the 20-tool
+`memory_write`, `memory_entity`, `memory_edges` (no Grafana tool exists anywhere in the 21-tool
 surface).
 
 A successful injection into a `review` agent gains no ability to push commits - the tool is simply

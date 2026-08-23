@@ -1,6 +1,6 @@
 ---
 title: MCP Tools by Agent Kind
-description: The 20-tool, per-profile-gated MCP surface every agent pod calls.
+description: The 21-tool, per-profile-gated MCP surface every agent pod calls.
 ---
 
 # MCP tools by agent kind

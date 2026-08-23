@@ -19,9 +19,16 @@ run = "mkdocs build --strict"
 [tasks.lint]
 run = [
   "./scripts/check-stale-terms.sh",
+  "python3 scripts/check_crd_keys.py",
   "python3 scripts/check_runbook_anchors.py",
   "vale docs/",
 ]
+
+# Regenerate scripts/crd-keys.json from sibling checkouts. Not part of `lint`:
+# the merge gate reads the COMMITTED snapshot and must stay offline. Currency is
+# owned by .github/workflows/crd-keys-currency.yml.
+[tasks.gen-crd-keys]
+run = "python3 scripts/gen_crd_keys.py ../tatara-operator ../tatara-memory ../tatara-memory-repo-ingester ../tatara-claude-code-wrapper"
 
 [tasks.vale]
 run = "vale docs/"
