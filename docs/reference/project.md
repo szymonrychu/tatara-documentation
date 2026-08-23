@@ -309,7 +309,7 @@ Binds the project to an SCM provider and configures the full set of operational 
 Merging itself has no policy field to set: it is always an operator action, triggered only by an accepted `submit_outcome(verdict=approve)` from a review pod, and no tatara-opened PR ever carries an auto-merge setting. <!-- stale-ok: auto-merge --> See [Merge and deploy](../workflows/merge-and-deploy.md#the-merge-sequence) for the full sequence.
 
 !!! tip "Enable `labeledOrMentioned` to stop repeat re-reviews"
-    Both live projects (`tatara`, `infrastructure`) set `prReactionScope: labeledOrMentioned` explicitly. Leaving it empty means every `mrScan` cycle re-reviews every open PR/MR regardless of prior review state.
+    Both live projects (`tatara`, `infrastructure`) set `prReactionScope: labeledOrMentioned` explicitly. Leaving it empty means every sweep pass re-reviews every open PR/MR regardless of prior review state.
 
 #### Operational tuning
 
@@ -357,7 +357,7 @@ Opt-in self-driven issue-proposal cycle. Disabled unless `enabled: true`.
 | `maxOpenProposals` | `int` | `5` | **Deprecated.** The pre-target ceiling, retained as an alias: honoured as the target only when `targetOpenProposals` is unset, so an unmigrated `Project` keeps working. Set `targetOpenProposals` instead. |
 | `historyWindow` | `int` | `20` | How many recent brainstorm proposals are rendered into the session's turn-0 prompt as the `<proposal_history>` block, with their outcome and maintainer comments. `0` omits the block. |
 | `minSessionIntervalMinutes` | `int` | `12` | Floors the wall-clock gap between two brainstorm sessions, whichever path dispatched the prior one. A **rate limit, not a breaker**: it delays a refill, it never suppresses one, and it never inspects how the prior session ended. A positive value is an explicit floor; `0` (unset) is the `12`-minute default; a **negative** value is the explicit opt-out. |
-| `staleProposalDays` | `int` | `0` | Intended window for a staleness reaper over bot-authored proposals with no human engagement. A positive value is an explicit window, `0` (unset) means the default window, and a **negative** value is the explicit opt-out. See the warning below before setting it. |
+| `staleProposalDays` | `int` | `0` | **Declared but unconsumed.** Its godoc describes a staleness reaper over bot-authored proposals with no human engagement, with positive as an explicit window in days, `0` (unset) as a default window, and negative as the opt-out. None of that is realized - see the warning below. |
 | `sources` | `[]string` | - | Knowledge sources the brainstorm agent may consult. Allowed values: `docs`, `memory`, `internet`. An empty list uses only repository contents. |
 
 !!! danger "The brainstorm circuit breaker no longer exists"

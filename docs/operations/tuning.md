@@ -60,21 +60,26 @@ you need the normal-pool and alert-pool (incident) concurrency to diverge from
 
 ## Disable a specific flow
 
-Every cron-driven activity (`mrScan`, `issueScan`) is off when its `schedule`
-is empty. `brainstorm` and `documentation` additionally require
-`enabled: true` - clearing `enabled` (or leaving it unset) disables them
-regardless of `schedule`.
+A cron-driven activity is off when its `schedule` is empty. `brainstorm` and
+`documentation` additionally require `enabled: true` - clearing `enabled` (or
+leaving it unset) disables them regardless of `schedule`.
 
 | To disable | Set |
 |---|---|
-| MR/PR review scan | `scm.cron.mrScan.schedule: ""` |
 | Issue scan | `scm.cron.issueScan.schedule: ""` |
 | Brainstorm (self-driven proposals) | `scm.cron.brainstorm.enabled: false` |
 | Documentation (periodic docs upkeep) | `scm.cron.documentation.enabled: false` |
+| Upgrade (dependency bumps) | `scm.cron.upgrade.schedule: ""` |
+
+There is no `scm.cron.mrScan` to clear: it was removed from the CRD when the
+sweep became the single issue and PR intake, and a `Project` that still carries
+the block has it **pruned silently**. Scheduled PR re-review is part of the sweep
+and is scoped by `scm.prReactionScope` - see
+[Project](../reference/project.md#scmcronissuescan).
 
 `scm.cron.refine` has no independent schedule - it fires as a mandatory
 barrier before every due scan/brainstorm cycle and cannot be disabled short of
-removing all of mrScan/issueScan/brainstorm/documentation schedules.
+removing all of issueScan/brainstorm/documentation schedules.
 
 There is no push-CD deploy-supervision backstop cron any more (`cdScan` is
 gone with the fields it swept). Documentation is now **one nightly batch Task
