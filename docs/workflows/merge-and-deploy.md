@@ -7,7 +7,7 @@ description: How tatara merges an approved change and gets it applied to the clu
 
 Merging is an **operator action**. No agent merges anything, and auto-merge is never armed on a tatara-opened PR. <!-- stale-ok: auto-merge -->
 
-There is no separate supervisor loop and no separate object tracking a release. `merging` and `deploying` are ordinary stages of the [Task stage machine](../reference/task.md), pod-less like `approved`, driven by the operator reconcile loop. The delivery path is `implementing` -> `reviewing` -> `merging` -> `deploying` -> `delivered`.
+There is no separate supervisor loop and no separate object tracking a release. `merged` and `deployed` are ordinary states of the [Task state machine](../reference/task.md), pod-less, driven by the operator reconcile loop. The delivery path is `under-implementation` -> `awaiting-review` -> `merged` -> `deployed` -> `done`.
 
 !!! danger "The forge never merges for us" <!-- stale-ok: auto-merge -->
     The operator retains a disarm call for exactly one purpose: disarming PRs opened *before* the cutover. Nothing arms it. <!-- stale-ok: auto-merge -->
@@ -15,17 +15,19 @@ There is no separate supervisor loop and no separate object tracking a release. 
 
 ## The merge sequence
 
-A Task reaches `stage=merging` on exactly one trigger: a review pod called `submit_outcome(verdict=approve)` and the operator accepted it. At acceptance the operator does three things, in order:
+A Task reaches `state=merged` on exactly one trigger: a review pod called `submit_outcome(verdict=approve)` and the operator accepted it. Reaching `merged` happens in two separate phases, not one:
 
-1. Reads the **live** head SHA of every owned `MergeRequest` (`GetPRHead`). It never trusts the mirror's `status.headSHA` - the mirror is up to one sweep stale.
-2. Posts the SCM review itself, under the bot identity, from the accepted verdict. **The agent posts nothing.** There is one writer per medium: the agent writes conversation, the operator writes reviews, merges, labels and status.
-3. Stamps `MergeRequest.status.reviewedSHA` with that live head.
+**Phase 1 - the `/outcome` handler, pure etcd, no forge write.** On acceptance the handler reads the **live** head SHA of every owned `MergeRequest` (`GetPRHead`) - it never trusts the mirror's `status.headSHA`, which is up to one sweep stale - stamps `MergeRequest.status.reviewedSHA` with that live head, and persists the intent to review as `MergeRequest.status.pendingReview`. It makes **no state transition** and posts nothing to the forge.
+
+**Phase 2 - the MergeRequest reconciler drains the pending review (`DrainPendingReview`).** This is where the forge post actually happens: the operator posts the SCM review itself, under the bot identity, from the accepted verdict, then clears `pendingReview`. **The agent posts nothing.** There is one writer per medium: the agent writes conversation, the operator writes reviews, merges, labels and status.
+
+The Task advances to `merged` only once **every** owned `MergeRequest` has `pendingReview == nil` - a `stage.LegalFor` guard enforces it, so a pod spawned before the review has actually landed on the forge can never render a bundle with the findings missing from it.
 
 The review the operator posts is **always** a `COMMENT` event. GitHub 422s the PR author on both `APPROVE` and `REQUEST_CHANGES` on a self-authored PR, and only `COMMENT` is permitted, so the verdict lives in the review body (`## Review: approved` / `## Review: changes requested`) and, authoritatively, in the accepted `submit_outcome`.
 
 One consequence is worth stating plainly: **the forge carries no machine-readable trace of the review verdict.** The audit trail of record is the operator's structured log and `MergeRequest.status`, not a forge review-decision field. It is also why a branch-protection rule requiring an approving review can never be armed on a tatara-opened PR: the platform can never post one on its own PR, and a rule that required it would deadlock every merge.
 
-Then, at `stage=merging`, the operator walks `Task.spec.mergeOrder` sequentially, resuming from `Task.status.mergeCursor`:
+Then, at `state=merged`, the operator walks `Task.spec.mergeOrder` sequentially, resuming from `Task.status.mergeCursor`:
 
 ```
 for i := status.mergeCursor; i < len(spec.mergeOrder); i++ {
@@ -37,7 +39,7 @@ for i := status.mergeCursor; i < len(spec.mergeOrder); i++ {
     liveHead := SCM.GetPRHead(repo, mr.number)      // LIVE. Never the mirror.
     if liveHead != mr.status.reviewedSHA {
         mr.status.status = "new"; mr.status.reviewedSHA = ""
-        stage = reviewing                            // the head moved: re-review
+        state = awaiting-review                       // the head moved: re-review
         return
     }
     if CI at liveHead != green || !mergeable { requeue; return }
@@ -45,15 +47,15 @@ for i := status.mergeCursor; i < len(spec.mergeOrder); i++ {
     sha, err := SCM.Merge(repo, mr.number, method, liveHead)   // expected-head SHA
     if err is 409 "head sha changed" {
         mr.status.status = "new"; mr.status.reviewedSHA = ""
-        stage = reviewing; return                    // TOCTOU closed
+        state = awaiting-review; return               // TOCTOU closed
     }
     wait for the release job at sha to go green
     status.mergeCursor = i+1
 }
-stage = deploying
+state = deployed
 ```
 
-`SCMWriter.Merge` takes the expected head SHA, and the forge 409s on a mismatch. **A head that moves between the review and the merge can never be merged.** The Task goes back to `reviewing` instead, and that re-review is bounded: the head-move edge increments `status.headMoveReentries` and fails the Task at `failed(head-moving)` after three laps. It is the only bounded cycle in the platform that spawns a pod on every lap, which is exactly why it is capped - a branch whose head keeps moving (a human pushing to it, a flapping CI autocommit) burns a review pod each time round.
+`SCMWriter.Merge` takes the expected head SHA, and the forge 409s on a mismatch. **A head that moves between the review and the merge can never be merged.** The Task goes back to `awaiting-review` instead, and that re-review is bounded: the head-move edge increments `status.headMoveReentries` and parks the Task at `parked(head-moving)` after three laps. It is the only bounded cycle in the platform that spawns a pod on every lap, which is exactly why it is capped - a branch whose head keeps moving (a human pushing to it, a flapping CI autocommit) burns a review pod each time round.
 
 `mergeCursor` is persisted, so a restarted operator resumes mid-order and never re-merges a repo. A repo already `merged` is skipped and the cursor advances past it.
 
@@ -68,17 +70,19 @@ sequenceDiagram
 
     Rev->>Op: submit_outcome(verdict=approve)
     Op->>SCM: GetPRHead (live)
+    Op->>Op: phase 1 - stamp reviewedSHA, persist pendingReview (etcd only)
+    Op->>Op: phase 2 - MergeRequest reconciler drains pendingReview
     Op->>SCM: PostReview (COMMENT, from the accepted verdict)
-    Op->>Op: stamp MergeRequest.status.reviewedSHA, stage = merging
+    Op->>Op: clear pendingReview; once every owned MR clears, state = merged
     loop each repo in Task.spec.mergeOrder, from status.mergeCursor
         Op->>SCM: Merge(sha = reviewedSHA)
         SCM->>CI: release job cuts vX.Y.Z from the declared level
         CI->>HF: bot PR bumps the pin
         HF->>Cluster: helmfile apply
     end
-    Op->>Op: stage = deploying
+    Op->>Op: state = deployed
     Op->>SCM: close every owned Issue, citing the release
-    Op->>Op: stage = delivered
+    Op->>Op: state = done
 ```
 
 ## Merge order
@@ -88,7 +92,7 @@ sequenceDiagram
 - `400 mergeOrder required for a multi-repo change` when it is absent
 - `400 mergeOrder does not cover repo <X>` when it omits one
 
-For the single-repo case the operator fills it in itself, at `/outcome`, with the one repo that has an owned open MR. That is not an ordering choice - with one element there is no ordering to get wrong. Reaching `merging` with an empty `mergeOrder` is a bug and is treated as one: `failed(merge-order-missing)`.
+For the single-repo case the operator fills it in itself, at `/outcome`, with the one repo that has an owned open MR. That is not an ordering choice - with one element there is no ordering to get wrong. Reaching `merged` with an empty `mergeOrder` is a bug and is treated as one: `parked(merge-order-missing)`.
 
 **There is no lexical default, ever.** Lexical order over this platform's own repos is `agent-skills < cli < claude-code-wrapper < operator`, which merges the cli *before* the operator, and the operator's REST decoder calls `DisallowUnknownFields()` on every endpoint. That exact ordering is the fleet outage this field exists to prevent.
 
@@ -117,26 +121,26 @@ This is the largest new surface in the redesign, and it lands on the forge that 
 
 ## Deploying and delivery
 
-`stage=deploying` is pod-less. When every owned `MergeRequest` has `state == merged` and `deployedAt != nil`, the **operator** closes every owned Issue that is still open, with a citing comment (`Delivered in <repo>!<number> (<version>). Closed by tatara.`), sets `Issue.status.state = closed` and `Issue.status.status = done`, and only then stamps `Task.status.deliveredAt` and moves to `delivered`.
+`state=deployed` is pod-less. When every owned `MergeRequest` has `state == merged` and `deployedAt != nil`, the **operator** closes every owned Issue that is still open, with a citing comment (`Delivered in <repo>!<number> (<version>). Closed by tatara.`), sets `Issue.status.state = closed` and `Issue.status.status = done`, and only then stamps `Task.status.deliveredAt` and moves to `done`.
 
-Delivery is a postcondition the operator **writes**, not a precondition it waits on. `issue_write(close)` is not reachable from `merging` or `deploying`: no agent runs there.
+Delivery is a postcondition the operator **writes**, not a precondition it waits on. `issue_write(close)` is not reachable from `merged` or `deployed`: no agent runs there.
 
 ## Budgets and the bounded cycles
 
-Both stages are pod-less, so each runs one clock, measured from `status.stageEnteredAt` against its own budget:
+Both states are pod-less, so each runs one clock, measured from `status.stateEnteredAt` against its own budget:
 
-| stage | budget | on elapse |
+| state | budget | on elapse |
 |---|---|---|
-| `merging` | 4h | `parked(merge-timeout)` |
-| `deploying` | 2h | `parked(deploy-timeout)` |
+| `merged` | 4h | `parked(merge-timeout)` |
+| `deployed` | 2h | `parked(deploy-timeout)` |
 
-Both parks are recoverable, and every re-entry is counted, so neither stage can spin forever on a wedged release:
+Both parks are recoverable, and every re-entry is counted, so neither state can spin forever on a wedged release:
 
 | cycle | counter | cap | on exhaustion |
 |---|---|---|---|
-| `merging` / `parked(merge-timeout)` | `mergeReentries` | 3 | `failed(merge-blocked)` |
-| `deploying` / `parked(deploy-timeout)` | `deployReentries` | 3 | `failed(deploy-blocked)` |
-| `merging` / `reviewing` (the head moved) | `headMoveReentries` | 3 | `failed(head-moving)` |
+| `merged` / `parked(merge-timeout)` | `mergeReentries` | 3 | `parked(merge-blocked)` |
+| `deployed` / `parked(deploy-timeout)` | `deployReentries` | 3 | `parked(deploy-blocked)` |
+| `merged` / `awaiting-review` (the head moved) | `headMoveReentries` | 3 | `parked(head-moving)` |
 
 ## The merge gate is operator logic
 

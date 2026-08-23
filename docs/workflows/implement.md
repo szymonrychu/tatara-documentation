@@ -187,6 +187,15 @@ effort tier, anywhere in this dispatch.
  "merge_order":["tatara-operator","tatara-cli"]}
 ```
 
+Since [tatara-operator#623](https://github.com/szymonrychu/tatara-operator/pull/623), `title` and
+`body` are not just an internal record: on success the operator edits every owned merge request
+that is not externally-owned (`MergeRequest.status.ownership != "external"`) to match, clamped to
+the forge's title length limit. Before #623 they went nowhere - a reviewer asking for a corrected
+MR title had no way to get one, because `mr_write` exposes `open`/`comment`/`reply` only, and
+`submit_outcome`'s own `title`/`body` silently stopped at an internal Task note. The edit is
+best-effort and runs after the stage transition has already committed: a forge failure here does
+not fail the submit.
+
 `change_significance` is **required** on `submitted` and is **implement-owned**: a reviewer may
 only raise it, never lower it - see [semver push-CD](merge-and-deploy.md#semver-push-cd).
 `merge_order` is **required** whenever the Task's MRs span more than one repo, and there is **no
@@ -209,8 +218,12 @@ separate pod, on a separate turn, and no MCP tool exposes a merge action to any 
 ```
 
 `decline_reason` is required and non-empty. This parks the Task at
-`parked(implement-declined)` - a terminal park with no re-entry; it ages out at `ParkRetention`
-and is reaped.
+`parked(implement-declined)`, which normally ages out at `ParkRetention` and is reaped. The one
+exception: if the decline was forced by the platform rather than the change - `submit_outcome`
+refused with a live `409 ci-red` and the Task's own tatara-owned merge request has since gone
+green at that exact head SHA - a separate driver re-arms the Task back into
+`under-implementation` (at most 3 times, never for `kind=takeover`). See
+[Task State Machine](../reference/task-stages.md#the-park-flag).
 
 ## The `maxTurnsPerPod` exemption
 

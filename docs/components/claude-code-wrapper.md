@@ -23,7 +23,16 @@ This gives agent sessions the full Claude Code harness: skills, slash commands, 
    - `~/.claude/settings.json` (Stop hook path, `bypassPermissions`, MCP auto-enable, denied interactive pickers)
    - `~/.claude.json` (seeds onboarding flags so no interactive dialogs appear)
    - `~/.claude/CLAUDE.md` and `/workspace/CLAUDE.md`
-   - Skills: baked (`/templates/skills`) + custom (`/etc/wrapper/skills`)
+   - Skills: cloned from the configured skills repo into a staging dir and
+     promoted by rename on success (`SKILLS_SRC_DIRS`), plus any custom
+     `TATARA_EXTRA_SKILL_SOURCES`. Nothing is baked into the image - the
+     20 skills once shipped in `/templates/skills` were dropped from the
+     image on 2026-06-28, and the clone is the sole source. **The boot now
+     fails** if that install produces zero skills while at least one source
+     was configured ([tatara-claude-code-wrapper#180](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/180)),
+     rather than the previous fail-open that could produce an agent pod with
+     no skills and no typed subagents. `installAgents` (the `.claude/agents`
+     palette) is unaffected and stays fail-open.
 3. **Spawn `claude`** under a PTY. Start the ring-buffer reader and process-wait goroutine.
 4. **`bootWait`**: The "Bypass Permissions mode" warning is not seedable and appears on every boot. The wrapper detects it in the ring buffer (ANSI/whitespace-stripped matching) and accepts it (Down + Enter). Then waits for output quiescence (no new PTY bytes for >1.5s, floored at ~4s) before marking the session ready.
 5. **Start HTTP servers.** `/readyz` is not served until `Start` returns.
@@ -107,6 +116,8 @@ What *does* need to survive between pods is the git state on disk, and two chang
 
 The task branch is also now pushed **mid-turn**, not only at turn end: a `BRANCH_PUSH_INTERVAL_SECONDS`-interval (default 120s) push-only safety net ([tatara-claude-code-wrapper#160](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/160)) runs alongside the metrics pusher. Push-only, deliberately - no `git add`, no `git commit` - so it can never race the agent's own git calls or publish a half-edited tree; nothing-to-push and a non-fast-forward rejection are both treated as success. This closed a real gap: a pod OOMKilled mid-turn had committed work that never reached origin, because `/workspace` is the container's writable layer and does not survive the pod. The agent's global CLAUDE.md now states plainly that the branch is pushed every couple of minutes and a commit is public the moment it is made - "commit then amend" is not a supported workflow, since force-push is on the deny list.
 
+The end-of-turn `CommitAndPushAll` no longer aborts on the first repo it fails to push ([tatara-claude-code-wrapper#169](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/169)): it attempts every repo the turn touched and reports two lists, `pushed` and `failed`, instead of stopping the loop at the first error and silently never attempting the rest. `failed` rides the turn-complete callback into `status.lastTurnFailedRepos` ([tatara-operator#606](https://github.com/szymonrychu/tatara-operator/pull/606)) alongside the existing `lastTurnPushedRepos`.
+
 ## Pod TTL: the stop sequence
 
 `AGENT_POD_TTL_SECONDS` (from `Project.spec.agentPodTTLSeconds`, default 3600) bounds one pod's life, not the Task - the Task persists across as many pods as it needs. The wrapper computes `t0 = pod start + AGENT_POD_TTL_SECONDS`; the operator (the wrapper's only client) drives the rest of the sequence around that clock:
@@ -114,7 +125,7 @@ The task branch is also now pushed **mid-turn**, not only at turn end: a `BRANCH
 1. **The wrapper stops admitting normal turns past `t0`.** Any `POST /v1/messages` with `handoff` unset or `false` after `t0` gets `410 Gone`. It still accepts exactly one turn with `handoff: true` - without that carve-out, the handoff turn in step 3 would be refused by this same rule, and `Task.status.notes` would end up empty on every TTL stop.
 2. **The operator waits for any in-flight turn's callback**, bounded by `TURN_TIMEOUT_SECONDS`. A pod is mid-turn at TTL expiry essentially always, and `POST /v1/messages` already `409`s while a turn is in flight, so the handoff turn cannot simply be submitted immediately.
 3. **The operator submits exactly one `handoff: true` turn**, asking the agent to call `task_note(kind=handoff)` with everything the next pod needs, bounded by `TURN_TIMEOUT_SECONDS`.
-4. **Hard cap at `t0 + 2*TURN_TIMEOUT_SECONDS + 60s`.** On that cap, or on any `410`/`409`/5xx from step 3, the operator writes a synthetic handoff note in-process from the last-turn continuation state on the Task (`status.lastTurnFinalText` and `status.lastTurnPushedRepos`), then stops the pod - force-deleting it only if the graceful stop fails against a pod that is still there.
+4. **Hard cap at `t0 + 2*TURN_TIMEOUT_SECONDS + 60s`.** On that cap, or on any `410`/`409`/5xx from step 3, the operator writes a synthetic handoff note in-process from the last-turn continuation state on the Task (`status.lastTurnFinalText`, `status.lastTurnPushedRepos` and `status.lastTurnFailedRepos`), then stops the pod - force-deleting it only if the graceful stop fails against a pod that is still there.
 
 `Task.status.notes` is never empty after a TTL stop: either the agent wrote a handoff note, or the operator wrote a synthetic one. When there is no last-turn continuation state to synthesize from either, the note that lands is an explicit placeholder and the stop is counted as `handoff="none"` - see the [runbook](../operations/runbooks.md#tatara-runbook-operator-agent-pod-ttl-stopped-with-no-handoff-captured).
 
@@ -132,6 +143,45 @@ Shell commands the operator delivers as `HOOK_*` env vars, executed via `sh -c` 
 | `conversationFinished` | During session teardown |
 
 Non-zero hook exit is logged and counted but never aborts the agent run.
+
+## Claude subscription usage feed
+
+Claude Code passes its configured statusline command a JSON payload on stdin
+carrying `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}` on
+every TUI redraw. A `cc-statusline` binary (`STATUSLINE_PATH`, default
+`/usr/local/bin/cc-statusline` - deliberately no chart value or CLI flag,
+mirroring `HOOK_PATH`) reads that payload and POSTs a normalized snapshot to
+the wrapper's own loopback route `POST /internal/account-usage`, then prints
+**nothing**, so the rendered TUI is unchanged. Bootstrap wires it up via a
+`statusLine` key in `settings.json`, the same pattern as the Stop hook.
+([tatara-claude-code-wrapper#183](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/183))
+
+Non-obvious decoding rules, both enforced to avoid the gate this feed serves
+silently misreading "no data" as "0% used":
+
+- `resets_at` is **unix epoch seconds**, not RFC3339 (`/api/oauth/usage`, a
+  different endpoint entirely, genuinely does return RFC3339). An RFC3339
+  string is rejected rather than coerced.
+- `rate_limits` is absent until the session's first API response, and each
+  window is individually optional. The binary posts nothing rather than a
+  zero-valued snapshot - the wrapper's `accountUsage` field on the
+  turn-complete callback is `omitempty` end to end, so "never reported" and
+  "reported 0%" stay distinguishable all the way to the gate.
+- The statusline never fires in `-p`/print mode - only the persistent
+  interactive session over a PTY renders a TUI. This wrapper is safe only
+  because it runs exactly that.
+- The endpoint is a single 500ms-timeout attempt, no retries (unlike the Stop
+  hook's 5 retries over 25s): the statusline fires on every redraw and a
+  dropped snapshot is superseded seconds later, so a retry would only add
+  latency to the wrong failure mode.
+
+The turn-complete callback carries the newest snapshot as `accountUsage`,
+`omitempty`, distinct from the retired `rateLimit` field the operator already
+ignores - so an old operator paired with a new wrapper silently drops the new
+key, and a new operator paired with an old wrapper simply never receives it.
+Either direction, the gate stays inert exactly as it did with no feed at all.
+See [Tuning](../operations/tuning.md#cap-spend) for the operator-side gate
+this feeds.
 
 ## Configuration
 
@@ -171,3 +221,7 @@ File/list config is mounted under `/etc/wrapper` (chart values: `globalClaudeMd`
 | `ccw_turn_stall_suspected_total` | counter | Inactivity-timer firings since it stopped killing turns - see [The wrapper no longer kills a turn on inactivity](#the-wrapper-no-longer-kills-a-turn-on-inactivity) |
 | `ccw_safety_push_total{result}` | counter | Periodic `BRANCH_PUSH_INTERVAL_SECONDS` push-only safety-net attempts |
 | `ccw_bootstrap_reconcile_total{result}` | counter | Resume-time base-branch reconcile outcomes: `merged`, `up_to_date`, `conflict`, `base_unresolved`, `fetch_fail` |
+| `ccw_skills_installed_total{profile}` | counter | Skills installed at boot. Renamed from `wrapper_skills_installed_total` ([#180](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/180)) - the old `wrapper_`/`agent_` prefix was outside the pod's own push allowlist, so this and the two metrics below never reached Prometheus at all under their old names |
+| `ccw_skills_clone_failures_total{source}` | counter | Skills clone failures, `source=skills_repo` or `extra` (a bad `TATARA_EXTRA_SKILL_SOURCES` entry is not a fleet-wide outage) |
+| `ccw_agents_installed_total` | counter | Agents (`.claude/agents`) installed at boot |
+| `ccw_statusline_reports_total{result}` | counter | `cc-statusline` reports received on `/internal/account-usage`, `result` in `ok`/`bad_payload`. See [Claude subscription usage feed](#claude-subscription-usage-feed) |

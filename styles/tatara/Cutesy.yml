@@ -1,0 +1,16 @@
+extends: existence
+message: "'%s' is cutesy or slangy - keep a straight face."
+link: "https://github.com/szymonrychu/tatara-agent-skills/blob/main/skills/shared/tatara-writing-voice/SKILL.md"
+level: error
+ignorecase: true
+tokens:
+  - awesome
+  - super (?:easy|simple|fast)
+  - no[- ]brainer
+  - piece of cake
+  - rocket science
+  - secret sauce
+  - happy hacking
+  - ta[- ]da
+  - yay
+  - woo+hoo

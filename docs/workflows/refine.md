@@ -49,8 +49,9 @@ All three arrays are optional and independent - a refine pass can fold, close, a
 combination, including none of the three (a pure no-op sweep).
 
 - **`folds`** adopts a member Task's Issues/MRs onto the calling Task, then **deletes** the
-  member Task. A member with a running pod, or any live post-`approved` stage, is **refused with
-  a `409`** - a fold can never yank a stage machine out from under an in-flight pod.
+  member Task. A member with a running pod, or any live state at or after `under-implementation`
+  (past the approval gate), is **refused with a `409`** - a fold can never yank a state machine
+  out from under an in-flight pod.
 - **`closes`** closes an issue with a reason. Each target is **live-revalidated against SCM
   immediately before the close** - refine may be acting on a mirror view up to an hour stale -
   and refused with a `409` if the issue's controller owner is not this Task.
@@ -58,7 +59,7 @@ combination, including none of the three (a pure no-op sweep).
 
 Refine's fold is a **controller-ownership transfer**, not a copy: see
 [Ownership](../architecture/ownership.md#the-refine-fold) for the full protocol and its
-verification step - a `refining -> failed(fold-adoption-unverified)` transition exists precisely
+verification step - a `refined` Task parks at `parked(fold-adoption-unverified)` precisely
 because that step can fail.
 
 ## Cron barrier semantics
@@ -91,11 +92,19 @@ flowchart TD
 
 ## A stalled implement is not auto-rerolled
 
-An `implementing` Task that blows its 6h stage-work budget parks at `parked(stage-deadline)` -
-not a recoverable retry loop. That park reason has **no re-entry**: it ages out at
+`under-implementation` no longer carries a fixed work budget. Like every live state, it is
+bounded by an **idle** clock (60m default, `Project.spec.scm.conversationIdleMinutes`), armed
+only while no turn is in flight: on elapse it parks at `parked(awaiting-human)`, which **is**
+recoverable - the next non-bot comment re-derives the target from the Task's current state and
+un-parks it, no zombie Task involved.
+
+What still has no re-entry is the separate, cumulative **24h residency cap**
+(`stage.ResidencyCapAll`, a hardcoded dead-man switch, not a per-project budget) that bounds a
+wedged pod or a boot-crash loop the idle clock never sees. Blowing it parks the Task at
+`parked(stage-deadline)` instead - that park reason has **no re-entry**: it ages out at
 `parkRetention` (7 days), the operator posts its bot park comment, and the reaper reaps it. The
 next sweep re-mints the still-open Issue as a fresh `parked(backlog-sweep)` Task - owning it at
-zero agent cost - and it is only promoted back to `triaging` (as a **new** Task, not the zombie of
+zero agent cost - and it is only promoted back to `new` (as a **new** Task, not the zombie of
 the old one) once a human comments again. Refine plays no special role in this path: it grooms
 the backlog `submit_outcome`-side (fold/close/link), it does not reroll stalled work.
 

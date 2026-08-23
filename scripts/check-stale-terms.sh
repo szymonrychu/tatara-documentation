@@ -49,7 +49,8 @@ TERMS='lifecycleState|cascadeStage|deployedVersion|deployArtifact|deployDeadline
 |mergeCommitSHA|mergedHeadSHA|cumulativeTokens|lifecycleIterations
 |approvedByMaintainer|autoApproved\b|mergeWaitDeadline
 |reviewResolveDeadline|issueLinks|prLinks\b
-|discoveredIssues|linksSyncedURLs|writebackSkip4xxAttempts|disarmFailures'
+|discoveredIssues|linksSyncedURLs|writebackSkip4xxAttempts|disarmFailures
+|TATARA_MCP_METRICS_ADDR|--metrics-addr'
 
 # Collapse the multi-line term list into one alternation.
 PATTERN="$(printf '%s' "$TERMS" | tr -d '\n')"

@@ -36,7 +36,7 @@ project:
 
 The admission unit is now the **pod spawn**, not the Task. At `0`, `admit()`
 short-circuits at the top and no `QueuedEvent` is ever admitted - so no pod
-spawns and no Task is created. **Every** pod-spawning stage goes through the
+spawns and no Task is created. **Every** pod-spawning state goes through the
 same chokepoint, so a `0` freezes the whole project mid-flight, including
 Tasks that are already running.
 
@@ -46,10 +46,10 @@ when the field is unset, so the pause is a **direct
 not routed through `QueueCapacity()` - which would silently un-pause you.
 
 !!! warning "A paused project does not shred its backlog"
-    The `approved` stage has a 24h `admission-starved` deadline. That check
-    **skips Tasks whose project is paused** - it is the only stage-deadline
-    exception in the platform, and it exists so that the kill switch is a
-    pause and not a backlog shredder.
+    Every live state not yet admitted (no pod started) carries a 24h
+    `admission-starved` deadline. That check **skips Tasks whose project is
+    paused** - it is the only deadline exception in the platform, and it
+    exists so that the kill switch is a pause and not a backlog shredder.
 
 To reduce load without a full stop, lower `maxConcurrentAgents` to a smaller
 positive number, or tune `queue.capacity` / `queue.alertCapacity` directly if
@@ -81,7 +81,12 @@ gone with the fields it swept). Documentation is now **one nightly batch Task
 per project**, covering everything delivered in the last 24h - not a
 per-delivery spawn and not a "did anything meaningful change?" judgment call.
 
-The live projects run `issueScan` every 4 hours.
+The live projects run `issueScan` every 10 minutes (`*/10 * * * *`). Each enrolled
+repo gets its own scan-offset slot spread across that window, which spreads WHEN
+each repo becomes due - but `maxNewTasksPerSweep` still binds per project per pass,
+not per repo: `SweepProject` builds one `sweepBudget` per call and shares it across
+every repo the pass finds due, so two repos whose offsets land in the same
+reconcile tick still compete for one shared cap - see the levers table above.
 
 ---
 
@@ -154,16 +159,58 @@ project:
       tokenLimit: 50000000        # customWindow only
 ```
 
-`mode: claudeSubscription` gates on the wrapper-reported Claude 5h/weekly
-usage percentages instead of an absolute token count, and needs no
-`resetSchedule`/`windowDuration`/`tokenLimit`. It exists in the current CRD
-but is **not deployed anywhere today** - neither `tatara` nor `infrastructure`
-sets a `tokenBudget` block, so the gate is fully off fleet-wide. A more
-advanced per-kind admission gate (fleet-wide Claude-usage poller plus a
-per-kind spawn-ceiling ladder, meant to supersede this per-project snapshot
-mechanism) is in development on an unmerged feature branch
-(`feat/usage-window-gating` in `tatara-operator`) - it is not yet part of the
-`main` API and not usable via `tatara-helmfile` values yet.
+`mode: claudeSubscription` gates on the Claude 5h/weekly usage windows instead
+of an absolute token count, and needs no `resetSchedule`/`windowDuration`/
+`tokenLimit`. **It is live in prod today**: the operator-wide default sets
+`tokenBudgetEnabled: true`, `tokenBudgetMode: claudeSubscription`
+(`tatara-helmfile values/tatara-operator/default.yaml`), so both `tatara` and
+`infrastructure` inherit it - no per-Project override is set. Each usage
+window can be gated against its own pair, OR'd against the mode-wide
+fallback:
+
+```yaml
+project:
+  spec:
+    tokenBudget:
+      enabled: true
+      mode: claudeSubscription
+      proactivePercent: 50            # fallback for any window left at 0
+      emergencyPercent: 80
+      fiveHourProactivePercent: 80
+      fiveHourEmergencyPercent: 92
+      weeklyProactivePercent: 75
+      weeklyEmergencyPercent: 88
+```
+
+Current prod values are exactly the block above: the 5h window is the
+tighter, faster-moving one so it gets more headroom before proactive work
+pauses; the weekly window moves slowly and exhausting it costs days, so it
+pauses earlier.
+
+**The feed:** each agent pod's silent `cc-statusline` command reports Claude
+Code's own `rate_limits` block to the wrapper on every TUI redraw
+([tatara-claude-code-wrapper#183](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/183)).
+The wrapper attaches the newest snapshot to the turn-complete callback as
+`accountUsage`, and the operator parks it on that Task's `status.accountUsage`.
+A leader-only `AccountUsageFeedReconciler` folds the newest snapshot across
+every Task into the fleet-wide in-process store the gate actually reads -
+newest-wins, not per-Project, because the subscription is one account shared
+by every Project
+([tatara-operator#633](https://github.com/szymonrychu/tatara-operator/pull/633)).
+Past `tokenBudgetMaxSnapshotAge` (90m, fleet-wide - there is deliberately no
+per-Project override, since staleness is a property of the one shared
+account) the gate **fails open** rather than blocking. Because that failure
+mode is otherwise silent (nothing increments while the gate evaluates 0%),
+`TataraAccountUsageFeedDead` alerts on `tatara_account_usage_gate_ready == 0`
+for 30m. It is defined in the operator chart's own `PrometheusRule`, not
+`tatara-observability`; no runbook entry exists for it yet.
+
+A separate, still-disabled axis gates by Task **kind** rather than by window:
+`spawnCeilingByKind` (a Task-kind -> percent map on `TokenBudgetSpec`) is in
+the CRD and wired into gate evaluation, but no `tatara-helmfile` value sets it
+today. It is fed by the older `/api/oauth/usage` poller (`usageEnabled` in the
+operator chart), which stays off fleet-wide - the shared `claude
+setup-token` lacks the `user:profile` scope that endpoint needs.
 
 ### 2. Model/effort tiering per agent kind
 
@@ -217,12 +264,12 @@ bounds a runaway `implement` Task now is the [24h residency cap](../reference/ta
 | `maxConcurrentAgents` | `3` | Concurrent agent pods. `0` is the pause |
 | `agentPodTTLSeconds` | `3600` (min `300`) | **One pod's life. The Task persists.** See the stop sequence below |
 | `maxNewTasksPerSweep` | `5` (min `1`) | Tasks one sweep pass may mint |
-| `maxOpenTasks` | `6` (min `1`) | ACTIVE Tasks (stage not in `parked` / `delivered` / `rejected` / `failed`). `parked(backlog-sweep)` Tasks do not count - they hold ownership, not work |
+| `maxOpenTasks` | `6` (min `1`) | ACTIVE Tasks (`state` not in `{done, rejected}` and `parkReason == ""`). `parked(backlog-sweep)` Tasks do not count - they hold ownership, not work |
 | `maxBundleBytes` | `400000` (min `50000`) | Hard byte budget on a rendered context bundle |
 | `agent.maxTurnsPerPod` | `40` | **Deprecated, zero effect.** Kept only because helmfile still sets it |
 | `agent.maxTurnsPerTask` | `300` | **Deprecated, zero effect.** See the [residency cap](../reference/task-stages.md#residency-the-dead-man-switch) for what replaced it |
-| `agent.maxReviewRounds` | `3` | **Deprecated, zero effect.** The `reviewing <-> implementing` cycle is no longer capped by a round count |
-| `agent.maxHumanReviewRounds` | `5` | Un-parks of a `review`-kind Task back to `reviewing` on a human comment. At the cap it stays parked. This is what stops a chatty PR thread spawning one review pod per comment. Still active - not retired with the three above |
+| `agent.maxReviewRounds` | `3` | **Deprecated, zero effect.** The `awaiting-review <-> under-implementation` cycle is no longer capped by a round count |
+| `agent.maxHumanReviewRounds` | `5` | Un-parks of a `review`-kind Task back to `awaiting-review` on a human comment. At the cap it stays parked. This is what stops a chatty PR thread spawning one review pod per comment. Still active - not retired with the three above |
 | `agent.maxPodRecreations` | `3` | **Deprecated, zero effect.** A pod that never becomes Ready within `podReadyTimeout` (5m of `podStartedAt`) still respawns, but no longer terminates the Task - repeated respawns are now an alert (`operator_pod_recreations_total`, see [Runbooks](runbooks.md#tatara-runbook-operator-agent-pod-recreation-loop)) bounded only by the 24h residency cap |
 | `agent.turnTimeoutSeconds` | `1800` | **Meaning changed.** No longer kills the turn - after this many seconds of inactivity the operator probes the agent instead (`POST /v1/probe`), waits `stallProbeGraceSeconds` for a reply, retries up to `stallProbeMaxAttempts` times, then interrupts and runs the stop-and-handoff sequence. See [Stall probe unanswered](runbooks.md#tatara-runbook-operator-agent-stall-probe-unanswered) |
 | `agent.stallProbeGraceSeconds` | `300` (min `60`) | How long the operator waits for a stall probe to be answered before counting it unanswered |

@@ -153,6 +153,25 @@ last result with `"cached": true`. `logTail` (last 4000 bytes) is served only
 for a check whose conclusion is `failure`, `timed_out` or `cancelled` - a
 green run's logs are never fetched.
 
+`status` is **not** a fold over `checks[]`. On GitLab it is the head
+pipeline's own aggregate, which the forge already computes across child
+pipelines, retries and `allow_failure`; `checks[]` is drill-down detail, and
+`mergeable` means no-conflicts AND not-red. Folding the job list instead is
+what shipped `green` on a failed pipeline until
+[tatara-operator#609](https://github.com/szymonrychu/tatara-operator/issues/609):
+GitLab's `/pipelines/{id}/jobs` omits the `trigger:` bridge jobs that carry a
+child pipeline's result.
+
+Two kinds of row consequently appear in `checks[]` with **no `logTail` even
+when they failed**, because neither has a log of its own - a `trigger:`
+bridge, whose `url` is the DOWNSTREAM pipeline where the failing job lives,
+and an external commit status, whose `url` is the reporter's page. `status`
+stays authoritative for both. On GitLab, `none` likewise means no CI
+observation at all: an MR with no pipeline but an external commit-status
+reporter answers that reporter's verdict, not `none`. On GitHub, `none` can
+still appear with a legacy commit-status reporter present, since
+`GitHub.PRChecks` reads only `/commits/{sha}/check-runs`.
+
 ## `submit_outcome`
 
 One name, **seven profiles, six distinct schemas**. `implement`'s action enum
@@ -206,43 +225,60 @@ state.
 
     Its own schema, split out of `implement`'s during the clarify fold: a
     documentation agent has no approval gate to drive, so it never gets the
-    three gate actions.
+    two gate-only actions (`approved`, `rejected`).
+
+    !!! info "`discuss` added ([tatara-cli#104](https://github.com/szymonrychu/tatara-cli/pull/104), [tatara-operator#628](https://github.com/szymonrychu/tatara-operator/pull/628))"
+        Before this, the only non-delivery exit was `declined`, which parks
+        `implement-declined` - `UnparkNever`, no re-entry. Every technical
+        blocker a documentation batch hit (not a real "nothing to document")
+        had nowhere to go but that permanent park. `discuss` parks
+        `awaiting-human` instead, which the next non-bot comment releases -
+        provided the Task owns an open MR, so open it before calling
+        `discuss`, or there is nothing for a human to comment on.
 
     ```json
     {"type":"object","properties":{
       "task":{"type":"string"},
-      "action":{"type":"string","enum":["submitted","declined"]},
+      "action":{"type":"string","enum":["submitted","declined","discuss"]},
       "title":{"type":"string","description":"MR title. Required when action=submitted."},
       "body":{"type":"string","description":"MR body. Required when action=submitted."},
       "change_significance":{"type":"string","enum":["major","minor","patch"],
         "description":"Required when action=submitted. major=backward-incompatible; minor=backward-compatible feature; patch=fix. YOU own this level - a reviewer may raise it but can never lower it."},
       "merge_order":{"type":"array","items":{"type":"string"},
         "description":"REQUIRED when this task's MRs span more than one repo: the Repository CR names in dependency order, first-merged first. There is NO default. Get it wrong and a downstream repo ships against an API that has not merged yet."},
-      "decline_reason":{"type":"string","description":"Required when action=declined."}},
+      "decline_reason":{"type":"string","description":"Required when action=declined."},
+      "reason":{"type":"string","description":"Required when action=discuss: why you are pausing instead of finishing this turn with submitted or declined."}},
      "required":["action"],"additionalProperties":false}
     ```
+
+    `discuss` refuses every MR-shaped field (`title`, `body`,
+    `change_significance`, `merge_order`, `decline_reason`) via the same
+    `refuseCodeArgs` check `implement`'s code actions share - sending one
+    alongside `discuss` is a 400, not a silent ignore.
 
 === "upgrade"
 
     Reuses `documentation`'s schema object byte-for-byte - same fields, same
-    `submitted`/`declined` action enum, same `merge_order` requirement across a
-    multi-repo hop. `merge_order` here is the dependency-**publish** order
-    (e.g. `containers` before `charts` before `helmfile`), not an arbitrary
-    list: getting it backwards ships a chart against an image tag that never
-    published. There is no approval gate to drive - an upgrade Task has no
-    source issue - so it never gets `implement`'s three gate actions.
+    `submitted`/`declined`/`discuss` action enum, same `merge_order`
+    requirement across a multi-repo hop. `merge_order` here is the
+    dependency-**publish** order (e.g. `containers` before `charts` before
+    `helmfile`), not an arbitrary list: getting it backwards ships a chart
+    against an image tag that never published. There is no approval gate to
+    drive - an upgrade Task has no source issue - so it never gets
+    `implement`'s two gate-only actions.
 
     ```json
     {"type":"object","properties":{
       "task":{"type":"string"},
-      "action":{"type":"string","enum":["submitted","declined"]},
+      "action":{"type":"string","enum":["submitted","declined","discuss"]},
       "title":{"type":"string","description":"MR title. Required when action=submitted."},
       "body":{"type":"string","description":"MR body. Required when action=submitted."},
       "change_significance":{"type":"string","enum":["major","minor","patch"],
         "description":"Required when action=submitted. major=backward-incompatible; minor=backward-compatible feature; patch=fix. YOU own this level - a reviewer may raise it but can never lower it."},
       "merge_order":{"type":"array","items":{"type":"string"},
         "description":"REQUIRED when this task's MRs span more than one repo: the Repository CR names in dependency order, first-merged first. There is NO default. Get it wrong and a downstream repo ships against an API that has not merged yet."},
-      "decline_reason":{"type":"string","description":"Required when action=declined."}},
+      "decline_reason":{"type":"string","description":"Required when action=declined."},
+      "reason":{"type":"string","description":"Required when action=discuss: why you are pausing instead of finishing this turn with submitted or declined."}},
      "required":["action"],"additionalProperties":false}
     ```
 
@@ -421,8 +457,12 @@ resource_id?)` - required `category` (enum `tool_error`,
 `directive_contradiction`, `workspace_broken`, `memory_inconsistent`,
 `graph_inconsistent`, `auth`, `other`) and `description` (non-empty);
 optional `severity` (`warn|error`, defaults `error`), `offending_tool`, and
-`resource_id`. Emits a structured ERROR log and increments a metric; it does
-NOT create a durable SCM issue.
+`resource_id`. Emits a structured ERROR log that the wrapper ships to the
+platform; it does NOT create a durable SCM issue. It emits no metric of its own
+- the cli has no metrics egress - but the wrapper's transcript tailer keys on
+the tool NAME and raises `tatara_wrapper_internal_issue_total` from the outside,
+which is what the alert fires on. It is therefore callable, and useful, even in
+a pod whose credentials never resolved.
 
 `task_context`'s `notes` argument:
 

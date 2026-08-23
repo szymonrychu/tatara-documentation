@@ -116,7 +116,7 @@ spawns the first pod:
 | `refine` | `refined` | `refine` |
 | `review` | `awaiting-review` | `review` |
 | `documentation` | `under-implementation` (minted straight in) | `documentation` |
-| `takeover` | `refined` (minted straight in) | `implement` |
+| `takeover` | `under-implementation` (minted straight in) | `implement` |
 | `upgrade` | `under-implementation` (minted straight in) | `upgrade` |
 
 `implement` is an origin in its own right, not just an agent kind: it is
@@ -127,12 +127,12 @@ the role `clarify` used to play as an origin.
 Each pod's name is computed independently of the Task's own name - see
 [Pod naming](../reference/task-stages.md#pod-naming).
 
-`refined` is a single state serving five different origins (every row above except
-`review`, `documentation` and `upgrade`) - what distinguishes them is `Task.status.agentKind`, which the
+`refined` is a single state serving four different origins (every row above except
+`review`, `documentation`, `upgrade` and `takeover`) - what distinguishes them is `Task.status.agentKind`, which the
 [state machine's `AgentKindFor` table](../reference/task-stages.md#which-agent-each-state-spawns)
 derives from the origin, not the state. `implement` conducts the approval conversation there
 before ever writing code - it is reached at triage for its own origin as well as
-`brainstorm`/`incident`/`refine`/`takeover`, and again via `refined -> under-implementation`
+`brainstorm`/`incident`/`refine`, and again via `refined -> under-implementation`
 once the [approval grammar](../operations/security/approval-gates.md#the-approval-grammar) has
 passed for every live Issue the Task owns. See the [state machine](../reference/task-stages.md)
 for the full transition table, and [MCP tools](../reference/mcp-tools.md#the-profile-gating-table)
