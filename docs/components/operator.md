@@ -152,6 +152,18 @@ A background sweep keeps state bounded. Every terminal ages out on a fixed clock
 
 The operator runs multi-replica with leader election. Metrics that can only be observed on the leader (reconcile state, queue depth) are exported with `sum by()` / `max by()` aggregates so Prometheus correctly handles the non-leader replicas reporting zero.
 
+The turn-complete callback server itself is **not** leader-gated - it runs on
+every replica, so a naive write from inside its handler lands on a non-leader
+roughly two-thirds of the time in a 3-replica prod deployment and is silently
+discarded (the `tokenBudget` gate's in-process store is per-process memory).
+`AccountUsageFeedReconciler` is the pattern for anything downstream of that
+callback that needs a single fleet-wide value: the callback handler only
+parks the wrapper's newest snapshot on `Task.status.accountUsage`, and this
+leader-only reconciler is what folds the newest snapshot across every Task
+into the store the `claudeSubscription` gate actually reads
+([tatara-operator#633](https://github.com/szymonrychu/tatara-operator/pull/633)).
+See [Tuning](../operations/tuning.md#cap-spend) for the gate itself.
+
 ## Helm chart
 
 The chart at `charts/tatara-operator/` is cluster-agnostic. Cluster-specific configuration (ingress host, storage class, imagePullSecrets, OIDC URLs) comes from the `tatara-helmfile` values files.

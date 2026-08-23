@@ -262,9 +262,14 @@ Configures the per-Project token-budget admission gate: pauses proactive work (b
 | `resetSchedule` | `string` | - | 5-field cron marking each window reset boundary. `customWindow` mode only; empty disables the custom window. |
 | `windowDuration` | `string` | - | Declared window length as a Go duration (e.g. `"5h"`, `"168h"`). Bounds the reset-boundary search; pair with `resetSchedule`. |
 | `tokenLimit` | `int64` | - | Absolute total-token budget per window. `customWindow` mode only. |
+| `fiveHourProactivePercent` / `fiveHourEmergencyPercent` | `int` (0-100) | `0` | Gate the Claude 5h window against its own pair instead of `proactivePercent`/`emergencyPercent`. `0` inherits the mode-wide pair. `claudeSubscription` mode only. |
+| `weeklyProactivePercent` / `weeklyEmergencyPercent` | `int` (0-100) | `0` | Same, for the Claude weekly window. `claudeSubscription` mode only. |
+| `spawnCeilingByKind` | `map[string]int` | - | Holds a specific Task **kind** once account usage reaches its percent, independent of the proactive/emergency pool split. `claudeSubscription` mode only. Present in the CRD and wired into evaluation, but no `tatara-helmfile` value sets it today - see the note below. |
 
-!!! info "claudeSubscription mode: present in the API, not yet load-bearing"
-    `mode: claudeSubscription` and the corresponding `status.tokenBudget.fiveHourPercent` / `weeklyPercent` fields exist in the current CRD but are inert until a wrapper snapshot with a future reset time is reported (an unknown or past reset is ignored so the gate can never wedge on a stale snapshot). Neither live Project (`tatara`, `infrastructure`) currently sets a `tokenBudget` block, so the gate is fully disabled fleet-wide today.
+!!! info "claudeSubscription mode is live; the per-kind ceiling is not"
+    The per-window gate (`proactivePercent`/`emergencyPercent`, optionally overridden per-window) is deployed fleet-wide: the operator-wide default sets `enabled: true`, `mode: claudeSubscription` (`tatara-helmfile values/tatara-operator/default.yaml`), inherited by both `tatara` and `infrastructure`. It is fed by each agent pod's `cc-statusline` command via the wrapper's turn-complete callback, parked on `Task.status.accountUsage`, and folded fleet-wide by a leader-only reconciler into the in-process store the gate reads - not the per-Project `status.tokenBudget.fiveHourPercent`/`weeklyPercent` fields below, which this feed does not write (see [Tuning](../operations/tuning.md#cap-spend)). Past `tokenBudgetMaxSnapshotAge` (90m, fleet-wide) the gate fails open rather than blocking.
+
+    `spawnCeilingByKind` is a separate axis, gating by Task kind rather than by window. It is fed by the older `/api/oauth/usage` poller, which stays disabled fleet-wide (`usageEnabled: false` - the shared `claude setup-token` lacks the OAuth scope that endpoint needs), so this field is schema-present and evaluation-wired but inert in prod today.
 
 ---
 
@@ -447,10 +452,20 @@ All timestamps are RFC 3339 and reflect the last time the corresponding activity
 |---|---|---|
 | `windowStart` | `metav1.Time` | When the current custom-window opened (the most recent reset boundary). `customWindow` mode. |
 | `windowTokens` | `int64` | Total tokens spent in the current custom window so far. |
-| `fiveHourPercent` | `int` (0-100) | Wrapper-reported Claude usage percentage for the rolling 5h window. `claudeSubscription` mode. |
-| `fiveHourReset` | `metav1.Time` | Reset time for the 5h window snapshot. A nil or past value means "not reported" and the gate ignores it. |
-| `weeklyPercent` | `int` (0-100) | Wrapper-reported Claude usage percentage for the rolling weekly window. `claudeSubscription` mode. |
-| `weeklyReset` | `metav1.Time` | Reset time for the weekly window snapshot. Same nil/past-ignored semantics as `fiveHourReset`. |
+| `fiveHourPercent` | `int` (0-100) | **Deprecated, no longer written** ([tatara-operator#633](https://github.com/szymonrychu/tatara-operator/pull/633)). Kept only for back-compat round-trip of already-persisted Projects. |
+| `fiveHourReset` | `metav1.Time` | **Deprecated, no longer written.** Same. |
+| `weeklyPercent` | `int` (0-100) | **Deprecated, no longer written.** Same. |
+| `weeklyReset` | `metav1.Time` | **Deprecated, no longer written.** Same. |
+
+The `claudeSubscription` gate's live snapshot state is not per-Project any
+more - the subscription is one account shared by every Project, so a
+per-Project field would go stale for any Project that falls quiet while its
+neighbours burn the same shared windows. The wrapper's newest snapshot lands
+on `Task.status.accountUsage` instead (see [Task reference](task.md#taskstatus)),
+and a leader-only reconciler folds the newest one across every Task into a
+fleet-wide in-process store the gate actually reads. There is no CRD-visible
+field for that fleet-wide value; read `tatara_account_usage_gate_ready` and
+`tatara_account_usage_snapshot_age_seconds` instead.
 
 ---
 

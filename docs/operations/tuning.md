@@ -159,16 +159,58 @@ project:
       tokenLimit: 50000000        # customWindow only
 ```
 
-`mode: claudeSubscription` gates on the wrapper-reported Claude 5h/weekly
-usage percentages instead of an absolute token count, and needs no
-`resetSchedule`/`windowDuration`/`tokenLimit`. It exists in the current CRD
-but is **not deployed anywhere today** - neither `tatara` nor `infrastructure`
-sets a `tokenBudget` block, so the gate is fully off fleet-wide. A more
-advanced per-kind admission gate (fleet-wide Claude-usage poller plus a
-per-kind spawn-ceiling ladder, meant to supersede this per-project snapshot
-mechanism) is in development on an unmerged feature branch
-(`feat/usage-window-gating` in `tatara-operator`) - it is not yet part of the
-`main` API and not usable via `tatara-helmfile` values yet.
+`mode: claudeSubscription` gates on the Claude 5h/weekly usage windows instead
+of an absolute token count, and needs no `resetSchedule`/`windowDuration`/
+`tokenLimit`. **It is live in prod today**: the operator-wide default sets
+`tokenBudgetEnabled: true`, `tokenBudgetMode: claudeSubscription`
+(`tatara-helmfile values/tatara-operator/default.yaml`), so both `tatara` and
+`infrastructure` inherit it - no per-Project override is set. Each usage
+window can be gated against its own pair, OR'd against the mode-wide
+fallback:
+
+```yaml
+project:
+  spec:
+    tokenBudget:
+      enabled: true
+      mode: claudeSubscription
+      proactivePercent: 50            # fallback for any window left at 0
+      emergencyPercent: 80
+      fiveHourProactivePercent: 80
+      fiveHourEmergencyPercent: 92
+      weeklyProactivePercent: 75
+      weeklyEmergencyPercent: 88
+```
+
+Current prod values are exactly the block above: the 5h window is the
+tighter, faster-moving one so it gets more headroom before proactive work
+pauses; the weekly window moves slowly and exhausting it costs days, so it
+pauses earlier.
+
+**The feed:** each agent pod's silent `cc-statusline` command reports Claude
+Code's own `rate_limits` block to the wrapper on every TUI redraw
+([tatara-claude-code-wrapper#183](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/183)).
+The wrapper attaches the newest snapshot to the turn-complete callback as
+`accountUsage`, and the operator parks it on that Task's `status.accountUsage`.
+A leader-only `AccountUsageFeedReconciler` folds the newest snapshot across
+every Task into the fleet-wide in-process store the gate actually reads -
+newest-wins, not per-Project, because the subscription is one account shared
+by every Project
+([tatara-operator#633](https://github.com/szymonrychu/tatara-operator/pull/633)).
+Past `tokenBudgetMaxSnapshotAge` (90m, fleet-wide - there is deliberately no
+per-Project override, since staleness is a property of the one shared
+account) the gate **fails open** rather than blocking. Because that failure
+mode is otherwise silent (nothing increments while the gate evaluates 0%),
+`TataraAccountUsageFeedDead` alerts on `tatara_account_usage_gate_ready == 0`
+for 30m. It is defined in the operator chart's own `PrometheusRule`, not
+`tatara-observability`; no runbook entry exists for it yet.
+
+A separate, still-disabled axis gates by Task **kind** rather than by window:
+`spawnCeilingByKind` (a Task-kind -> percent map on `TokenBudgetSpec`) is in
+the CRD and wired into gate evaluation, but no `tatara-helmfile` value sets it
+today. It is fed by the older `/api/oauth/usage` poller (`usageEnabled` in the
+operator chart), which stays off fleet-wide - the shared `claude
+setup-token` lacks the `user:profile` scope that endpoint needs.
 
 ### 2. Model/effort tiering per agent kind
 

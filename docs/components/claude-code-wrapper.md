@@ -144,6 +144,45 @@ Shell commands the operator delivers as `HOOK_*` env vars, executed via `sh -c` 
 
 Non-zero hook exit is logged and counted but never aborts the agent run.
 
+## Claude subscription usage feed
+
+Claude Code passes its configured statusline command a JSON payload on stdin
+carrying `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}` on
+every TUI redraw. A `cc-statusline` binary (`STATUSLINE_PATH`, default
+`/usr/local/bin/cc-statusline` - deliberately no chart value or CLI flag,
+mirroring `HOOK_PATH`) reads that payload and POSTs a normalized snapshot to
+the wrapper's own loopback route `POST /internal/account-usage`, then prints
+**nothing**, so the rendered TUI is unchanged. Bootstrap wires it up via a
+`statusLine` key in `settings.json`, the same pattern as the Stop hook.
+([tatara-claude-code-wrapper#183](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/183))
+
+Non-obvious decoding rules, both enforced to avoid the gate this feed serves
+silently misreading "no data" as "0% used":
+
+- `resets_at` is **unix epoch seconds**, not RFC3339 (`/api/oauth/usage`, a
+  different endpoint entirely, genuinely does return RFC3339). An RFC3339
+  string is rejected rather than coerced.
+- `rate_limits` is absent until the session's first API response, and each
+  window is individually optional. The binary posts nothing rather than a
+  zero-valued snapshot - the wrapper's `accountUsage` field on the
+  turn-complete callback is `omitempty` end to end, so "never reported" and
+  "reported 0%" stay distinguishable all the way to the gate.
+- The statusline never fires in `-p`/print mode - only the persistent
+  interactive session over a PTY renders a TUI. This wrapper is safe only
+  because it runs exactly that.
+- The endpoint is a single 500ms-timeout attempt, no retries (unlike the Stop
+  hook's 5 retries over 25s): the statusline fires on every redraw and a
+  dropped snapshot is superseded seconds later, so a retry would only add
+  latency to the wrong failure mode.
+
+The turn-complete callback carries the newest snapshot as `accountUsage`,
+`omitempty`, distinct from the retired `rateLimit` field the operator already
+ignores - so an old operator paired with a new wrapper silently drops the new
+key, and a new operator paired with an old wrapper simply never receives it.
+Either direction, the gate stays inert exactly as it did with no feed at all.
+See [Tuning](../operations/tuning.md#cap-spend) for the operator-side gate
+this feeds.
+
 ## Configuration
 
 All scalars via env (from chart ConfigMap `envFrom`):
@@ -185,3 +224,4 @@ File/list config is mounted under `/etc/wrapper` (chart values: `globalClaudeMd`
 | `ccw_skills_installed_total{profile}` | counter | Skills installed at boot. Renamed from `wrapper_skills_installed_total` ([#180](https://github.com/szymonrychu/tatara-claude-code-wrapper/pull/180)) - the old `wrapper_`/`agent_` prefix was outside the pod's own push allowlist, so this and the two metrics below never reached Prometheus at all under their old names |
 | `ccw_skills_clone_failures_total{source}` | counter | Skills clone failures, `source=skills_repo` or `extra` (a bad `TATARA_EXTRA_SKILL_SOURCES` entry is not a fleet-wide outage) |
 | `ccw_agents_installed_total` | counter | Agents (`.claude/agents`) installed at boot |
+| `ccw_statusline_reports_total{result}` | counter | `cc-statusline` reports received on `/internal/account-usage`, `result` in `ok`/`bad_payload`. See [Claude subscription usage feed](#claude-subscription-usage-feed) |

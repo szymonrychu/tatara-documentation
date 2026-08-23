@@ -391,6 +391,28 @@ current state**, never stored:
 - `retry-exhausted` is `UnparkHuman`, exactly like `awaiting-human` - see
   [the retry lane](#the-retry-lane-unparkretry) below for how a Task gets
   there.
+- A parked Task that owns **no Issue mirror at all** - an adopted `kind=upgrade`
+  Task, minted by `MintAdoptedUpgradeTask` from a dependency engine's own merge
+  request and bound only to a `MergeRequest` (see [MR Ownership](../architecture/ownership.md#adopting-a-dependency-engines-merge-requests)) -
+  could never be reached by any rule above: `resumeOne`, the shared entry point
+  both recovery drivers call, bailed unconditionally whenever a Task owned zero
+  Issue mirrors. A maintainer comment on its merge request was silently
+  swallowed - no side effect, no log line, no metric.
+  `stage.UnparkMaintainerComment` now drives this shape directly, spending
+  every unspent non-bot event in the one release (`UnparkConsumedAt` marks
+  each event's own idempotency, not a one-per-lap throttle - a Task carrying
+  three unanswered comments has all three stamped by this one release): a
+  park **before** the merge stage releases in place, with
+  `stageElapsedCarrySeconds` zeroed rather
+  than carried (unlike `reArm`) - every reason this shape can park under
+  already sits at or past the residency cap, so preserving the carry would
+  admit the Task only to re-park it `stage-deadline` before its pod could run.
+  A park **at or after** the merge stage is refused instead, with a one-shot
+  notice posted to the merge request. `ownership-lost` is eligible here with
+  no takeover exclusion, unlike `UnparkCIRecovered` - a maintainer comment
+  under an externally-owned MR is read as "look at this", and the implement
+  pod decides whether to take ownership back, not the operator. See
+  [tatara-operator#634](https://github.com/szymonrychu/tatara-operator/pull/634).
 
 ---
 
