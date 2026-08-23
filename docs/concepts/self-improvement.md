@@ -116,17 +116,28 @@ self-improvement never floods tatara's own tracker.
     comment is the platform's. #107 went from filed to under implementation in seven
     minutes and from filed to merged in ninety, and no person said yes at any point.
 
-    That is `Project.spec.autoApproveTataraProposals`, a per-project field that releases
-    bot-authored, tatara-proposed issues and nothing else. It
-    [defaults to `false`](https://github.com/szymonrychu/tatara-operator/blob/main/api/v1alpha1/project_types.go),
-    and tatara turns it on for its own Project so that its backlog moves without a person
-    in the loop. Your project does not get that behavior unless you ask for it: with the
-    field off, a self-proposed chain parks until a human approves it, and every other
-    origin of work is gated regardless of how the field is set.
+    That is `Project.spec.autoApproveMaxSignificance`, a per-project field - `off`,
+    `patch`, `minor`, or `major` - that caps how large a bot-authored, tatara-proposed
+    issue is allowed to ship with no maintainer comment behind it, and nothing else. It
+    [defaults to `off`](https://github.com/szymonrychu/tatara-operator/blob/main/api/v1alpha1/project_types.go),
+    which disables the carve-out entirely: a self-proposed chain then parks at
+    `backlog-sweep` until a human comments, the same as every other origin of work.
+
+    The grant this field makes is provisional even when set above `off`. `change_significance`
+    does not exist on the wire until `submit_outcome(action=submitted)`, so the ceiling is
+    enforced there: a declared level over the ceiling is refused with
+    `over-auto-approve-ceiling` and sent back to a human. An approval a maintainer actually
+    cited is never severity-limited by this field.
+
+    tatara's own Project is set to `off` - the project whose changes rewrite the approval
+    gate itself does not self-approve at any size. `infrastructure` is set to `minor` and
+    `mtg` to `major`; your project defaults to `off` unless you ask for something looser.
 
     So the gate above is real, and this page is not the place to watch it work. For a run
     where a maintainer opened the gate by hand and the operator wrote a receipt naming the
-    comment ID it acted on, read [Watch One Run](../explainers/watch-one-run.md).
+    comment ID it acted on, read [Watch One Run](../explainers/watch-one-run.md). For the
+    full mechanics of this carve-out, see
+    [The one carve-out with no comment to cite: `autoApproveMaxSignificance`](../operations/security/approval-gates.md#the-one-carve-out-with-no-comment-to-cite-autoapprovemaxsignificance).
 
 ---
 

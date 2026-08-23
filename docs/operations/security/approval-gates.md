@@ -118,9 +118,9 @@ The agent's side, `submit_outcome(action=approved, ...)`:
   Issue the Task owns **that a maintainer has commented on at all**: `id` is
   that comment's forge `external_id`, copied verbatim from the turn-0 bundle;
   `quote` is a verbatim substring of that comment's body. Neither field is
-  required when the Issue satisfies the `autoApproveTataraProposals`
-  carve-out below - see clause 3 for what happens on an Issue with no
-  maintainer comment.
+  required when the Issue satisfies the [auto-approve
+  carve-out](#the-one-carve-out-with-no-comment-to-cite-autoapprovemaxsignificance)
+  below - see clause 3 for what happens on an Issue with no maintainer comment.
 
 The operator sets `Issue.status.status = approved` only when **all** of the
 following hold, run by `restapi.verifyApprovalScope` over **every LIVE owned**
@@ -139,7 +139,7 @@ produce evidence - this is the single grant path; there is no other:
 3. For each live Issue:
     a. **No maintainer has commented on it at all.** Citations are irrelevant
        in this arm: the Issue either satisfies the
-       [`autoApproveTataraProposals` carve-out](#the-one-carve-out-with-no-comment-to-cite-autoapprovetataraproposals)
+       [auto-approve carve-out](#the-one-carve-out-with-no-comment-to-cite-autoapprovemaxsignificance)
        or the whole check refuses with no-maintainer-comment. There is nothing
        for the agent to cite and nothing citing can fix.
     b. **A maintainer has commented**, so a citation is now required. For the
@@ -272,17 +272,118 @@ it.
     project must name its maintainers before tatara will write a line of code
     against it. There is no "any human" fallback here, unlike the intake gate.
 
-### The one carve-out with no comment to cite: `autoApproveTataraProposals`
+### The one carve-out with no comment to cite: `autoApproveMaxSignificance`
 
-`autoApproveTataraProposals` is **unchanged** by this design. It is the one
-path where `ApprovalEvidence` is pinned with no maintainer comment at all: a
-bot-authored proposal issue (from `brainstorm` or an `incident` filing), on a
-project that opts in, is auto-approved with `login: <tatara:auto>` and
-`commentId: ""`, and `auto: true` is stamped so the transition is queryable
-without log-scraping. It exists alongside the citation check above, not
-instead of it - a maintainer comment on an auto-approvable issue still routes
-through the normal citation path, and the carve-out only fires when there is no
-maintainer comment for the agent to cite in the first place.
+There is one path where `ApprovalEvidence` is pinned with no maintainer comment
+at all: a bot-authored proposal issue (from `brainstorm` or an `incident`
+filing) is auto-approved with `login: <tatara:auto>` and `commentId: ""`, and
+`auto: true` is stamped so the transition is queryable without log-scraping. It
+exists alongside the citation check above, not instead of it - a maintainer
+comment on an auto-approvable issue still routes through the normal citation
+path, and the carve-out only fires when there is no maintainer comment for the
+agent to cite in the first place.
+
+`Project.spec.autoApproveMaxSignificance` is how much that path may ship:
+
+| value | meaning |
+|---|---|
+| `off` (default) | The carve-out never fires. Every self-proposed chain parks at `backlog-sweep` until a human comments. |
+| `patch` | A self-proposed change may ship at `patch` and no higher. |
+| `minor` | ... at `minor` and no higher. |
+| `major` | Unrestricted. |
+
+The empty string reads as `off`. That is what makes the CRD upgrade fail closed:
+the field replaced a boolean, so every Project written by an older operator
+carries no value for it.
+
+!!! danger "The auto-approve grant is PROVISIONAL, and it is settled at submit"
+    `change_significance` does not exist on the wire until
+    `submit_outcome(action=submitted)` - the agent declares it once the diff is
+    real. So the ceiling cannot be enforced at the gate; the gate only asks
+    whether the ceiling is above `off`. The **level** is checked at submit, and a
+    declared significance over the ceiling is refused there with
+    `over-auto-approve-ceiling`, however green the PR is. The work is not lost -
+    the pod is alive, the branch is pushed, and the thread goes back to a human
+    who can now see the diff they are being asked about.
+
+    An approval a maintainer actually **cited** is never severity-limited. The
+    ceiling bounds what tatara approves for *itself*; a human who read the plan
+    and said go ahead already made the judgement it stands in for.
+
+!!! warning "The ceiling measures a SELF-DECLARED level, so it bounds mistakes and not intent"
+    `change_significance` is whatever the agent says it is. The operator checks
+    that the value is in the enum and nothing anywhere compares it to the diff,
+    so an agent that declares `patch` walks past a `minor` ceiling with a
+    breaking change. A review outcome may also **raise**
+    `MergeRequest.status.significance` past the ceiling, and nothing re-checks
+    it there: that handler's Task is the review Task, which owns the merge
+    requests and not the Issues the evidence lives on.
+
+    Read the ceiling as a bound on how much tatara can ship **by honest
+    accident**, not as a containment boundary against an agent trying to get
+    past it. The containment boundary is `off`, which stops the self-approval
+    path firing at all.
+
+The other four axes of the carve-out are unchanged and all still hold: the issue
+must be open, bot-authored, carry a valid `tatara-proposed-by` marker, and still
+match its filing-time `Spec.proposalBodyHash` anchor. Raising the ceiling widens
+what an already-qualifying proposal may ship; it does not qualify anything new.
+
+## The ship gate: no merge request can carry unapproved work
+
+The grammar above decides whether an agent may **start**. A second, separate
+check decides whether the change may **leave**, and until it existed the first
+one could simply be skipped: `mr_write(action=open)` checked the head branch,
+idempotency and outstanding work, and `submit_outcome(action=submitted)` checked
+only the plan hash. Neither read `Issue.status.approval` at all, so an implement
+agent that never called the gate - or that was refused by it and wrote the code
+anyway - still opened the PR, and neither the reviewer nor the merge corridor
+downstream has an approval check of its own.
+
+Both now refuse `409 {reason: "approval-required", ...}` while any **live owned**
+Issue is not clear to ship, with one entry per blocking issue:
+
+| issue state | `detail` | remedy |
+|---|---|---|
+| no evidence, no maintainer comment | `needs-maintainer-comment` | a human has to speak; the agent cannot reach this itself |
+| no evidence, a maintainer HAS commented | `needs-approval-tool` | the agent has everything it needs and has simply not called `submit_outcome(action=approved)` |
+| auto evidence, declared significance over the ceiling | `over-auto-approve-ceiling` | a maintainer comment plus a real citation, or a smaller change |
+
+Every entry carries a `guidance` sentence naming the next step. The two
+no-evidence details are split precisely because their remedies differ: one waits
+on a person, the other is a tool call the agent can make in the same turn.
+
+!!! note "Zero live owned Issues is zero blockers, deliberately"
+    A takeover Task owns no Issue at all and was authorised more strictly than
+    this gate would be, at the takeover endpoint, by a maintainer comment the
+    operator verified. An adopted upgrade Task owns a merge request and no Issue.
+    Requiring evidence from an empty set would wedge both permanently, so an
+    empty set is ungated here. Note that the **grant** path has the opposite
+    rule - `verifyApprovalScope` refuses an empty live set, because there an
+    empty set means nothing was approved. They are different questions.
+
+    The idempotent `mr_write(action=open)` answer - "you already have MR #N" -
+    also survives the gate. It reaches no forge, and a TTL-stopped pod resuming
+    needs the number of the merge request it already has.
+
+## Every gate answer guides the agent
+
+`submit_outcome(action=approved)` returns `granted: true` with a `guidance`
+string and the Task under `task`, or `granted: false` with `reason`, `declared`
+and `guidance`. The ship refusals carry per-issue `guidance` too.
+
+`reason` is a closed constant and a Prometheus label: it names the fault and says
+nothing about the remedy, and the remedies genuinely differ per reason -
+`plan-note-not-plan` is repaired in the same turn, `no-maintainer-comment` cannot
+be repaired by the agent at all. Collapsing that distinction is what produced a
+real stall: an agent refused `no-maintainer-comment` could not tell which of five
+carve-out axes had closed, concluded it needed a comment it had no way to obtain,
+and spent its turn on `action=discuss`.
+
+The guidance is derived operator-side from maps that are total over the closed
+vocabularies, pinned by test. `tatara-cli` renders whatever rides the refusal and
+holds no second copy of the vocabulary, so a blocker the operator adds later
+needs no cli release.
 
 ## Labels are write-only
 

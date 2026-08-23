@@ -134,6 +134,19 @@ and status. A hallucinated merge call has nowhere to land.
 **refused with 409** when the Task already owns a *merged* MR for that repo -
 the structural stop on the duplicate-PR path after a partial merge.
 
+It is also **refused with `409 {"reason":"approval-required",...}`** on an
+`implement` Task while any live Issue the Task owns carries no approval
+evidence. That is what makes the [approval
+gate](../operations/security/approval-gates.md#the-ship-gate-no-merge-request-can-carry-unapproved-work)
+load-bearing rather than advisory: there is no merge request that can carry
+unapproved work, so code written before the gate grants is lost. The body names
+each blocking issue with a `detail` (`needs-maintainer-comment`,
+`needs-approval-tool`, `over-auto-approve-ceiling`) and a `guidance` sentence,
+and `tatara-cli` renders it as a normal tool result rather than a tool error -
+the remedy is reachable in the same session. The idempotent answer above is a
+read of an MR that already exists and survives the gate; a Task owning zero live
+Issues (takeover, adopted upgrade) is ungated.
+
 ### `issue_write` has no `status` and no `labels` parameter
 
 Approval and every lifecycle label are operator-owned. A `labels` key would

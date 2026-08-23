@@ -116,7 +116,7 @@ pull the full body with `scm_read(kind=comments)`.
 | `commentId` | `string` | The `Comment.externalId` the `implement` agent cited, which the operator confirmed exists on this Issue |
 | `createdAt` | `Time` | When the cited comment was posted |
 | `phrase` | `string` | The **matched** form of the agent's cited quote: as submitted if that literal substring occurred in the comment body, or html-unescaped if only that form matched (the turn-0 bundle XML-escapes comment bodies, so a maintainer's `let's ship it` can render as `let&apos;s ship it`). Not necessarily byte-identical to what the agent submitted, and not a match against any configured wordlist |
-| `auto` | `bool` | Set on the `autoApproveTataraProposals` path. When `true`, `login` is the sentinel `<tatara:auto>` and `commentId` is empty |
+| `auto` | `bool` | Set on the auto-approve carve-out path (`Project.spec.autoApproveMaxSignificance` above `off`). When `true`, `login` is the sentinel `<tatara:auto>` and `commentId` is empty. It is also what makes the grant SEVERITY-CAPPED: `submit_outcome(action=submitted)` refuses `over-auto-approve-ceiling` when the declared `change_significance` exceeds the project ceiling. Evidence with `auto` unset was cited by a maintainer and is never capped |
 
 `ApprovalEvidence` is **single-use**: a later approval must cite a comment
 that has not already been consumed, and a replayed `commentId` is refused.

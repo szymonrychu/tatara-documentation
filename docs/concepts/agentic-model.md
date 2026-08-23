@@ -336,8 +336,16 @@ Brainstorm-authored proposals go through this exact same gate, not a separate on
 proposal from a `brainstorm` Task becomes its own new `implement`-origin Task, and
 refined-to-under-implementation requires the identical agent-cited, operator-verified comment.
 There is no bot-writable label that substitutes for it. The one carve-out with no comment to cite
-at all is `autoApproveTataraProposals`, unchanged by this design - see
-[Approval Gates](../operations/security/approval-gates.md#the-one-carve-out-with-no-comment-to-cite-autoapprovetataraproposals).
+at all is `autoApproveMaxSignificance`, a per-project severity ceiling (`off` by default) on how
+large a self-proposed change may ship unattended, settled against the declared
+`change_significance` at submit - see
+[Approval Gates](../operations/security/approval-gates.md#the-one-carve-out-with-no-comment-to-cite-autoapprovemaxsignificance).
+
+The gate is also ENFORCED at the point work leaves, not only at the point it starts:
+`mr_write(action=open)` and `submit_outcome(action=submitted)` refuse `approval-required` while any
+live Issue the Task owns carries no approval evidence, so there is no merge request that can carry
+unapproved work - see
+[the ship gate](../operations/security/approval-gates.md#the-ship-gate-no-merge-request-can-carry-unapproved-work).
 
 !!! warning "Implement cannot answer its own comments at the conversation phase"
     The self-comment guard lives in the permission layer, not skill prose: the MCP comment action

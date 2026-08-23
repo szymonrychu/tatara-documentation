@@ -81,8 +81,16 @@ back to `refined` (`plan-hash-mismatch`) instead of proceeding silently. `approv
 and `approval_citations` travel **as a pair - both, or neither** - one citation entry
 per **live** Issue the Task owns **that a maintainer has commented on at all**. An
 Issue with no maintainer comment is not a citation gap: it either satisfies the
-`autoApproveTataraProposals` carve-out or refuses outright, and there is nothing to
-cite either way. The agent **judges meaning**; the operator does not take that
+`autoApproveMaxSignificance` carve-out - a severity ceiling (`off | patch | minor |
+major`, default `off`; an empty value reads as `off`), not an on/off flag - or
+refuses outright, and there is nothing to cite either way. That grant is
+**provisional**: `change_significance` does not exist on the wire until
+`submit_outcome(action=submitted)`, so the ceiling is enforced there, not at this
+gate. A declared level above the ceiling is refused with `over-auto-approve-ceiling`.
+An approval a maintainer actually cited is never severity-limited - the ceiling only
+bounds the carve-out path. See [The one carve-out with no comment to
+cite](../operations/security/approval-gates.md#the-one-carve-out-with-no-comment-to-cite-autoapprovemaxsignificance)
+for the full rule. The agent **judges meaning**; the operator does not take that
 judgment on faith. It independently re-reads each cited comment against its own
 mirror and checks [the facts, not the intent](../operations/security/approval-gates.md#the-approval-grammar):
 the comment exists on that Issue, its author is a verified non-bot maintainer, the
@@ -104,6 +112,11 @@ approval, and it never grants itself the approval it is waiting on.**
 | `refined` | `action=discuss` | `parked(awaiting-human)` |
 | `refined` | `action=rejected` | `rejected` - the operator closes the issue |
 | `refined` | idle budget elapses | `parked(awaiting-human)` |
+
+`submit_outcome(action=approved)` answers with `granted: true`, a `guidance` string,
+and the Task itself under a `task` key, or `granted: false` with `reason`, `declared`,
+and `guidance`. Both shapes carry `guidance` now; before this the grant returned a
+bare Task DTO with no `granted` key to check at all.
 
 A Task parked at `identity-unverified` is not stuck forever: the **next** non-bot
 comment on the thread makes the operator re-sync that Issue's comments from the forge
@@ -152,6 +165,16 @@ from a fresh clone.
     implement is never in a position to say "I don't have enough information" the way
     old triage-adjacent kinds could. The rigid `implement` skill enforces this as a
     hard rule.
+
+**The ship gate is enforced, not advisory.** Both `mr_write(action=open)` and
+`submit_outcome(action=submitted)` refuse with `409 {reason: "approval-required"}`
+while any live Issue the Task owns carries no approval evidence, one entry per
+blocking issue carrying `repo`, `number`, a `detail` (`needs-maintainer-comment` |
+`needs-approval-tool` | `over-auto-approve-ceiling`), and a `guidance` sentence. Code
+written before the gate grants is lost: no merge request can carry it forward. A Task
+that owns zero live Issues - a takeover, an adopted upgrade - is ungated. See [The ship
+gate: no merge request can carry unapproved
+work](../operations/security/approval-gates.md#the-ship-gate-no-merge-request-can-carry-unapproved-work).
 
 ### Subagent tiering {: #subagent-tiering }
 
