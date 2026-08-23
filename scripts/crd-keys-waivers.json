@@ -1,0 +1,30 @@
+{
+  "_readme": [
+    "Hand-maintained companion to scripts/crd-keys.json, which is GENERATED and must",
+    "never be edited by hand. scripts/gen_crd_keys.py never touches this file.",
+    "",
+    "foreignVocabularies waives a key that belongs to a schema tatara does not own, so",
+    "there is no tatara CRD or chart for it to appear in. Every entry MUST carry a",
+    "non-empty reason naming that schema; check_crd_keys.py exits 2 on an empty or",
+    "non-string reason rather than skipping the check. A waiver added to turn a red",
+    "build green, with no reason attached, is how this guard stops checking",
+    "(tatara-documentation#55 pre-mortem 2).",
+    "",
+    "This is the WRONG place for a tatara key that was removed. A page that",
+    "deliberately names a retired field takes a per-line `<!-- crd-ok: name -->`",
+    "marker instead, so the site stays visible in the page rather than being blessed",
+    "site-unseen from here."
+  ],
+  "foreignVocabularies": {
+    "backoffLimit": "batch/v1 Job.spec. The ingester page shows the Job the operator builds, not a chart value.",
+    "initContainers": "core/v1 PodSpec. Rendered pod manifests on component pages show it; AgentSpec's own knob is the distinct `extraInitContainers`.",
+    "ipBlock": "networking.k8s.io/v1 NetworkPolicy peer.",
+    "namespaceSelector": "networking.k8s.io/v1 NetworkPolicy peer.",
+    "podSelector": "networking.k8s.io/v1 NetworkPolicy spec and peer.",
+    "policyTypes": "networking.k8s.io/v1 NetworkPolicy spec.",
+    "roleRef": "rbac.authorization.k8s.io/v1 RoleBinding/ClusterRoleBinding.",
+    "serviceAccountName": "core/v1 PodSpec, in a rendered manifest.",
+    "stringData": "core/v1 Secret. Every `kubectl apply` example that mints a tatara Secret uses it.",
+    "webhookSecret": "A DATA KEY inside the tatara-managed `<project>-scm` Secret, not a chart value or a CRD field. The chart value that populates it is `scmWebhookSecret`; see tatara-operator api/v1alpha1/project_types.go for the key set the operator reads out of that Secret."
+  }
+}

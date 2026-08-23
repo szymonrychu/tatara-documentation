@@ -16,6 +16,15 @@
 # so the published page is unaffected. Bash 3.2 (macOS) compatible - no
 # mapfile, no associative arrays, no `${var,,}`.
 #
+# THIS LIST IS REACTIVE BY CONSTRUCTION and that is now only half the story.
+# It knows the terms somebody happened to notice; it cannot know that a
+# documented key never existed. scripts/check_crd_keys.py is the other half: it
+# reconciles every documented YAML key and reference-table identifier against the
+# rendered CRD schema and the chart values surface, so a nonexistent key fails
+# without anyone having to add it here first. Keep both. A term that is retired
+# but still a REAL field (a deprecated-with-zero-effect knob) is invisible to the
+# provenance guard and belongs here; a key that never existed is caught there.
+#
 # `parkReason` was removed from TERMS: it was dead after the first
 # task-centric redesign folded it into `stageReason`, but the #521 lifecycle
 # redesign UN-RETIRED it as `status.parkReason`, orthogonal to the new
@@ -50,7 +59,8 @@ TERMS='lifecycleState|cascadeStage|deployedVersion|deployArtifact|deployDeadline
 |approvedByMaintainer|autoApproved\b|mergeWaitDeadline
 |reviewResolveDeadline|issueLinks|prLinks\b
 |discoveredIssues|linksSyncedURLs|writebackSkip4xxAttempts|disarmFailures
-|TATARA_MCP_METRICS_ADDR|--metrics-addr'
+|TATARA_MCP_METRICS_ADDR|--metrics-addr
+|maxConsecutiveSkips|operator_brainstorm_breaker_trip_total'
 
 # Collapse the multi-line term list into one alternation.
 PATTERN="$(printf '%s' "$TERMS" | tr -d '\n')"

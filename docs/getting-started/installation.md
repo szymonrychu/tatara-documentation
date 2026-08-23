@@ -340,27 +340,33 @@ ingressClassName: "nginx"
 ingressRewriteTarget: "/$2"
 ```
 
-### S3 conversation persistence (optional)
+### S3 conversation persistence: removed, do not configure it
 
-With a non-empty `s3Bucket`, the operator and wrapper store each Task's Claude
-conversation transcript in an S3-compatible bucket, so a fresh pod resumes the
-prior conversation. Leave `s3Bucket` empty to turn it off.
+There is no S3 conversation persistence to turn on. It was **removed on
+2026-07-04**, together with the cross-pod conversation restore it existed to
+serve, and `tatara-claude-code-wrapper` carries a regression test that fails the
+build if the symbols come back. Nothing carries a Claude session across a pod
+boundary now; what carries forward is
+[`Task.status.notes`](../reference/task-notes.md) and the turn-0
+[context bundle](../reference/context-bundle.md), which every pod gets in full.
 
-```yaml
-s3Endpoint: "http://rook-ceph-rgw-ceph-objectstore.rook-ceph.svc"
-s3Bucket: "tatara-conversations"
-s3Region: "us-east-1"       # Ceph RGW ignores region; the AWS SDK requires one
-s3KeyPrefix: "conversations"
-s3ForcePathStyle: true       # required for Ceph RGW and MinIO; false for AWS S3
-s3SecretName: "tatara-conversations"  # Secret with AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
-s3ConversationRetentionHours: 72
-```
+The operator chart therefore has **no** `s3Endpoint`, `s3Bucket`, `s3Region`,
+`s3KeyPrefix`, `s3ForcePathStyle` or `s3ConversationRetentionHours` value. Setting
+any of them in helmfile is inert: Helm accepts an undeclared value without
+complaint and no template reads it.
 
-!!! note "OBC auto-provisioning"
-    In the reference deployment a `rook-ceph` ObjectBucketClaim is applied through
-    the presync hook (`raw/conversation-bucket.tatara-operator.pre.yaml`) and
-    generates the credentials Secret itself. Check that `s3Endpoint` matches
-    `BUCKET_HOST:BUCKET_PORT` in the OBC-generated ConfigMap before you apply.
+!!! warning "`values/tatara-operator/default.yaml` still sets five of them"
+    They are left over from the removed feature and are read by nothing. The
+    comment above them describes the wiring as forward-compatible with a build
+    that would consume them; no such build exists on `main`. Treat the block as
+    dead configuration to be deleted in `tatara-helmfile`, not as a feature to
+    enable here.
+
+`s3SecretName` is the one survivor and IS still a live chart value: when set, the
+operator Deployment picks up `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` from
+that Secret via a conditional `envFrom`. The client that used those credentials
+has been deleted along with the rest, so it currently mounts credentials nothing
+consumes.
 
 ### Memory backups (optional)
 
