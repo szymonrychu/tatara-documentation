@@ -5,3 +5,8 @@ pymdown-extensions==10.9
 # Pinned: pygments >=2.20 crashes on pymdown-extensions 10.9's filename=None
 # for title-less code fences (html.escape(None)). 2.19.2 is the last tolerant line.
 pygments==2.19.2
+# Pinned explicitly rather than inherited transitively from mkdocs:
+# scripts/gen_crd_keys.py parses the upstream CRDs and chart values with it.
+# scripts/check_crd_keys.py, the blocking gate, is stdlib-only and does not
+# need it - that is what keeps the merge gate runnable with no install.
+pyyaml==6.0.3

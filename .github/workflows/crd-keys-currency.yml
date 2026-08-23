@@ -1,0 +1,232 @@
+name: crd-keys-currency
+
+# Scheduled staleness check on scripts/crd-keys.json (tatara-documentation#55).
+# Deliberately NOT on pull_request and NOT a step of docs.yml:
+#
+# - It clones four private repos, so it cannot live in check_crd_keys.py without
+#   costing that merge gate its offline, stdlib-only, no-token contract. The
+#   snapshot is committed precisely so the blocking guard needs no network. A
+#   fail-closed clone on the merge gate is permanently red CI the day the secret
+#   is not provisioned, and this repo's workflows reference no secret today.
+# - Staleness is a fleet condition, not a property of the PR in front of you. A
+#   key that never existed is a property of the PR that wrote it and belongs on
+#   the merge gate; a key that exists but is missing from a hand-taken snapshot
+#   is drift and belongs here.
+#
+# The shape is copied from tatara-agent-skills' vocabulary-currency.yml, which
+# closed the same class for platform-vocabulary.json. Same split, same reasoning:
+# lint.yml is tokenless over the committed snapshot, the scheduled job holds
+# TATARA_CD_TOKEN.
+#
+# NO auto-merge. A snapshot bump changes what a blocking guard accepts and
+# rejects, so the PR gets a human.
+#
+# Known limit, shared with the agent-skills job: GitHub disables a scheduled
+# workflow after 60 days of repository inactivity. A repo quiet that long has no
+# docs drifting either, but only workflow_dispatch or a commit brings it back.
+
+on:
+  schedule:
+    # 07:10 UTC daily, after tatara-agent-skills' 06:40 vocabulary-currency run.
+    - cron: '10 7 * * *'
+  workflow_dispatch:
+
+# The bump branch is rebuilt and force-pushed, so two overlapping runs would race
+# the older snapshot over the newer one.
+concurrency:
+  group: crd-keys-currency
+  cancel-in-progress: false
+
+jobs:
+  currency:
+    name: Check the CRD key snapshot against the schema-owning repos
+    runs-on: ubuntu-latest
+    # Read-only: every write below goes through TATARA_CD_TOKEN. `contents: read`
+    # on the job token does not reach another private repo, which is exactly why
+    # the blocking gate cannot do this.
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The bump step pushes with TATARA_CD_TOKEN via the remote URL. Left
+          # persisted, checkout's http.extraheader Authorization would still be
+          # sent alongside it, carrying the read-only github.token this job
+          # declares, and the push would 403 while looking like a problem in the
+          # wrong credential.
+          persist-credentials: false
+
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Install dependencies
+        run: mise run install
+
+      # FAILS CLOSED. This job gates nothing, so a skipped clone reporting green
+      # is a currency check that silently stopped checking. `set -euo pipefail`
+      # before the clones, so it reds.
+      #
+      # Full clone, not --depth 1: gen_crd_keys.py runs `git describe --tags
+      # --abbrev=0` for the provenance block, which needs a tag reachable from
+      # HEAD. A depth-1 clone has no ancestry and the version silently becomes
+      # "unknown".
+      - name: Re-derive the snapshot and compare
+        id: check
+        env:
+          TOKEN: ${{ secrets.TATARA_CD_TOKEN }}
+        run: |
+          set -euo pipefail
+          checkouts=""
+          for repo in tatara-operator tatara-memory tatara-memory-repo-ingester tatara-claude-code-wrapper; do
+            work="${RUNNER_TEMP}/${repo}"
+            git clone "https://x-access-token:${TOKEN}@github.com/szymonrychu/${repo}.git" "$work"
+            checkouts="${checkouts} ${work}"
+          done
+
+          set +e
+          mise exec -- python3 scripts/check_crd_keys_currency.py ${checkouts} 2>&1 \
+            | tee "${RUNNER_TEMP}/currency.log"
+          verdict="${PIPESTATUS[0]}"
+          set -e
+          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
+
+          # Only 0/1/2/3 have a branch below, so ANY other status - 127 from a
+          # broken PATH, 137 from an OOM kill, 143 from a runner timeout - would
+          # leave this step at exit 0 and the whole job GREEN. That is the exact
+          # fail-open this job's docstring argues against, reached through the
+          # `set +e` that captures the verdict.
+          case "$verdict" in
+            0|1|2|3) ;;
+            *) echo "::error::check_crd_keys_currency.py exited ${verdict}, which is not a verdict"
+               exit 1 ;;
+          esac
+
+      # Exit 2. The derivation collapsed - a CRD layout moved out from under the
+      # walker, or a checkout has no charts/ - and the bump PR would DELETE live
+      # keys. Red, and propose nothing.
+      - name: Suspect derivation - refuse to propose a bump
+        if: ${{ steps.check.outputs.verdict == '2' }}
+        run: |
+          echo "::error::gen_crd_keys.py derived a collapsed snapshot; check its walker against the upstream charts before touching scripts/crd-keys.json"
+          exit 1
+
+      # Exit 3. The script could not run at all. Kept off the message above so a
+      # bad argv or an unreadable snapshot is not reported as a fault upstream.
+      - name: Currency check could not run
+        if: ${{ steps.check.outputs.verdict == '3' }}
+        run: |
+          echo "::error::check_crd_keys_currency.py could not compare - see the log above"
+          exit 1
+
+      # The regenerated snapshot must still validate the corpus. If an upstream repo
+      # REMOVED a key some page still documents, this bump reds the blocking gate on
+      # merge; say so in the PR body rather than shipping a surprise. Capture the
+      # status on its own line - `$?` inside a command substitution is a trap.
+      - name: Check the corpus against the regenerated snapshot
+        if: ${{ steps.check.outputs.verdict == '1' }}
+        id: corpus
+        run: |
+          set +e
+          mise exec -- python3 scripts/check_crd_keys.py > "${RUNNER_TEMP}/corpus.log" 2>&1
+          rc="$?"
+          set -e
+          cat "${RUNNER_TEMP}/corpus.log"
+          if [ "$rc" -eq 0 ]; then
+            echo "state=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "state=DIRTY" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update the bump PR
+        if: ${{ steps.check.outputs.verdict == '1' }}
+        env:
+          TOKEN: ${{ secrets.TATARA_CD_TOKEN }}
+          GH_TOKEN: ${{ secrets.TATARA_CD_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          CORPUS: ${{ steps.corpus.outputs.state }}
+        run: |
+          set -euo pipefail
+          branch="cd/crd-keys-bump"
+          title="chore: refresh the CRD key snapshot from the schema-owning repos"
+
+          git config user.name "szymonrychu-bot"
+          git config user.email "szymonrychu-bot@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+          pr="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
+
+          # Base the bump on the OPEN PR's own head, not on main. The DIRTY case
+          # tells a human to correct pages ON THIS BRANCH, and a reviewer may push
+          # there too; rebuilding from main every night would force-push all of that
+          # away and re-open the same PR still DIRTY. The fetch is NOT
+          # error-suppressed - a fetch that fails while a PR is open must not fall
+          # through to the rebuild-from-main path.
+          #
+          # With no open PR the branch is disposable, so it is rebuilt from main.
+          # That is also how a branch orphaned by a closed PR gets reset rather than
+          # resurrected with whatever was on it.
+          #
+          # The regenerated snapshot is carried across the switch by hand: it is an
+          # uncommitted modification and the checkout must not be what decides its
+          # fate.
+          cp scripts/crd-keys.json "${RUNNER_TEMP}/regenerated.json"
+          git checkout -- scripts/crd-keys.json
+          if [ -n "$pr" ]; then
+            git fetch --depth 1 origin "$branch"
+            git checkout -B "$branch" FETCH_HEAD
+          else
+            git checkout -B "$branch"
+          fi
+          cp "${RUNNER_TEMP}/regenerated.json" scripts/crd-keys.json
+
+          # Nothing to push when the branch already carries this exact snapshot -
+          # a re-run must not reset the PR's checks and review for no change.
+          if git diff --quiet -- scripts/crd-keys.json; then
+            echo "${branch} already carries the regenerated snapshot; not pushing"
+          else
+            git add scripts/crd-keys.json
+            git commit -m "$title"
+            git push --force origin "${branch}:${branch}"
+          fi
+
+          {
+            echo "Re-derived from \`main\` of tatara-operator, tatara-memory,"
+            echo "tatara-memory-repo-ingester and tatara-claude-code-wrapper by the scheduled"
+            echo "\`crd-keys-currency\` job. Regenerate locally with:"
+            echo
+            echo '```'
+            echo "mise run gen-crd-keys"
+            echo '```'
+            echo
+            echo "### Drift this branch closes"
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/currency.log" 2>/dev/null || echo "(no drift log)"
+            echo '```'
+            echo
+            echo "### check_crd_keys.py against this branch's snapshot: ${CORPUS}"
+            echo
+            echo '```'
+            cat "${RUNNER_TEMP}/corpus.log" 2>/dev/null || echo "(no validator log)"
+            echo '```'
+            if [ "$CORPUS" = "DIRTY" ]; then
+              echo
+              echo "**Do not merge as-is.** A key some page documents is gone upstream, so this"
+              echo "bump reds the blocking gate. Correct the page on this branch first."
+            fi
+            echo
+            echo "Not auto-merged on purpose: this changes what \`check_crd_keys.py\` accepts."
+          } > "${RUNNER_TEMP}/pr.md"
+
+          if [ -z "$pr" ]; then
+            gh pr create --title "$title" --body-file "${RUNNER_TEMP}/pr.md" --head "$branch" --base main
+          else
+            gh pr edit "$pr" --body-file "${RUNNER_TEMP}/pr.md"
+          fi
+
+          # Red until the bump merges. A green run with an open bump PR is a
+          # channel nobody reads.
+          exit 1

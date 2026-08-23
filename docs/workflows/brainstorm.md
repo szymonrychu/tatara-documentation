@@ -16,10 +16,12 @@ refills toward that level from three triggers:
 
 - **Maintainer verdict (primary).** The moment a proposal is approved, declined,
   or closed, it leaves the pending set and the operator launches the next
-  session immediately - no cooldown, no rate limit, no refine barrier.
+  session as soon as the `minSessionIntervalMinutes` floor has elapsed - no
+  refine barrier on this path.
 - **Cron (backstop).** `spec.scm.cron.brainstorm.schedule` still fires, still
   behind the [refine barrier](refine.md), and repairs the backlog after a
-  dropped event or a tripped skip breaker. It also resets the breaker.
+  dropped event. It is a pure backstop now: there is no breaker for it to reset,
+  and it obeys the same session cooldown the event path does.
 - **Periodic resync.** The Project reconciler re-evaluates the backlog every 15
   minutes, so a lost watch event costs refill *latency*, never correctness.
 
@@ -116,14 +118,28 @@ quota to the agent, and the operator **truncates** the submitted array to `<K>`.
 Operator-side truncation is the authority, so an agent that ignores the quota
 cannot overshoot the target.
 
-### Skip circuit breaker
+### Session cooldown
 
-Consecutive sessions that end in `action: skip` increment a counter;
-`action: propose` resets it. At `maxConsecutiveSkips` (default 3) the
-event-driven refill path is suppressed until a cron tick resets the counter. This
-is a liveness brake, not pacing: without it, a genuinely exhausted idea space
-would loop skip -> unchanged deficit -> reconcile -> spawn -> skip forever. As
-long as sessions keep producing, refill stays instant.
+A skip files no Issue, so the deficit that woke the event path is still positive
+when the session ends and the wake fires again immediately. The floor that stops
+that busy-loop is `minSessionIntervalMinutes` (default 12): a durable per-project
+minimum wall-clock gap between two brainstorm **sessions**, applied whichever
+path dispatched the prior one. Refill inside that window is refused with the
+distinct reason `cooling-down`, separate from `paused` and `at-target`. The first
+session of a project is never gated - the floor delays the next one.
+
+It is a **rate limit, not a circuit breaker**: it never inspects how the prior
+session ended, so a skip and a propose are throttled identically. Deliberately
+stopping is a separate, explicit thing the agent asks for (`action: exhausted`).
+
+!!! danger "The skip circuit breaker is retired"
+    Consecutive `action: skip` sessions no longer increment anything and
+    `maxConsecutiveSkips` is not a field. <!-- stale-ok: maxConsecutiveSkips --> The
+    breaker suppressed the event path once the counter crossed a threshold and
+    **only** a cron tick reset it, so the fast path could be wedged and the slow
+    path was the sole un-wedge. It also charged correct behaviour - an agent
+    reporting "nothing worth proposing" - toward a brake, so a healthy project
+    switched its own fast path off. See `internal/controller/proposalcount.go`.
 
 ### Proposal history in the prompt
 
@@ -158,23 +174,24 @@ survive.
     This is a deliberate tradeoff, not an oversight.
 
 This is a different gate from `action: skip`: a skip is a spawned pod choosing to yield nothing
-after it looked, not the operator refusing to spawn one. The operator refuses to spawn on the
-**event path** when the deficit is zero or the breaker is tripped; the **cron backstop** ignores
-the breaker entirely and spawns whenever the deficit is positive - that is what lets it reset the
-breaker and repair a backlog the event path stopped refilling.
+after it looked, not the operator refusing to spawn one. Both trigger paths now run the same
+control law - refill when the deficit is positive, the project is not paused, and the session
+cooldown has elapsed - so neither path can wedge the other.
 
 ## Staleness reaper
 
-`Project.spec.scm.cron.brainstorm.staleProposalDays`, when set to a positive value, opts in a
-reaper that auto-closes bot-authored proposal issues with no human engagement for at least that
-many days. The unset default disables it entirely - an explicit opt-in, not a kubebuilder
-default.
+There isn't one. `Project.spec.scm.cron.brainstorm.staleProposalDays` is a real CRD field and
+describes a reaper that auto-closes bot-authored proposals with no human engagement, but **no
+code reads it** - the field is declared and unconsumed, and the operator's `MEMORY.md` records it
+as deliberately not built. Nothing auto-closes a stale proposal at any age today.
 
-## Conversation forking
+## Each session starts fresh
 
-When a brainstorm agent's proposals are accepted, each resulting `implement`-origin Task gets a **forked
-copy** of the brainstorm conversation (S3 copy-object) as its starting context, without the
-transcripts interfering with each other.
+There is no conversation carried from a brainstorm session into the `implement`-origin Tasks its
+proposals mint, and no fork of it. S3 conversation persistence and restore were removed on
+2026-07-04 and the wrapper carries a regression guard against their return. What an implement
+pod gets is the ordinary turn-0 [context bundle](../reference/context-bundle.md), which includes
+the proposal issue and its full thread.
 
 ## Fan-out for wide surveys
 
@@ -195,12 +212,11 @@ spec:
         schedule: "0 9 * * 1"      # the backstop, not the primary trigger
         targetOpenProposals: 3
         historyWindow: 20
-        maxConsecutiveSkips: 3
+        minSessionIntervalMinutes: 12
         sources:
           - memory    # knowledge graph (always recommended)
           - docs      # docs/ directory content
           - internet  # outbound internet egress (requires NetworkPolicy)
-        staleProposalDays: 14
 ```
 
 With `internet` in `sources`, the operator stamps `tatara.io/egress: internet` on the brainstorm
