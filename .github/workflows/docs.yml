@@ -35,6 +35,16 @@ jobs:
       - name: Check for stale pre-redesign terms
         run: ./scripts/check-stale-terms.sh
 
+      # The provenance half of the docs contract. check-stale-terms.sh above is a
+      # hand-maintained DENYLIST and structurally cannot know that a documented key
+      # never existed; this reconciles every documented YAML key and reference-table
+      # identifier against the rendered CRD schema and the chart values surface, from
+      # a committed snapshot. Offline and stdlib-only on purpose - a blocking gate
+      # that clones a private repo goes red the day its secret is not provisioned.
+      # Snapshot currency is owned by crd-keys-currency.yml, which is scheduled.
+      - name: Check documented CRD keys against the schema snapshot
+        run: mise exec -- python3 scripts/check_crd_keys.py
+
       - name: Runbook anchor guard self-tests
         run: mise exec -- python3 -m unittest discover scripts -p 'test_*.py' -v
 

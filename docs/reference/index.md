@@ -159,13 +159,15 @@ kubectl -n tatara get repositories
 | `memory.externalEndpoint` | string | External URL when exposed |
 | `grafana.phase` | string | Phase of the grafana-mcp sidecar |
 | `grafana.endpoint` | string | In-cluster grafana-mcp endpoint |
-| `lastMRScan` | `*Time` | Timestamp of most recent MR scan cycle |
 | `lastIssueScan` | `*Time` | Timestamp of most recent issue scan cycle |
 | `lastBrainstorm` | `*Time` | Timestamp of most recent brainstorm cycle |
 | `lastDocumentation` | `*Time` | Timestamp of most recent documentation cron cycle |
-| `lastCDScan` | `*Time` | RETIRED - there is no independent deploy-supervision backstop cron any more; every stage's stall detection is a fixed per-stage clock. See [Project reference](project.md#status). |
 | `lastRefine` | `*Time` | Timestamp of most recent refine pre-step |
+| `lastUpgrade` | `*Time` | Timestamp of most recent upgrade cron cycle |
 | `tokenBudget` | object | Token-budget accumulator/snapshot: the custom-window running total and the latest Claude-subscription usage snapshot reported by the wrapper. See [Project reference](project.md). |
+
+!!! warning "Three status timestamps were removed, not deprecated"
+    `lastMRScan`, `lastCDScan` and `lastHealthCheck` are not in `ProjectStatus` or in the rendered CRD. <!-- stale-ok: healthCheck --> They were previously listed here as read-only fields "kept for back-compat round-trip", which an absent field cannot be: it is pruned on write, silently. Their mechanisms went with them - `mrScan` was deleted in the 2026-07-13 redesign, there is no deploy-supervision backstop cron, and `healthCheck` no longer fires. <!-- stale-ok: healthCheck -->
 
 `Task.status` fields are documented on the [Task reference](task.md#taskstatus).
 

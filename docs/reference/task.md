@@ -362,7 +362,7 @@ migration.
 | `sessionID`, `conversationObjectKey`, `handover` | `status.notes`, as a `handoff` note. There is no session resume and no continuation preamble <!-- stale-ok: sessionID, conversationObjectKey, handover --> |
 | `prURL`, `prNumber`, `headBranch`, `mergeCommitSHA`, `mergedHeadSHA` | `MergeRequest.status` <!-- stale-ok: prNumber, headBranch, mergeCommitSHA, mergedHeadSHA --> |
 | `deployedVersion`, `deployArtifact`, `cascadeStage` | `MergeRequest.status`. There is no cascade state machine any more; `merging` and `deploying` are ordinary stages <!-- stale-ok: deployedVersion, deployArtifact, cascadeStage --> |
-| `changeSummary` | `MergeRequest.status.significance`, plus the `submit_outcome` payload <!-- stale-ok: changeSummary --> |
+| `changeSummary` | `MergeRequest.status.significance`, plus the `submit_outcome` payload <!-- stale-ok: changeSummary --><!-- crd-ok: changeSummary --> |
 | `reviewVerdict`, `prOutcome`, `issueOutcome`, `implementOutcome`, `brainstormOutcome` | `submit_outcome` - one tool name, one schema per agent kind <!-- stale-ok: reviewVerdict, prOutcome, issueOutcome, implementOutcome, brainstormOutcome --> |
 | `turnsCompleted`, `cumulativeTokens`, `lastTurnInputTokens`, `cumulativeInput`, `cumulativeOutput`, `cumulativeCacheRead`, `cumulativeCacheCreation` | `status.stats` <!-- stale-ok: turnsCompleted, cumulativeTokens --> |
 | `approvedByMaintainer`, `autoApproved` | `Issue.status.approval` (single-use `ApprovalEvidence`). Approval is comment **text**, matched by the operator; labels are write-only <!-- stale-ok: approvedByMaintainer, autoApproved --> |
@@ -393,7 +393,7 @@ too:
 | `stage=merging`, `deploying` | `status.state=merged`, `deployed` |
 | `stage=documenting` | `status.state=under-implementation` with `agentKind=documentation` |
 | `status.stageEnteredAt` / `stageWorkStartedAt` / `stageReason` | `status.stateEnteredAt` / `stateWorkStartedAt` / `stateReason` (the last now mandatory only on `rejected`, not on every terminal) |
-| `status.parkedFromStage` | `status.parkedFromState` (same observability-only semantics, plus one load-bearing use: the `no-outcome` un-park gate) |
+| `status.parkedFromStage` | `status.parkedFromState` (same observability-only semantics, plus one load-bearing use: the `no-outcome` un-park gate) <!-- crd-ok: parkedFromStage --> |
 | `Task.spec.kind: clarify` | `Task.spec.kind: implement` (`SweepIssueKind`) - the same mint path, an issue webhook or the backlog sweep. Its three decisions became `action` values on the `implement` outcome - see [Approval Gates](../operations/security/approval-gates.md) |
 
 `Note.Agent`'s enum still lists `clarify` as a valid **historical** value

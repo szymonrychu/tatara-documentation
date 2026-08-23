@@ -97,7 +97,7 @@ the merge itself - see
 | Implementation approval | The [approval grammar](approval-gates.md#the-approval-grammar): the `implement` agent judges whether a comment approves and cites it, plus pins the plan it wants approved; the operator verifies the citation exists, its author is a verified non-bot maintainer, its quoted text truly occurs in the body the operator holds, and it has not already been consumed - pinned as single-use `ApprovalEvidence`. There is no most-recent-comment check; that judgment is the agent's. `maintainerLogins` is closed by default (an empty list approves nothing) |
 | Code merge gate | The **operator** merges, on an accepted review verdict, on green CI, at the exact reviewed head SHA. No MCP tool exposes merge; the forge's native merge-on-green is never armed. The gate is operator logic, not a forge control - see the accepted risk on the approval-gates page |
 | API authentication | OIDC bearer tokens, per-service audience |
-| Agent tool surface | `TATARA_TOOL_PROFILE` per task kind; 20 tools, fail-closed |
+| Agent tool surface | `TATARA_TOOL_PROFILE` per task kind; 21 tools, fail-closed |
 | Agent headless mode | Interactive pickers hard-denied in `settings.json` |
 | Bot exclusion from self-approval | Every mirrored comment carries `isBot`, set from `botLogin`; the operator refuses a bot-authored citation before it checks the quoted text |
 | Commit identity | Bot email only (`botEmail` on ScmSpec) |
