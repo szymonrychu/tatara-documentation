@@ -238,9 +238,11 @@ merge. Omitting a label removes it from the rule.
 | `severity` | `"warning"`, `"critical"`, or `"info"` | `warning`/`critical` trigger an incident Task; `info` routes to email only |
 
 !!! warning "Per-rule labels replace defaults"
-    The `labels` map on a rule **replaces** the module's `default_labels` (`homelab: "true"`).
-    If you set a `labels` block without `homelab: "true"`, the rule will not match the homelab
-    notification policy and will fire silently. Always set all four labels explicitly.
+    The `labels` map on a rule **replaces** the module's `default_labels`, which default to `{}`
+    and are not wired to anything in this repo. Omitting `labels` renders the rule with no
+    labels at all, not a homelab-routed fallback. Always set all four labels explicitly, and
+    let CI catch a mistake: `scripts/check_routing_labels.py` blocks a PR whose rule drops
+    `homelab`, uses an unrecognised `severity`, or violates the severity/system pairing above.
 
 !!! note "Info rules"
     Rules that should surface in Grafana but not page on-call omit `system: "tatara"`.
