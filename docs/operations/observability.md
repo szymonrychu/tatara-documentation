@@ -173,10 +173,16 @@ footprint.
 
 ## 3. Alerts
 
-Tatara ships alert rules from two sources with different scopes and update paths: a chart
-`PrometheusRule` baked into `tatara-operator` for an always-correct baseline, and the richer,
-per-component rule set in `tatara-observability` applied via Terraform CI. The stage-machine
-rewrite below concerns both: any rule keyed on `phase`, `lifecycleState`, `cascadeStage`, <!-- stale-ok: lifecycleState, cascadeStage -->
+Tatara defines alert rules in four places, but only one delivers on this cluster: the
+per-component rule set in `tatara-observability`, applied via Terraform CI and routed through
+the `Tatara` contact point into the operator's incident webhook. The other three -
+`tatara-operator`'s chart `PrometheusRule`, `tatara-memory`'s chart `PrometheusRule`, and
+`tatara-operator`'s own Go-defined `memoryAlertRules` (`internal/memory/monitoring.go`) - are
+non-delivering specifications: this cluster's Alertmanager never loads them
+(`prometheusRule.enabled: false` in tatara-helmfile, issue #440), and
+`check_alert_plane_parity.py` in `tatara-observability` reconciles them against the delivering
+plane rather than deploying them. The stage-machine rewrite below concerns the delivering plane:
+any rule in `tatara-observability` keyed on `phase`, `lifecycleState`, `cascadeStage`, <!-- stale-ok: lifecycleState, cascadeStage -->
 `implementGiveUps`, or `linksSyncFailures` no longer has a metric to read. <!-- stale-ok: implementGiveUps, linksSyncFailures -->
 
 ### Rewritten (8 rules keyed on deleted fields)
