@@ -1,12 +1,12 @@
 {
   "provenance": {
     "generator": "scripts/gen_crd_keys.py",
-    "generatedFrom": "szymonrychu/tatara-operator@v3.11.0, szymonrychu/tatara-memory@v0.5.1, szymonrychu/tatara-memory-repo-ingester@v0.3.1, szymonrychu/tatara-claude-code-wrapper@v3.7.1",
+    "generatedFrom": "szymonrychu/tatara-operator@v5.1.0, szymonrychu/tatara-memory@v0.6.0, szymonrychu/tatara-memory-repo-ingester@v0.3.1, szymonrychu/tatara-claude-code-wrapper@v3.7.2",
     "sources": [
       {
         "repo": "szymonrychu/tatara-operator",
-        "version": "v3.11.0",
-        "commit": "9e2acc17ea686b227e3fa83ff73354fca090f315",
+        "version": "v5.1.0",
+        "commit": "f9c19f8226d110d6766bdf75eb7b83e2b9db3ecf",
         "paths": [
           "charts/tatara-operator/crd-bases/tatara.dev_issues.yaml",
           "charts/tatara-operator/crd-bases/tatara.dev_mergerequests.yaml",
@@ -22,8 +22,8 @@
       },
       {
         "repo": "szymonrychu/tatara-memory",
-        "version": "v0.5.1",
-        "commit": "68908086c7aade0e06c814fa35ddf2f4adaba8e5",
+        "version": "v0.6.0",
+        "commit": "5a98aa92940bb494d2a3e00c7247b3f65f033960",
         "paths": [
           "charts/tatara-memory/charts/lightrag/values.yaml",
           "charts/tatara-memory/values.yaml",
@@ -42,8 +42,8 @@
       },
       {
         "repo": "szymonrychu/tatara-claude-code-wrapper",
-        "version": "v3.7.1",
-        "commit": "0cf409b9c77bed8235394a0e062002bfe666f339",
+        "version": "v3.7.2",
+        "commit": "d94acc8c253d9fbb26cd5a17a5cec90a27bc88f1",
         "paths": [
           "charts/tatara-claude-code-wrapper/values.yaml",
           "charts/tatara-claude-code-wrapper/templates/**"
@@ -82,7 +82,7 @@
     "author",
     "authorLogin",
     "auto",
-    "autoApproveTataraProposals",
+    "autoApproveMaxSignificance",
     "autonomous",
     "awsElasticBlockStore",
     "azureDisk",
@@ -672,6 +672,7 @@
     "none",
     "note",
     "object-too-large",
+    "off",
     "open",
     "operator",
     "operator-error",
