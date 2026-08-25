@@ -55,11 +55,11 @@ The redesign's own umbrella Task declares this order in `spec.mergeOrder`. Every
 
 | # | Location | What it pins |
 |---|---|---|
-| 1 | `helmfile.yaml.gotmpl:64` | `tatara-operator` chart version - lands the new CRDs |
-| 2 | `helmfile.yaml.gotmpl:83` | `project-tatara` release, `tatara-project` chart version |
-| 3 | `helmfile.yaml.gotmpl:95` | `project-infrastructure` release, `tatara-project` chart version |
-| 4 | `values/project-tatara/common.yaml:38` | agent image |
-| 5 | `values/project-infrastructure/common.yaml:37` | agent image |
+| 1 | `helmfile.yaml.gotmpl:85` | `tatara-operator` chart version - lands the new CRDs |
+| 2 | `helmfile.yaml.gotmpl:104` | `project-tatara` release, `tatara-project` chart version |
+| 3 | `helmfile.yaml.gotmpl:116` | `project-infrastructure` release, `tatara-project` chart version |
+| 4 | `values/project-tatara/common.yaml:66` | agent image |
+| 5 | `values/project-infrastructure/common.yaml:63` | agent image |
 
 Pins 2 and 3 are what render the `Project` and `Repository` CRs. Miss either one and that project's CRs stay on the old vocabulary - silently, because a `map[string]string` ignores an unmatched key rather than rejecting it.
 
@@ -109,7 +109,7 @@ Confirm all of the following before touching PR-B:
 - all five component releases (operator, cli, agent-skills, wrapper, observability) are green in `main`
 - the `tatara-chat` <!-- stale-ok: tatara-chat --> Postgres dump exists, or the loss is signed off in writing
 - both agent-image pins are ready to land: `values/project-tatara/common.yaml` and `values/project-infrastructure/common.yaml`
-- the fifth pin is ready: the `tatara-project` chart, at both `helmfile.yaml.gotmpl:83` and `:95`
+- the fifth pin is ready: the `tatara-project` chart, at both `helmfile.yaml.gotmpl:104` and `:116`
 - both `values/project-*/common.yaml` are migrated to the new vocabulary (see [PR-B item (e)](#pr-b-the-train-irreversible) below), and a `helmfile template` diff confirms the rendered `Project` CR carries `maxConcurrentAgents: 5` - every one of these migrations fails silently if skipped
 - PR-B removes `--rollback-on-failure` from `helmDefaults.syncArgs` globally, and `helmfile build` passes
 - PR-B edits the CRD-adopt pre-hook: adds `issues`, adds `mergerequests`, drops `subtasks` <!-- stale-ok: subtask -->
@@ -140,9 +140,9 @@ One `tatara-helmfile` PR containing all of the following, together:
 
 Left in place, any failure during PR-B's own apply would trigger an automatic rollback nobody asked for - and a rollback of a CRD present in both revisions is an **update**, not a skipped deletion. `resource-policy: keep` only skips deletion. That update would patch the new `Issue`/`MergeRequest` schema back to the old one, over the CRs the new operator just wrote. **PR-C restores this line once the operator is back at `replicaCount: 3`.** Verify the removal with `helmfile build` before merging either PR - it strict-decodes the state file, so a stray or missing key errors loudly instead of being silently ignored.
 
-**(c) The agent image pin, in both files** - `values/project-tatara/common.yaml:38` and `values/project-infrastructure/common.yaml:37`. `project-infrastructure` is the GitLab project, and its repos include `tatara-helmfile` itself: miss this pin and every infrastructure Task starts failing on a contract mismatch.
+**(c) The agent image pin, in both files** - `values/project-tatara/common.yaml:66` and `values/project-infrastructure/common.yaml:63`. `project-infrastructure` is the GitLab project, and its repos include `tatara-helmfile` itself: miss this pin and every infrastructure Task starts failing on a contract mismatch.
 
-**(d) The `tatara-project` chart pins, at both `helmfile.yaml.gotmpl:83` and `:95`.** The `Project`/`Repository` CRs are rendered by a separate chart from the operator's own. Miss this pin and both `Project` CRs stay on the old vocabulary, silently.
+**(d) The `tatara-project` chart pins, at both `helmfile.yaml.gotmpl:104` and `:116`.** The `Project`/`Repository` CRs are rendered by a separate chart from the operator's own. Miss this pin and both `Project` CRs stay on the old vocabulary, silently.
 
 **(d2) The CRD-adopt pre-hook** (`values/tatara-operator/hooks/crd-adopt.tatara-operator.pre.sh:20-24`) - a hardcoded CRD list the hook uses to adopt pre-existing CRDs into the helm release. `projects.tatara.dev`, `repositories.tatara.dev`, `tasks.tatara.dev` and `queuedevents.tatara.dev` are unchanged; PR-B adds `issues.tatara.dev` and `mergerequests.tatara.dev`, and drops `subtasks.tatara.dev`. <!-- stale-ok: subtask -->
 A CRD missing from this list is never adopted; a deleted CRD still listed makes the hook operate on something that no longer exists.

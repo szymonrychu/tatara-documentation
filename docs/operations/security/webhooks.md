@@ -200,34 +200,23 @@ is either fully on (both operator and wrapper share the secret) or fully off.
 
 ## Callback URL constraints
 
-The operator injects the callback URL into each wrapper pod as `CALLBACK_URL`.
-Before submitting a turn, the wrapper validates the URL with
-`validateCallbackURL` in `internal/httpapi/messages.go`. The rules:
-
-| Check | Allowed | Blocked |
-|-------|---------|---------|
-| Scheme | `http`, `https` | Anything else |
-| Literal `localhost` | - | Blocked unconditionally |
-| Loopback IP | - | `127.x.x.x`, `::1` |
-| Unspecified | - | `0.0.0.0`, `::` |
-| Link-local | - | `169.254.x.x`, `fe80::/10` (covers EC2/GCP metadata) |
-| Private ranges | - | RFC1918 `10/8`, `172.16/12`, `192.168/16`; IPv6 ULA `fc00::/7` |
-| Hostname (DNS name) | Allowed (resolves at delivery) | - |
-
-The rationale for allowing `http` scheme is that the callback target is always
-an in-cluster ClusterIP Service with no external exposure. TLS on an internal
-service that never touches the internet adds operational cost without security
-value. The IP-range guards provide the SSRF protection: a redirect or a crafted
-URL that points to a cloud metadata endpoint (`169.254.169.254`) or a private
-service is blocked at the IP level regardless of scheme.
-
-Configure the callback URL via `callbackUrl` in the operator values. Set it to
-the in-cluster DNS name of the `tatara-operator-internal` Service:
+The operator reads its own callback base URL from `callbackUrl` in the chart
+values (env `CALLBACK_URL`) and derives the value it hands each wrapper pod by
+appending `/internal/turn-complete`, injected as `DEFAULT_CALLBACK_URL`
+(`internal/agent/pod.go`):
 
 ```yaml
 # values/tatara-operator/common.yaml
 callbackUrl: "http://tatara-operator-internal.tatara.svc:8082"
 ```
+
+There is no URL-validation step on this value in the current codebase.
+`internal/httpapi/messages.go` does not exist, and no `validateCallbackURL`
+function, scheme check, or IP-range guard exists anywhere in
+`tatara-operator` - an exhaustive search for loopback, link-local, and
+private-range handling on this path returns nothing. The value is entirely
+operator-configured, not derived from untrusted input, so this is not an SSRF
+exposure; it does mean no such validation function exists to reference.
 
 ---
 
