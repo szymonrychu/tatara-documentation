@@ -200,6 +200,9 @@ is either fully on (both operator and wrapper share the secret) or fully off.
 
 ## Callback URL constraints
 
+Two distinct `callbackUrl` values exist on this path, with different trust
+levels and different validation.
+
 The operator reads its own callback base URL from `callbackUrl` in the chart
 values (env `CALLBACK_URL`) and derives the value it hands each wrapper pod by
 appending `/internal/turn-complete`, injected as `DEFAULT_CALLBACK_URL`
@@ -210,13 +213,24 @@ appending `/internal/turn-complete`, injected as `DEFAULT_CALLBACK_URL`
 callbackUrl: "http://tatara-operator-internal.tatara.svc:8082"
 ```
 
-There is no URL-validation step on this value in the current codebase.
-`internal/httpapi/messages.go` does not exist, and no `validateCallbackURL`
-function, scheme check, or IP-range guard exists anywhere in
-`tatara-operator` - an exhaustive search for loopback, link-local, and
-private-range handling on this path returns nothing. The value is entirely
-operator-configured, not derived from untrusted input, so this is not an SSRF
-exposure; it does mean no such validation function exists to reference.
+This value is operator-configured, not derived from untrusted input, and the
+operator applies no URL validation to it - there is no SSRF exposure to guard
+against here.
+
+The wrapper pod's own `POST /v1/messages` endpoint accepts a second, per-turn
+`callbackUrl` in the request body (`postMessageReq.CallbackURL`), which
+overrides `DEFAULT_CALLBACK_URL` for that turn only when non-empty
+(`cmd/wrapper/app.go`, `defaultCB` fallback). Because this value can originate
+from a caller of the wrapper's API rather than from operator-controlled chart
+values, it is validated: `validateCallbackURL` in
+`tatara-claude-code-wrapper/internal/httpapi/messages.go:16-65` rejects
+anything but the `http`/`https` scheme, the literal host `localhost`, loopback
+addresses, unspecified addresses (`0.0.0.0`, `::`), link-local addresses
+(covers the cloud metadata IP), and private ranges via `net.IP.IsPrivate()`
+(RFC1918 IPv4 and IPv6 unique-local `fc00::/7`). It does not resolve
+hostnames, so a private IP reachable only via DNS is not caught by this guard.
+Validation runs in `postMessage` (`messages.go:86`) before the turn is
+submitted.
 
 ---
 
