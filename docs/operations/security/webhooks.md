@@ -200,34 +200,37 @@ is either fully on (both operator and wrapper share the secret) or fully off.
 
 ## Callback URL constraints
 
-The operator injects the callback URL into each wrapper pod as `CALLBACK_URL`.
-Before submitting a turn, the wrapper validates the URL with
-`validateCallbackURL` in `internal/httpapi/messages.go`. The rules:
+Two distinct `callbackUrl` values exist on this path, with different trust
+levels and different validation.
 
-| Check | Allowed | Blocked |
-|-------|---------|---------|
-| Scheme | `http`, `https` | Anything else |
-| Literal `localhost` | - | Blocked unconditionally |
-| Loopback IP | - | `127.x.x.x`, `::1` |
-| Unspecified | - | `0.0.0.0`, `::` |
-| Link-local | - | `169.254.x.x`, `fe80::/10` (covers EC2/GCP metadata) |
-| Private ranges | - | RFC1918 `10/8`, `172.16/12`, `192.168/16`; IPv6 ULA `fc00::/7` |
-| Hostname (DNS name) | Allowed (resolves at delivery) | - |
-
-The rationale for allowing `http` scheme is that the callback target is always
-an in-cluster ClusterIP Service with no external exposure. TLS on an internal
-service that never touches the internet adds operational cost without security
-value. The IP-range guards provide the SSRF protection: a redirect or a crafted
-URL that points to a cloud metadata endpoint (`169.254.169.254`) or a private
-service is blocked at the IP level regardless of scheme.
-
-Configure the callback URL via `callbackUrl` in the operator values. Set it to
-the in-cluster DNS name of the `tatara-operator-internal` Service:
+The operator reads its own callback base URL from `callbackUrl` in the chart
+values (env `CALLBACK_URL`) and derives the value it hands each wrapper pod by
+appending `/internal/turn-complete`, injected as `DEFAULT_CALLBACK_URL`
+(`internal/agent/pod.go`):
 
 ```yaml
 # values/tatara-operator/common.yaml
 callbackUrl: "http://tatara-operator-internal.tatara.svc:8082"
 ```
+
+This value is operator-configured, not derived from untrusted input, and the
+operator applies no URL validation to it - there is no SSRF exposure to guard
+against here.
+
+The wrapper pod's own `POST /v1/messages` endpoint accepts a second, per-turn
+`callbackUrl` in the request body (`postMessageReq.CallbackURL`), which
+overrides `DEFAULT_CALLBACK_URL` for that turn only when non-empty
+(`cmd/wrapper/app.go`, `defaultCB` fallback). Because this value can originate
+from a caller of the wrapper's API rather than from operator-controlled chart
+values, it is validated: `validateCallbackURL` in
+`tatara-claude-code-wrapper/internal/httpapi/messages.go:16-65` rejects
+anything but the `http`/`https` scheme, the literal host `localhost`, loopback
+addresses, unspecified addresses (`0.0.0.0`, `::`), link-local addresses
+(covers the cloud metadata IP), and private ranges via `net.IP.IsPrivate()`
+(RFC1918 IPv4 and IPv6 unique-local `fc00::/7`). It does not resolve
+hostnames, so a private IP reachable only via DNS is not caught by this guard.
+Validation runs in `postMessage` (`messages.go:86`) before the turn is
+submitted.
 
 ---
 
