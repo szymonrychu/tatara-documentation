@@ -24,6 +24,8 @@ values/
     common.yaml               # tatara Project + Repository CRs (tatara-project chart)
   project-infrastructure/
     common.yaml               # GitLab infrastructure Project + Repository CRs
+  project-mtg/
+    common.yaml               # mtg Project + Repository CRs (tatara-project chart)
 .github/workflows/
   diff.yaml                   # PR -> helmfile diff -> sticky comment (non-blocking)
   apply.yaml                  # push main -> helmfile apply (concurrency-guarded)
@@ -36,10 +38,11 @@ values/
 | `tatara-operator` | `oci://harbor.szymonrichert.pl/charts/tatara-operator` | `tatara` |
 | `project-tatara` | `oci://harbor.szymonrichert.pl/charts/tatara-project` | `tatara` |
 | `project-infrastructure` | `oci://harbor.szymonrichert.pl/charts/tatara-project` | `tatara` |
+| `project-mtg` | `oci://harbor.szymonrichert.pl/charts/tatara-project` | `tatara` |
 
 `tatara-chat` is decommissioned: its release, Postgres (a CNPG subchart with no retain annotation), Ingress path, and NetworkPolicy egress rule are all removed. <!-- stale-ok: tatara-chat -->
 
-`project-tatara` and `project-infrastructure` both use `needs: [tatara-operator]` so CRDs exist before the Project/Repository CRs are applied.
+`project-tatara`, `project-infrastructure`, and `project-mtg` all use `needs: [tatara-operator]` so CRDs exist before the Project/Repository CRs are applied.
 
 ## Deploy flow
 
