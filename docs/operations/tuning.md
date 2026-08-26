@@ -169,10 +169,10 @@ project:
 of an absolute token count, and needs no `resetSchedule`/`windowDuration`/
 `tokenLimit`. **It is live in prod today**: the operator-wide default sets
 `tokenBudgetEnabled: true`, `tokenBudgetMode: claudeSubscription`
-(`tatara-helmfile values/tatara-operator/default.yaml`), so both `tatara` and
-`infrastructure` inherit it - no per-Project override is set. Each usage
-window can be gated against its own pair, OR'd against the mode-wide
-fallback:
+(`tatara-helmfile values/tatara-operator/default.yaml`), so `tatara` inherits
+it with no per-Project override. `mtg` and `infrastructure` each set their own
+`tokenBudget` block (below). Each usage window can be gated against its own
+pair, OR'd against the mode-wide fallback:
 
 ```yaml
 project:
@@ -188,10 +188,23 @@ project:
       weeklyEmergencyPercent: 88
 ```
 
-Current prod values are exactly the block above: the 5h window is the
+The operator-wide default is exactly the block above: the 5h window is the
 tighter, faster-moving one so it gets more headroom before proactive work
 pauses; the weekly window moves slowly and exhausting it costs days, so it
 pauses earlier.
+
+Two Projects now override the weekly pair (2026-08-25,
+[tatara-helmfile#463](https://github.com/szymonrychu/tatara-helmfile/pull/463)):
+the operator-wide 75%/88% held every normal-class admission fleet-wide once
+account weekly usage reached 86%, including a human-filed `mtg` issue that
+never got a pod. `mtg` raises `weeklyProactivePercent` to 95 (`weeklyEmergencyPercent`
+97) and holds its own `brainstorm`/`upgrade` kinds at the old 75 via
+`spawnCeilingByKind`, so the extra headroom goes to human-filed work, not more
+self-proposed churn. `infrastructure` - the pool's largest and most deferrable
+normal-class consumer - funds that headroom by dropping `weeklyProactivePercent`
+to 50 and leaves `weeklyEmergencyPercent` unset so it keeps inheriting the
+operator-wide 88 (`ResolvePercents` clamps emergency up to proactive, never
+down, so cluster incidents on `infrastructure` still admit).
 
 **The feed:** each agent pod's silent `cc-statusline` command reports Claude
 Code's own `rate_limits` block to the wrapper on every TUI redraw
@@ -211,12 +224,18 @@ mode is otherwise silent (nothing increments while the gate evaluates 0%),
 for 30m. It is defined in the operator chart's own `PrometheusRule`, not
 `tatara-observability`; no runbook entry exists for it yet.
 
-A separate, still-disabled axis gates by Task **kind** rather than by window:
-`spawnCeilingByKind` (a Task-kind -> percent map on `TokenBudgetSpec`) is in
-the CRD and wired into gate evaluation, but no `tatara-helmfile` value sets it
-today. It is fed by the older `/api/oauth/usage` poller (`usageEnabled` in the
-operator chart), which stays off fleet-wide - the shared `claude
-setup-token` lacks the `user:profile` scope that endpoint needs.
+A separate axis gates by Task **kind** rather than by window:
+`spawnCeilingByKind` (a Task-kind -> percent map on `TokenBudgetSpec`). `mtg`
+is the only Project setting it today, holding `brainstorm` and `upgrade` at 75
+while its window pair above rises to 95/97 (see above). It reads the same
+fleet-wide `FiveHourPercent`/`WeeklyPercent` fold described under "The feed"
+above (`budget.KindBlocked`, `internal/budget/budget.go`) - so it is live via
+the wrapper's `cc-statusline` feed, the same one the window gate uses, not a
+separate feed of its own. The older `/api/oauth/usage` poller (`usageEnabled`
+in the operator chart) can also write that same fold but stays off
+fleet-wide - the shared `claude setup-token` lacks the `user:profile` scope
+that endpoint needs - so it contributes nothing today; the wrapper feed alone
+already drives `mtg`'s ceiling.
 
 ### 2. Model/effort tiering per agent kind
 
