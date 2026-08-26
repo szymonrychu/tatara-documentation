@@ -42,7 +42,7 @@ values/
 
 `tatara-chat` is decommissioned: its release, Postgres (a CNPG subchart with no retain annotation), Ingress path, and NetworkPolicy egress rule are all removed. <!-- stale-ok: tatara-chat -->
 
-`project-tatara` and `project-infrastructure` both use `needs: [tatara-operator]` so CRDs exist before the Project/Repository CRs are applied.
+`project-tatara`, `project-infrastructure`, and `project-mtg` all use `needs: [tatara-operator]` so CRDs exist before the Project/Repository CRs are applied.
 
 ## Deploy flow
 
